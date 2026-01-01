@@ -1,4 +1,4 @@
-//! Svelte-Check-RS: High-performance Svelte type-checker and linter.
+//! svelte-check-rs: High-performance Svelte type-checker and linter.
 
 mod cli;
 mod config;

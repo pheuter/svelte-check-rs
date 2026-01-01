@@ -1,4 +1,4 @@
-//! Svelte-specific diagnostics for Svelte-Check-RS.
+//! Svelte-specific diagnostics for svelte-check-rs.
 //!
 //! This crate provides diagnostics for:
 //! - Accessibility (a11y) checks

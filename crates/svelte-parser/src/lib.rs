@@ -1,4 +1,4 @@
-//! Svelte 5 parser for Svelte-Check-RS.
+//! Svelte 5 parser for svelte-check-rs.
 //!
 //! This crate provides a complete parser for Svelte 5 syntax including:
 //! - Lexer (tokenizer) using `logos`

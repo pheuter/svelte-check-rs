@@ -1,4 +1,4 @@
-//! Source position tracking and mapping for Svelte-Check-RS.
+//! Source position tracking and mapping for svelte-check-rs.
 //!
 //! This crate provides utilities for tracking source positions through transformations,
 //! enabling accurate error reporting that maps generated code positions back to original

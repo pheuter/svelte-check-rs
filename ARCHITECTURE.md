@@ -1,8 +1,8 @@
-# Svelte-Check-RS: Architecture & Implementation Plan
+# svelte-check-rs: Architecture & Implementation Plan
 
 ## Executive Summary
 
-**Svelte-Check-RS** is a high-performance, Rust-powered diagnostic engine designed as a drop-in replacement for `svelte-check`. It transforms Svelte components into TypeScript/TSX for type-checking via the Go-based TypeScript compiler (`tsgo`), while also performing Svelte-specific diagnostics (accessibility, unused CSS, component validation).
+**svelte-check-rs** is a high-performance, Rust-powered diagnostic engine designed as a drop-in replacement for `svelte-check`. It transforms Svelte components into TypeScript/TSX for type-checking via the Go-based TypeScript compiler (`tsgo`), while also performing Svelte-specific diagnostics (accessibility, unused CSS, component validation).
 
 > **Important:** This tool exclusively supports **Svelte 5+**. It leverages Svelte 5's runes (`$props`, `$state`, `$derived`, etc.) and does not provide backwards compatibility with Svelte 4's `export let` syntax or legacy reactive statements (`$:`). For projects using Svelte 4 or earlier, use the official [svelte-check](https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check).
 

@@ -1,4 +1,4 @@
-# Svelte-Check-RS
+# svelte-check-rs
 
 A high-performance, Rust-powered diagnostic engine designed as a drop-in replacement for `svelte-check`.
 
@@ -75,7 +75,7 @@ cargo build
 cargo test
 
 # Run clippy
-cargo clippy --all-targets
+cargo clippy --all-targets -- -D warnings
 
 # Format code
 cargo fmt
