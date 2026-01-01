@@ -10,7 +10,7 @@ cargo test                     # Run all tests
 cargo test -p <crate>          # Test specific crate (svelte-parser, source-map, etc.)
 cargo test --test snapshots    # Run snapshot tests only
 cargo test --test corpus_test  # Run corpus/fixture tests only
-cargo clippy --all-targets     # Lint
+cargo clippy --all-targets -- -D warnings  # Lint (warnings as errors)
 cargo fmt                      # Format (always run before committing)
 cargo run -p svelte-check-rs -- --workspace ./path/to/project
 ```

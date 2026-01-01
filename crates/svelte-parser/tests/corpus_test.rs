@@ -20,7 +20,7 @@ fn collect_svelte_files(dir: &std::path::Path) -> Vec<PathBuf> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "svelte") {
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "svelte") {
                 files.push(path);
             } else if path.is_dir() {
                 files.extend(collect_svelte_files(&path));
