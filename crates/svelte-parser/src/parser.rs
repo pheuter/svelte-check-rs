@@ -587,6 +587,9 @@ impl<'src> Parser<'src> {
                             context = ScriptContext::Module;
                         }
                     }
+                } else if name == "module" {
+                    // Svelte 5 uses bare `module` attribute: <script module>
+                    context = ScriptContext::Module;
                 }
 
                 let attr_end = self
