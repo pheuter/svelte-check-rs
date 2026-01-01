@@ -971,6 +971,7 @@ impl<'src> Parser<'src> {
 
         let mut full_name = self.current_text().to_string();
         let is_namespaced = self.check(TokenKind::NamespacedIdent);
+        let mut prev_end = self.current().span.end;
         self.advance();
 
         // For namespaced identifiers (directives), continue reading tokens
@@ -981,16 +982,20 @@ impl<'src> Parser<'src> {
         // - class:sm:grid-cols-[auto,1fr,1fr] (arbitrary values with brackets and commas)
         if is_namespaced {
             // Read the argument name and all its modifiers/content
-            while self.check(TokenKind::Ident)
-                || self.check(TokenKind::Pipe)
-                || self.check(TokenKind::Colon)
-                || self.check(TokenKind::NamespacedIdent)
-                || self.check(TokenKind::Text)  // For !, [, ], etc.
-                || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
-                || self.check(TokenKind::Number)
+            // Only continue if tokens are adjacent (no whitespace between)
+            while self.pos < self.tokens.len()
+                && self.current().span.start == prev_end
+                && (self.check(TokenKind::Ident)
+                    || self.check(TokenKind::Pipe)
+                    || self.check(TokenKind::Colon)
+                    || self.check(TokenKind::NamespacedIdent)
+                    || self.check(TokenKind::Text) // For !, [, ], etc.
+                    || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
+                    || self.check(TokenKind::Number))
             // For sizes: [100px], grid-cols-2
             {
                 full_name.push_str(self.current_text());
+                prev_end = self.current().span.end;
                 self.advance();
             }
         }
@@ -1400,7 +1405,8 @@ impl<'src> Parser<'src> {
         let alternate = if self.check_source("{:else if") {
             self.eat(TokenKind::LBraceColon);
             self.eat(TokenKind::Else);
-            // Continue as if block
+            self.eat(TokenKind::If); // Eat the 'if' keyword before parsing condition
+                                     // Continue as if block
             let else_if_start = self.current().span.start;
             self.parse_if_block(else_if_start).map(|node| {
                 if let TemplateNode::IfBlock(block) = node {
@@ -1446,9 +1452,20 @@ impl<'src> Parser<'src> {
         let (full_expr, full_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
-        // Use brace-aware parsing to find " as "
-        let (expression, expression_span, rest, rest_offset) =
-            if let Some(as_pos) = Self::find_keyword_in_expr(&full_expr, " as ") {
+        // Use brace-aware parsing to find " as " - we need to find the LAST " as "
+        // that separates the expression from the pattern, since the expression itself
+        // may contain TypeScript " as " casts.
+        let (expression, expression_span, rest, rest_offset) = {
+            // Find all occurrences of " as " and use the last one
+            let mut last_as_pos = None;
+            let mut search_start = 0;
+            while let Some(pos) = Self::find_keyword_in_expr(&full_expr[search_start..], " as ") {
+                let absolute_pos = search_start + pos;
+                last_as_pos = Some(absolute_pos);
+                search_start = absolute_pos + 4;
+            }
+
+            if let Some(as_pos) = last_as_pos {
                 let expr = full_expr[..as_pos].trim().to_string();
                 let expr_span = Span::new(
                     expr_start,
@@ -1458,7 +1475,8 @@ impl<'src> Parser<'src> {
                 (expr, expr_span, &full_expr[rest_start..], rest_start)
             } else {
                 (full_expr.trim().to_string(), full_span, "", 0)
-            };
+            }
+        };
 
         let rest = rest.trim();
 

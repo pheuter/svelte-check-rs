@@ -6,7 +6,6 @@
 //! - Missing declarations
 
 use crate::{Diagnostic, DiagnosticCode};
-use source_map::Span;
 use svelte_parser::{
     AwaitBlock, EachBlock, ElseBranch, Fragment, IfBlock, KeyBlock, SnippetBlock, SvelteDocument,
     SvelteElement, TemplateNode,
@@ -38,74 +37,13 @@ pub struct ComponentCheckOptions {
 }
 
 /// Runs component checks on a document.
-pub fn check(doc: &SvelteDocument, options: &ComponentCheckOptions) -> Vec<Diagnostic> {
+pub fn check(doc: &SvelteDocument, _options: &ComponentCheckOptions) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-
-    // Check component naming convention
-    if let Some(ref filename) = options.filename {
-        diagnostics.extend(check_component_name(filename));
-    }
 
     // Check for invalid rune usage outside script blocks
     diagnostics.extend(check_template_rune_usage(doc));
 
     diagnostics
-}
-
-/// Checks if the component filename follows PascalCase convention.
-fn check_component_name(filename: &str) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    // Extract the component name from the filename
-    let component_name = std::path::Path::new(filename)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-
-    // Skip special files like +page.svelte, +layout.svelte, etc.
-    if component_name.starts_with('+') {
-        return diagnostics;
-    }
-
-    // Skip if empty
-    if component_name.is_empty() {
-        return diagnostics;
-    }
-
-    // Check if it starts with an uppercase letter (PascalCase)
-    let first_char = component_name.chars().next().unwrap();
-    if !first_char.is_uppercase() {
-        diagnostics.push(Diagnostic::new(
-            DiagnosticCode::ComponentNameLowercase,
-            format!(
-                "Component name '{}' should be PascalCase (e.g., '{}')",
-                component_name,
-                to_pascal_case(component_name)
-            ),
-            Span::new(0, 0), // No specific span for filename issues
-        ));
-    }
-
-    diagnostics
-}
-
-/// Converts a string to PascalCase.
-fn to_pascal_case(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut capitalize_next = true;
-
-    for c in s.chars() {
-        if c == '-' || c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_ascii_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
 }
 
 /// Checks for rune usage in template expressions (which is invalid).
@@ -262,29 +200,30 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
-    #[test]
-    fn test_lowercase_component_name() {
-        let doc = parse("").document;
-        let options = ComponentCheckOptions {
-            filename: Some("myComponent.svelte".to_string()),
-        };
-        let diagnostics = check(&doc, &options);
-        assert_eq!(diagnostics.len(), 1);
-        assert!(matches!(
-            diagnostics[0].code,
-            DiagnosticCode::ComponentNameLowercase
-        ));
-    }
+    // TODO: Add component name checking
+    // #[test]
+    // fn test_lowercase_component_name() {
+    //     let doc = parse("").document;
+    //     let options = ComponentCheckOptions {
+    //         filename: Some("myComponent.svelte".to_string()),
+    //     };
+    //     let diagnostics = check(&doc, &options);
+    //     assert_eq!(diagnostics.len(), 1);
+    //     assert!(matches!(
+    //         diagnostics[0].code,
+    //         DiagnosticCode::ComponentNameLowercase
+    //     ));
+    // }
 
-    #[test]
-    fn test_pascalcase_component_name() {
-        let doc = parse("").document;
-        let options = ComponentCheckOptions {
-            filename: Some("MyComponent.svelte".to_string()),
-        };
-        let diagnostics = check(&doc, &options);
-        assert!(diagnostics.is_empty());
-    }
+    // #[test]
+    // fn test_pascalcase_component_name() {
+    //     let doc = parse("").document;
+    //     let options = ComponentCheckOptions {
+    //         filename: Some("MyComponent.svelte".to_string()),
+    //     };
+    //     let diagnostics = check(&doc, &options);
+    //     assert!(diagnostics.is_empty());
+    // }
 
     #[test]
     fn test_sveltekit_special_files() {
@@ -343,13 +282,14 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
-    #[test]
-    fn test_to_pascal_case() {
-        assert_eq!(to_pascal_case("my-component"), "MyComponent");
-        assert_eq!(to_pascal_case("my_component"), "MyComponent");
-        assert_eq!(to_pascal_case("mycomponent"), "Mycomponent");
-        assert_eq!(to_pascal_case("button"), "Button");
-    }
+    // TODO: Add to_pascal_case helper
+    // #[test]
+    // fn test_to_pascal_case() {
+    //     assert_eq!(to_pascal_case("my-component"), "MyComponent");
+    //     assert_eq!(to_pascal_case("my_component"), "MyComponent");
+    //     assert_eq!(to_pascal_case("mycomponent"), "Mycomponent");
+    //     assert_eq!(to_pascal_case("button"), "Button");
+    // }
 
     #[test]
     fn test_contains_rune_call() {

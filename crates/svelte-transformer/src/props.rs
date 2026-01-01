@@ -396,27 +396,40 @@ fn extract_type_annotation(s: &str) -> Option<String> {
     let mut depth = 0;
     let mut in_string = false;
     let mut string_char = ' ';
+    let mut prev_char: Option<char> = None;
 
     for (i, ch) in type_str.char_indices() {
         if !in_string && (ch == '"' || ch == '\'' || ch == '`') {
             in_string = true;
             string_char = ch;
+            prev_char = Some(ch);
             continue;
         }
         if in_string {
             if ch == string_char {
                 in_string = false;
             }
+            prev_char = Some(ch);
             continue;
         }
 
         if ch == '<' || ch == '(' || ch == '{' || ch == '[' {
             depth += 1;
-        } else if ch == '>' || ch == ')' || ch == '}' || ch == ']' {
+        } else if ch == '>' {
+            // Skip `>` if it's part of `=>` (arrow function in type)
+            if prev_char != Some('=') {
+                depth -= 1;
+            }
+        } else if ch == ')' || ch == '}' || ch == ']' {
             depth -= 1;
         } else if ch == '=' && depth == 0 {
-            return Some(type_str[..i].trim().to_string());
+            // Make sure it's not `=>` or `==`
+            let next = type_str[i + 1..].chars().next();
+            if next != Some('>') && next != Some('=') {
+                return Some(type_str[..i].trim().to_string());
+            }
         }
+        prev_char = Some(ch);
     }
 
     None
@@ -431,28 +444,37 @@ fn extract_generic_type_param(declaration: &str) -> Option<String> {
     let mut depth = 1;
     let mut in_string = false;
     let mut string_char = ' ';
+    let mut prev_char = None;
 
     for (i, ch) in after_props.char_indices() {
         if !in_string && (ch == '"' || ch == '\'' || ch == '`') {
             in_string = true;
             string_char = ch;
+            prev_char = Some(ch);
             continue;
         }
         if in_string {
             if ch == string_char {
                 in_string = false;
             }
+            prev_char = Some(ch);
             continue;
         }
 
         if ch == '<' {
             depth += 1;
         } else if ch == '>' {
-            depth -= 1;
-            if depth == 0 {
-                return Some(after_props[..i].trim().to_string());
+            // Skip `>` if it's part of `=>` (arrow function in type)
+            if prev_char == Some('=') {
+                // This is `=>`, not a closing angle bracket
+            } else {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(after_props[..i].trim().to_string());
+                }
             }
         }
+        prev_char = Some(ch);
     }
 
     None
@@ -650,6 +672,28 @@ mod tests {
         assert_eq!(
             info.properties[1].default_value,
             Some("() => {}".to_string())
+        );
+    }
+
+    #[test]
+    fn test_generic_type_with_arrow_function() {
+        let script = "let { onClick } = $props<{ onClick?: () => void }>();";
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert_eq!(
+            info.type_annotation,
+            Some("{ onClick?: () => void }".to_string())
+        );
+    }
+
+    #[test]
+    fn test_generic_type_with_callback() {
+        let script = "let { onchange } = $props<{ onchange?: (n: number) => void }>();";
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert_eq!(
+            info.type_annotation,
+            Some("{ onchange?: (n: number) => void }".to_string())
         );
     }
 }

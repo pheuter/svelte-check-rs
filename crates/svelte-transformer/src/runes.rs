@@ -89,6 +89,60 @@ enum ScanContext {
     RegexLiteral,
 }
 
+/// Transform store subscriptions in an expression.
+///
+/// In Svelte, `$storeName` is shorthand for subscribing to a store and getting its value.
+/// For TypeScript compatibility, we transform `$storeName` to `storeName`.
+///
+/// This only applies to store subscriptions (identifier after $), not to:
+/// - Runes like `$state()`, `$derived()` (have parentheses)
+/// - Special variables like `$$props`, `$$slots`
+fn transform_store_subscriptions(expr: &str) -> String {
+    let mut result = String::with_capacity(expr.len());
+    let mut chars = expr.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            // Check if this is a store subscription
+            if let Some(&next) = chars.peek() {
+                // Skip $$ patterns ($$props, $$slots, etc.)
+                if next == '$' {
+                    result.push(ch);
+                    continue;
+                }
+
+                // Check if followed by valid identifier start
+                if next.is_ascii_alphabetic() || next == '_' {
+                    // Peek ahead to see if this is followed by '(' (would be a rune)
+                    let rest: String = chars.clone().collect();
+                    let id_end = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .count();
+
+                    let after_id = &rest[id_end..];
+                    let next_non_ws = after_id.chars().find(|c| !c.is_whitespace());
+
+                    // If followed by ( or <, it's a rune - keep the $
+                    if next_non_ws == Some('(') || next_non_ws == Some('<') {
+                        result.push(ch);
+                    }
+                    // Otherwise it's a store subscription - skip the $
+                    // The identifier will be added in subsequent iterations
+                } else {
+                    result.push(ch);
+                }
+            } else {
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 /// Transforms rune expressions in script content.
 ///
 /// This function identifies rune calls and transforms them for type-checking:
@@ -104,8 +158,20 @@ enum ScanContext {
 /// - `$inspect(...)` → `void 0`
 /// - `$host()` → `this`
 /// - `$props()` → preserved (handled during type extraction)
+///
+/// The `default_props_type` parameter specifies the type to use for untyped `$props()`.
+/// For SvelteKit route files, this would be "PageData" or "LayoutData".
 pub fn transform_runes(script: &str, base_offset: u32) -> RuneTransformResult {
-    let scanner = RuneScanner::new(script, base_offset);
+    transform_runes_with_options(script, base_offset, None)
+}
+
+/// Transforms rune expressions with a custom default props type.
+pub fn transform_runes_with_options(
+    script: &str,
+    base_offset: u32,
+    default_props_type: Option<&str>,
+) -> RuneTransformResult {
+    let scanner = RuneScanner::new(script, base_offset, default_props_type);
     scanner.scan_and_transform()
 }
 
@@ -124,10 +190,12 @@ struct RuneScanner<'a> {
     base_offset: u32,
     /// Current position in output.
     output_pos: u32,
+    /// Default type to use for untyped $props().
+    default_props_type: Option<&'a str>,
 }
 
 impl<'a> RuneScanner<'a> {
-    fn new(source: &'a str, base_offset: u32) -> Self {
+    fn new(source: &'a str, base_offset: u32, default_props_type: Option<&'a str>) -> Self {
         Self {
             source,
             chars: source.char_indices().peekable(),
@@ -139,6 +207,7 @@ impl<'a> RuneScanner<'a> {
             mappings: Vec::new(),
             base_offset,
             output_pos: 0,
+            default_props_type,
         }
     }
 
@@ -207,7 +276,14 @@ impl<'a> RuneScanner<'a> {
                 if let Some(rune_match) = self.try_match_rune(pos) {
                     self.apply_rune_transform(rune_match);
                 } else {
-                    self.push_char(ch);
+                    // Check if this is a store subscription like $formData
+                    // In Svelte, $storeName auto-subscribes to the store
+                    // Transform to just storeName for TypeScript compatibility
+                    if self.is_store_subscription(pos) {
+                        // Skip the $ - the identifier will be pushed by subsequent iterations
+                    } else {
+                        self.push_char(ch);
+                    }
                 }
             }
             '{' => {
@@ -354,6 +430,24 @@ impl<'a> RuneScanner<'a> {
             ("$host()", RuneKind::Host),
         ];
 
+        // Special case: check for $props with TypeScript generics: $props<Type>()
+        if remaining.starts_with("$props<") {
+            if let Some(full_end) = self.find_props_with_generic(start_pos) {
+                let full_text = self.source[start_pos..full_end].to_string();
+                return Some(RuneMatch {
+                    kind: RuneKind::Props,
+                    full_span: Span::new(
+                        self.base_offset + start_pos as u32,
+                        self.base_offset + full_end as u32,
+                    ),
+                    content: None,
+                    content_span: None,
+                    pattern_len: 7, // "$props<"
+                    full_text: Some(full_text),
+                });
+            }
+        }
+
         for (pattern, kind) in patterns {
             if remaining.starts_with(pattern) {
                 // Special case for $host() which has no arguments
@@ -367,6 +461,7 @@ impl<'a> RuneScanner<'a> {
                         content: None,
                         content_span: None,
                         pattern_len: pattern.len(),
+                        full_text: None,
                     });
                 }
 
@@ -390,12 +485,79 @@ impl<'a> RuneScanner<'a> {
                             self.base_offset + (content_start + content.len()) as u32,
                         )),
                         pattern_len: pattern.len(),
+                        full_text: None,
                     });
                 }
             }
         }
 
         None
+    }
+
+    /// Find the end of a $props<Type>() expression with TypeScript generics.
+    fn find_props_with_generic(&self, start_pos: usize) -> Option<usize> {
+        let s = &self.source[start_pos..];
+
+        // Must start with "$props<"
+        if !s.starts_with("$props<") {
+            return None;
+        }
+
+        // Find matching > for the generic type parameter
+        let after_props = &s[7..]; // Skip "$props<"
+        let mut depth = 1;
+        let mut in_string = None;
+        let mut prev_was_escape = false;
+        let mut generic_end = None;
+        let mut prev_char = None;
+
+        for (i, ch) in after_props.char_indices() {
+            if prev_was_escape {
+                prev_was_escape = false;
+                prev_char = Some(ch);
+                continue;
+            }
+
+            match in_string {
+                Some(quote) => {
+                    if ch == '\\' {
+                        prev_was_escape = true;
+                    } else if ch == quote {
+                        in_string = None;
+                    }
+                }
+                None => match ch {
+                    '\'' | '"' | '`' => in_string = Some(ch),
+                    '<' => depth += 1,
+                    '>' => {
+                        // Skip `>` if it's part of `=>` (arrow function in type)
+                        if prev_char == Some('=') {
+                            // This is `=>`, not a closing angle bracket
+                        } else {
+                            depth -= 1;
+                            if depth == 0 {
+                                generic_end = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            prev_char = Some(ch);
+        }
+
+        let generic_end = generic_end?;
+
+        // After the >, we need "()"
+        let after_generic = &after_props[generic_end + 1..];
+        if after_generic.starts_with("()") {
+            // Full pattern: $props< ... >()
+            // End position: start_pos + 7 ($props<) + generic_end + 1 (>) + 2 (())
+            Some(start_pos + 7 + generic_end + 1 + 2)
+        } else {
+            None
+        }
     }
 
     /// Find the matching closing parenthesis, handling nested parens, strings, etc.
@@ -435,12 +597,63 @@ impl<'a> RuneScanner<'a> {
         None
     }
 
+    /// Check if the $ at the given position is a store subscription.
+    ///
+    /// Store subscriptions look like `$storeName` where the $ is followed by
+    /// an identifier (letter, underscore, or subsequent alphanumeric chars).
+    /// They are NOT followed by `(` which would make them runes.
+    fn is_store_subscription(&self, pos: usize) -> bool {
+        let remaining = &self.source[pos..];
+
+        // Must start with $ followed by valid identifier start
+        if !remaining.starts_with('$') {
+            return false;
+        }
+
+        let after_dollar = &remaining[1..];
+        if after_dollar.is_empty() {
+            return false;
+        }
+
+        let first_char = after_dollar.chars().next().unwrap();
+
+        // Valid identifier start: letter or underscore
+        if !first_char.is_ascii_alphabetic() && first_char != '_' {
+            return false;
+        }
+
+        // Find end of identifier
+        let id_len = after_dollar
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .count();
+
+        // Check what follows the identifier - should NOT be `(` (that would be a rune)
+        let after_id = &after_dollar[id_len..];
+        let next_non_ws = after_id.chars().find(|c| !c.is_whitespace());
+
+        // If followed by `(`, it's a rune pattern (already handled), not a store
+        // If followed by `<` then `(`, could be a generic rune like $props<Type>()
+        if next_non_ws == Some('(') || next_non_ws == Some('<') {
+            return false;
+        }
+
+        true
+    }
+
     /// Apply the transformation for a matched rune.
     fn apply_rune_transform(&mut self, rune_match: RuneMatch) {
         // Advance the chars iterator past the rune
-        let rune_len = u32::from(rune_match.full_span.end) - u32::from(rune_match.full_span.start);
-        for _ in 0..(rune_len as usize - 1) {
-            // -1 because we already consumed '$'
+        // We need to skip characters until we reach the end byte position
+        // Note: rune_match.full_span uses byte offsets, but chars iterator is char-based
+        let end_byte_offset = (u32::from(rune_match.full_span.end) - self.base_offset) as usize;
+
+        // Skip characters until we've passed the rune's end position
+        // We already consumed '$', so continue from current position
+        while let Some((next_pos, _)) = self.chars.peek() {
+            if *next_pos >= end_byte_offset {
+                break;
+            }
             self.chars.next();
         }
 
@@ -448,16 +661,25 @@ impl<'a> RuneScanner<'a> {
 
         match rune_match.kind {
             RuneKind::State | RuneKind::StateRaw => {
-                // $state(init) → init
+                // $state(init) → init, or undefined if empty
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    if content.trim().is_empty() {
+                        self.push_str("undefined");
+                    } else {
+                        // Transform store subscriptions within the content
+                        let transformed = transform_store_subscriptions(content);
+                        self.push_str(&transformed);
+                    }
+                } else {
+                    self.push_str("undefined");
                 }
             }
             RuneKind::StateSnapshot => {
                 // $state.snapshot(x) → (x)
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    let transformed = transform_store_subscriptions(content);
+                    self.push_str(&transformed);
                 }
                 self.push_char(')');
             }
@@ -465,7 +687,8 @@ impl<'a> RuneScanner<'a> {
                 // $derived(expr) → (expr)
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    let transformed = transform_store_subscriptions(content);
+                    self.push_str(&transformed);
                 }
                 self.push_char(')');
             }
@@ -473,7 +696,8 @@ impl<'a> RuneScanner<'a> {
                 // $derived.by(fn) → (fn)()
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    let transformed = transform_store_subscriptions(content);
+                    self.push_str(&transformed);
                 }
                 self.push_str(")()");
             }
@@ -481,7 +705,8 @@ impl<'a> RuneScanner<'a> {
                 // $effect(fn) → ((fn))()
                 self.push_str("((");
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    let transformed = transform_store_subscriptions(content);
+                    self.push_str(&transformed);
                 }
                 self.push_str("))()");
             }
@@ -489,16 +714,22 @@ impl<'a> RuneScanner<'a> {
                 // $effect.root(fn) → (fn)()
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    let transformed = transform_store_subscriptions(content);
+                    self.push_str(&transformed);
                 }
                 self.push_str(")()");
             }
             RuneKind::Bindable => {
-                // $bindable(default?) → default or empty
+                // $bindable(default?) → default or undefined
                 if let Some(content) = &rune_match.content {
                     if !content.trim().is_empty() {
-                        self.push_str(content);
+                        let transformed = transform_store_subscriptions(content);
+                        self.push_str(&transformed);
+                    } else {
+                        self.push_str("undefined");
                     }
+                } else {
+                    self.push_str("undefined");
                 }
             }
             RuneKind::Inspect => {
@@ -510,12 +741,49 @@ impl<'a> RuneScanner<'a> {
                 self.push_str("this");
             }
             RuneKind::Props => {
-                // $props() is preserved as-is for type extraction
-                self.push_str("$props(");
-                if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                // Transform $props() to valid TypeScript
+                // $props<Type>() -> ({} as Type)
+                // let {...}: Type = $props() -> ({} as Type) - extract type from LHS annotation
+                // $props() in SvelteKit route -> ({} as PageData) or ({} as LayoutData)
+                // $props() -> ({} as Record<string, unknown>) - fallback
+                let fallback_type = self.default_props_type.unwrap_or("Record<string, unknown>");
+
+                if let Some(full_text) = &rune_match.full_text {
+                    // Extract the type from $props<Type>()
+                    // full_text is like "$props<{ name: string }>()"
+                    let type_start = "$props<".len();
+                    let type_end = full_text.len() - ">()".len();
+                    if type_end > type_start {
+                        let type_str = &full_text[type_start..type_end];
+                        self.push_str("({} as ");
+                        self.push_str(type_str);
+                        self.push_char(')');
+                    } else {
+                        // Try to extract type annotation from LHS (e.g., }: Type = $props())
+                        let type_from_lhs = self.extract_type_from_lhs();
+                        if let Some(type_str) = type_from_lhs {
+                            self.push_str("({} as ");
+                            self.push_str(&type_str);
+                            self.push_char(')');
+                        } else {
+                            self.push_str("({} as ");
+                            self.push_str(fallback_type);
+                            self.push_char(')');
+                        }
+                    }
+                } else {
+                    // $props() without generics - try to extract type from LHS
+                    let type_from_lhs = self.extract_type_from_lhs();
+                    if let Some(type_str) = type_from_lhs {
+                        self.push_str("({} as ");
+                        self.push_str(&type_str);
+                        self.push_char(')');
+                    } else {
+                        self.push_str("({} as ");
+                        self.push_str(fallback_type);
+                        self.push_char(')');
+                    }
                 }
-                self.push_char(')');
             }
         }
 
@@ -535,6 +803,47 @@ impl<'a> RuneScanner<'a> {
             content_span: rune_match.content_span,
         });
     }
+
+    /// Extract type annotation from the LHS of a $props() assignment.
+    ///
+    /// Looks for patterns like `}: Type = ` at the end of the output buffer,
+    /// where Type is the type annotation we want to use.
+    ///
+    /// Examples:
+    /// - `let { a, b }: Props = ` -> Some("Props")
+    /// - `let { a }: { a: string; b: number } = ` -> Some("{ a: string; b: number }")
+    fn extract_type_from_lhs(&self) -> Option<String> {
+        // Look back in the output for `: Type = ` pattern
+        // The output currently ends with everything up to $props()
+        let output = &self.output;
+
+        // Find the last `= ` which is right before $props()
+        let equals_pos = output.rfind(" = ").or_else(|| output.rfind("= "))?;
+
+        // Now look backwards from the equals sign to find `: Type`
+        // We need to find the closing `}` of destructuring, then the `: Type` after it
+        let before_equals = &output[..equals_pos];
+
+        // Find the colon that starts the type annotation
+        // This is tricky because the type itself might contain colons (in object types)
+        // Look for `}: ` or `): ` which indicates end of pattern + type annotation
+        let type_start = before_equals
+            .rfind("}: ")
+            .or_else(|| before_equals.rfind("): "))?;
+        let type_str = &before_equals[type_start + 3..].trim();
+
+        if type_str.is_empty() {
+            return None;
+        }
+
+        // Validate that this looks like a type (not empty, starts reasonably)
+        let first_char = type_str.chars().next()?;
+        if !first_char.is_alphabetic() && first_char != '{' && first_char != '(' {
+            return None;
+        }
+
+        Some(type_str.to_string())
+    }
 }
 
 /// Information about a matched rune.
@@ -549,6 +858,8 @@ struct RuneMatch {
     /// Length of the pattern (e.g., "$state(" is 7).
     #[allow(dead_code)]
     pattern_len: usize,
+    /// The full original text of the rune call (for preserving generics).
+    full_text: Option<String>,
 }
 
 #[cfg(test)]
@@ -635,7 +946,10 @@ mod tests {
     #[test]
     fn test_transform_bindable_with_default() {
         let result = transform_runes("let { value = $bindable(0) } = $props();", 0);
-        assert_eq!(result.output, "let { value = 0 } = $props();");
+        assert_eq!(
+            result.output,
+            "let { value = 0 } = ({} as Record<string, unknown>);"
+        );
         assert_eq!(result.runes.len(), 2);
         assert_eq!(result.runes[0].kind, RuneKind::Bindable);
         assert_eq!(result.runes[1].kind, RuneKind::Props);
@@ -644,14 +958,70 @@ mod tests {
     #[test]
     fn test_transform_bindable_empty() {
         let result = transform_runes("let { value = $bindable() } = $props();", 0);
-        assert_eq!(result.output, "let { value =  } = $props();");
+        assert_eq!(
+            result.output,
+            "let { value = undefined } = ({} as Record<string, unknown>);"
+        );
     }
 
     #[test]
-    fn test_props_preserved() {
+    fn test_props_transformed() {
         let result = transform_runes("let { a, b } = $props();", 0);
-        assert_eq!(result.output, "let { a, b } = $props();");
+        assert_eq!(
+            result.output,
+            "let { a, b } = ({} as Record<string, unknown>);"
+        );
         assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_typescript_generics() {
+        let result = transform_runes("let { name } = $props<{ name: string }>();", 0);
+        assert_eq!(result.output, "let { name } = ({} as { name: string });");
+        assert_eq!(result.runes.len(), 1);
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_complex_generic() {
+        let result = transform_runes(
+            "let { data } = $props<{ data: Array<{ id: number }> }>();",
+            0,
+        );
+        assert_eq!(
+            result.output,
+            "let { data } = ({} as { data: Array<{ id: number }> });"
+        );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_arrow_function_type() {
+        let result = transform_runes("let { onClick } = $props<{ onClick?: () => void }>();", 0);
+        assert_eq!(
+            result.output,
+            "let { onClick } = ({} as { onClick?: () => void });"
+        );
+        assert_eq!(result.runes.len(), 1);
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_multiline_arrow_function() {
+        let result = transform_runes(
+            r#"let { name, onchange } = $props<{
+    name: string;
+    onchange?: (n: number) => void;
+}>();"#,
+            0,
+        );
+        assert_eq!(
+            result.output,
+            r#"let { name, onchange } = ({} as {
+    name: string;
+    onchange?: (n: number) => void;
+});"#
+        );
     }
 
     #[test]

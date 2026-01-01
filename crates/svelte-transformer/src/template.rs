@@ -7,6 +7,60 @@
 use source_map::Span;
 use svelte_parser::*;
 
+/// Transform store subscriptions in an expression.
+///
+/// In Svelte, `$storeName` is shorthand for subscribing to a store and getting its value.
+/// For TypeScript compatibility, we transform `$storeName` to `storeName`.
+///
+/// This only applies to store subscriptions (identifier after $), not to:
+/// - Runes like `$state()`, `$derived()` (have parentheses)
+/// - Special variables like `$$props`, `$$slots`
+fn transform_store_subscriptions(expr: &str) -> String {
+    let mut result = String::with_capacity(expr.len());
+    let mut chars = expr.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            // Check if this is a store subscription
+            if let Some(&next) = chars.peek() {
+                // Skip $$ patterns ($$props, $$slots, etc.)
+                if next == '$' {
+                    result.push(ch);
+                    continue;
+                }
+
+                // Check if followed by valid identifier start
+                if next.is_ascii_alphabetic() || next == '_' {
+                    // Peek ahead to see if this is followed by '(' (would be a rune)
+                    let rest: String = chars.clone().collect();
+                    let id_end = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .count();
+
+                    let after_id = &rest[id_end..];
+                    let next_non_ws = after_id.chars().find(|c| !c.is_whitespace());
+
+                    // If followed by ( or <, it's a rune - keep the $
+                    if next_non_ws == Some('(') || next_non_ws == Some('<') {
+                        result.push(ch);
+                    }
+                    // Otherwise it's a store subscription - skip the $
+                    // The identifier will be added in subsequent iterations
+                } else {
+                    result.push(ch);
+                }
+            } else {
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 /// An expression collected from the template with its original span.
 #[derive(Debug, Clone)]
 pub struct TemplateExpression {
@@ -94,6 +148,32 @@ pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckR
     }
 }
 
+/// Checks if a property name needs to be quoted in JavaScript.
+/// Property names containing hyphens, colons, or other non-identifier characters need quotes.
+fn needs_quote(name: &str) -> bool {
+    if name.is_empty() {
+        return true;
+    }
+    // First character must be a letter, underscore, or $
+    let first = name.chars().next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' && first != '$' {
+        return true;
+    }
+    // Rest can be letters, digits, underscores, or $
+    name.chars()
+        .skip(1)
+        .any(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
+}
+
+/// Formats a property name for JavaScript object literal.
+fn format_prop_name(name: &str) -> String {
+    if needs_quote(name) {
+        format!("\"{}\"", name)
+    } else {
+        name.to_string()
+    }
+}
+
 /// Context for template transformation.
 struct TemplateContext {
     output: String,
@@ -101,6 +181,8 @@ struct TemplateContext {
     indent: usize,
     /// Counter for generating unique variable names.
     counter: usize,
+    /// Counter for generating unique snippet function names.
+    snippet_counter: usize,
 }
 
 impl TemplateContext {
@@ -110,6 +192,7 @@ impl TemplateContext {
             expressions: Vec::new(),
             indent: 1,
             counter: 0,
+            snippet_counter: 0,
         }
     }
 
@@ -130,12 +213,22 @@ impl TemplateContext {
     }
 
     fn emit_expression(&mut self, expr: &str, span: Span, context: ExpressionContext) {
+        // Transform store subscriptions: $storeName -> storeName
+        let transformed = transform_store_subscriptions(expr);
+
         self.expressions.push(TemplateExpression {
-            expression: expr.to_string(),
+            expression: transformed.clone(),
             span,
             context,
         });
-        self.emit(&format!("{};", expr));
+        // Wrap object literals in parentheses to prevent TypeScript from
+        // interpreting them as blocks (e.g., `{foo: bar}` would be a label)
+        let trimmed = transformed.trim_start();
+        if trimmed.starts_with('{') && !trimmed.starts_with("{{") {
+            self.emit(&format!("({});", transformed));
+        } else {
+            self.emit(&format!("{};", transformed));
+        }
     }
 
     fn generate_fragment(&mut self, fragment: &Fragment) {
@@ -192,17 +285,19 @@ impl TemplateContext {
                 );
             }
             TemplateNode::ConstTag(tag) => {
-                // @const creates a local binding - emit as-is
-                self.emit(&format!("const {};", tag.declaration));
+                // @const creates a local binding - emit as-is (with store transformation)
+                let transformed = transform_store_subscriptions(&tag.declaration);
+                self.emit(&format!("const {};", transformed));
             }
             TemplateNode::DebugTag(tag) => {
                 for ident in &tag.identifiers {
+                    let transformed = transform_store_subscriptions(ident);
                     self.expressions.push(TemplateExpression {
-                        expression: ident.to_string(),
+                        expression: transformed.clone(),
                         span: tag.span,
                         context: ExpressionContext::DebugTag,
                     });
-                    self.emit(&format!("{};", ident));
+                    self.emit(&format!("{};", transformed));
                 }
             }
             TemplateNode::IfBlock(block) => {
@@ -299,15 +394,16 @@ impl TemplateContext {
             if directive.kind == DirectiveKind::On {
                 let event_type = get_event_type(element_name, &directive.name);
                 let id = self.next_id();
+                let transformed = transform_store_subscriptions(&expr.expression);
                 self.expressions.push(TemplateExpression {
-                    expression: expr.expression.clone(),
+                    expression: transformed.clone(),
                     span: expr.expression_span,
                     context,
                 });
                 // Generate typed event handler check
                 self.emit(&format!(
                     "const __event_{}: (e: {}) => void = {};",
-                    id, event_type, expr.expression
+                    id, event_type, transformed
                 ));
             } else if directive.kind == DirectiveKind::Bind {
                 // For bindings, check the variable
@@ -320,9 +416,17 @@ impl TemplateContext {
 
     fn generate_component(&mut self, name: &str, attrs: &[Attribute], children: &[TemplateNode]) {
         // Collect props for the component
+        // First pass: collect all prop-like attributes (Normal, Shorthand, Spread)
+        // into a props object, then close it before handling directives
         let id = self.next_id();
         let mut has_props = false;
 
+        // Separate snippets from other children - snippets become inline props
+        let (snippets, other_children): (Vec<_>, Vec<_>) = children
+            .iter()
+            .partition(|node| matches!(node, TemplateNode::SnippetBlock(_)));
+
+        // First pass: build the props object with Normal, Shorthand, and Spread attributes
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {
@@ -333,35 +437,74 @@ impl TemplateContext {
                     self.indent += 1;
                     match &a.value {
                         AttributeValue::Expression(expr) => {
+                            let transformed = transform_store_subscriptions(&expr.expression);
                             self.expressions.push(TemplateExpression {
-                                expression: expr.expression.clone(),
+                                expression: transformed.clone(),
                                 span: expr.expression_span,
                                 context: ExpressionContext::Attribute,
                             });
-                            self.emit(&format!("{}: {},", a.name, expr.expression));
+                            self.emit(&format!("{}: {},", format_prop_name(&a.name), transformed));
                         }
                         AttributeValue::Text(t) => {
-                            self.emit(&format!("{}: \"{}\",", a.name, t.value));
+                            self.emit(&format!("{}: \"{}\",", format_prop_name(&a.name), t.value));
                         }
                         AttributeValue::True => {
-                            self.emit(&format!("{}: true,", a.name));
+                            self.emit(&format!("{}: true,", format_prop_name(&a.name)));
                         }
-                        AttributeValue::Concat(_) => {
-                            // Template string - just emit as string for now
-                            self.generate_attribute_value(&a.value);
+                        AttributeValue::Concat(parts) => {
+                            // Build a template literal for concatenated values
+                            let mut template = String::from("`");
+                            for part in parts {
+                                match part {
+                                    AttributeValuePart::Text(t) => {
+                                        // Escape backticks and ${ in text
+                                        let escaped =
+                                            t.value.replace('`', "\\`").replace("${", "\\${");
+                                        template.push_str(&escaped);
+                                    }
+                                    AttributeValuePart::Expression(expr) => {
+                                        let transformed =
+                                            transform_store_subscriptions(&expr.expression);
+                                        self.expressions.push(TemplateExpression {
+                                            expression: transformed.clone(),
+                                            span: expr.expression_span,
+                                            context: ExpressionContext::Attribute,
+                                        });
+                                        // Normalize multiline expressions to single line
+                                        // to avoid issues with template literals.
+                                        // Remove leading/trailing whitespace on each line and join.
+                                        let normalized: String = transformed
+                                            .lines()
+                                            .map(|line| line.trim())
+                                            .collect::<Vec<_>>()
+                                            .join("");
+                                        template.push_str("${");
+                                        template.push_str(&normalized);
+                                        template.push('}');
+                                    }
+                                }
+                            }
+                            template.push('`');
+                            self.emit(&format!("{}: {},", format_prop_name(&a.name), template));
                         }
                     }
                     self.indent -= 1;
                 }
                 Attribute::Spread(s) => {
-                    self.emit_expression(
-                        &s.expression,
-                        s.expression_span,
-                        ExpressionContext::Spread,
-                    );
-                }
-                Attribute::Directive(d) => {
-                    self.generate_directive(name, d);
+                    // Include spreads in the props object
+                    if !has_props {
+                        self.emit(&format!("const __props_{} = {{", id));
+                        has_props = true;
+                    }
+                    self.indent += 1;
+                    let transformed = transform_store_subscriptions(&s.expression);
+                    self.expressions.push(TemplateExpression {
+                        expression: transformed.clone(),
+                        span: s.expression_span,
+                        context: ExpressionContext::Spread,
+                    });
+                    self.emit(&format!("...{},", transformed));
+                    self.indent -= 1;
                 }
                 Attribute::Shorthand(s) => {
                     if !has_props {
@@ -369,34 +512,70 @@ impl TemplateContext {
                         has_props = true;
                     }
                     self.indent += 1;
+                    let transformed = transform_store_subscriptions(&s.name);
                     self.expressions.push(TemplateExpression {
-                        expression: s.name.to_string(),
+                        expression: transformed.clone(),
                         span: s.span,
                         context: ExpressionContext::Attribute,
                     });
-                    self.emit(&format!("{},", s.name));
+                    self.emit(&format!("{},", transformed));
                     self.indent -= 1;
+                }
+                Attribute::Directive(_) => {
+                    // Directives handled in second pass
                 }
             }
         }
 
-        if has_props {
-            self.emit("};");
-            // Type check that props match the component
-            self.emit(&format!("new {}(__props_{});", name, id));
+        // Add snippets as inline arrow function props
+        // This enables TypeScript to infer parameter types from the component's expected snippet type
+        for snippet_node in &snippets {
+            if let TemplateNode::SnippetBlock(block) = snippet_node {
+                if !has_props {
+                    self.emit(&format!("const __props_{} = {{", id));
+                    has_props = true;
+                }
+                self.indent += 1;
+                // Generate snippet as arrow function: name: (params) => { body }
+                self.emit(&format!("{}: ({}) => {{", block.name, block.parameters));
+                self.indent += 1;
+                self.generate_fragment(&block.body);
+                self.indent -= 1;
+                self.emit("},");
+                self.indent -= 1;
+            }
         }
 
-        self.generate_fragment_nodes(children);
+        // Close the props object if we started one
+        if has_props {
+            // Use type assertion to enable proper type inference for callbacks
+            // The 'as' assertion allows TypeScript to infer parameter types in arrow functions
+            // while not requiring all props to be present
+            self.emit(&format!("}} as ComponentProps<typeof {}>;", name));
+        }
+
+        // Second pass: handle directives separately (bindings, events, etc.)
+        for attr in attrs {
+            if let Attribute::Directive(d) = attr {
+                self.generate_directive(name, d);
+            }
+        }
+
+        // Process non-snippet children
+        for child in &other_children {
+            self.generate_node(child);
+        }
     }
 
     fn generate_if_block(&mut self, block: &IfBlock) {
         // Use real if statements to preserve type narrowing
+        let transformed = transform_store_subscriptions(&block.condition);
         self.expressions.push(TemplateExpression {
-            expression: block.condition.clone(),
+            expression: transformed.clone(),
             span: block.condition_span,
             context: ExpressionContext::IfCondition,
         });
-        self.emit(&format!("if ({}) {{", block.condition));
+        self.emit(&format!("if ({}) {{", transformed));
         self.indent += 1;
         self.generate_fragment(&block.consequent);
         self.indent -= 1;
@@ -423,13 +602,13 @@ impl TemplateContext {
     }
 
     fn generate_if_block_continuation(&mut self, block: &IfBlock) {
+        let transformed = transform_store_subscriptions(&block.condition);
         self.expressions.push(TemplateExpression {
-            expression: block.condition.clone(),
+            expression: transformed.clone(),
             span: block.condition_span,
             context: ExpressionContext::IfCondition,
         });
-        self.output
-            .push_str(&format!("if ({}) {{\n", block.condition));
+        self.output.push_str(&format!("if ({}) {{\n", transformed));
         self.indent += 1;
         self.generate_fragment(&block.consequent);
         self.indent -= 1;
@@ -458,14 +637,15 @@ impl TemplateContext {
         let id = self.next_id();
 
         // Emit the iterable expression
+        let transformed = transform_store_subscriptions(&block.expression);
         self.expressions.push(TemplateExpression {
-            expression: block.expression.clone(),
+            expression: transformed.clone(),
             span: block.expression_span,
             context: ExpressionContext::EachIterable,
         });
 
         // Generate a for loop that introduces the loop variable
-        self.emit(&format!("const __each_{} = {};", id, block.expression));
+        self.emit(&format!("const __each_{} = {};", id, transformed));
 
         // Determine the loop variable pattern
         let item_pattern = &block.context;
@@ -504,13 +684,14 @@ impl TemplateContext {
     fn generate_await_block(&mut self, block: &AwaitBlock) {
         let id = self.next_id();
 
+        let transformed = transform_store_subscriptions(&block.expression);
         self.expressions.push(TemplateExpression {
-            expression: block.expression.clone(),
+            expression: transformed.clone(),
             span: block.expression_span,
             context: ExpressionContext::AwaitPromise,
         });
 
-        self.emit(&format!("const __await_{} = {};", id, block.expression));
+        self.emit(&format!("const __await_{} = {};", id, transformed));
 
         // Pending block
         if let Some(pending) = &block.pending {
@@ -554,8 +735,13 @@ impl TemplateContext {
     }
 
     fn generate_snippet_block(&mut self, block: &SnippetBlock) {
-        // Snippets are local functions
-        self.emit(&format!("function {}({}) {{", block.name, block.parameters));
+        // Snippets are local functions, use unique names to avoid conflicts
+        let id = self.snippet_counter;
+        self.snippet_counter += 1;
+        self.emit(&format!(
+            "function {}_{id}({}) {{",
+            block.name, block.parameters
+        ));
         self.indent += 1;
         self.generate_fragment(&block.body);
         self.indent -= 1;
@@ -684,7 +870,9 @@ mod tests {
     fn test_snippet_block() {
         let result = parse("{#snippet button(text)}<button>{text}</button>{/snippet}");
         let output = generate_template_check(&result.document.fragment);
-        assert!(output.contains("function button(text)"));
+        // Snippet names include counter for uniqueness: button_0, button_1, etc.
+        assert!(output.contains("function button_"));
+        assert!(output.contains("(text)"));
     }
 
     #[test]

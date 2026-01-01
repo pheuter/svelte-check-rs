@@ -38,30 +38,42 @@ impl ComponentExports {
 
     /// Generates the component export line for a TypeScript component.
     ///
+    /// For Svelte 5, components are functions, not classes. We export a const
+    /// with the Component type to enable proper type inference.
+    ///
+    /// Uses a unique internal name `__SvelteComponent_{name}_` to avoid conflicts
+    /// with user imports that might have the same name (e.g., importing `Page`
+    /// while also being in a `+page.svelte` file).
+    ///
     /// Produces output like:
     /// ```text
-    /// export default class Counter extends SvelteComponent<Props, Events, Slots> {}
+    /// declare const __SvelteComponent_Counter_: Component<Props>;
+    /// export default __SvelteComponent_Counter_;
     /// ```
     pub fn generate_typescript_export(&self, component_name: &str) -> String {
+        let internal_name = format!("__SvelteComponent_{}_", component_name);
         format!(
-            "export default class {} extends SvelteComponent<{}, {}, {}> {{}}\n",
-            component_name,
+            "declare const {}: Component<{}>;\nexport default {};\n",
+            internal_name,
             self.props_or_default(),
-            self.events_or_default(),
-            self.slots_or_default()
+            internal_name
         )
     }
 
     /// Generates the component export line for a JavaScript component.
     ///
+    /// Uses a unique internal name to avoid conflicts with user imports.
+    ///
     /// Produces output like:
     /// ```text
-    /// export default class Counter extends SvelteComponent {}
+    /// declare const __SvelteComponent_Counter_: Component<{}>;
+    /// export default __SvelteComponent_Counter_;
     /// ```
     pub fn generate_javascript_export(&self, component_name: &str) -> String {
+        let internal_name = format!("__SvelteComponent_{}_", component_name);
         format!(
-            "export default class {} extends SvelteComponent {{}}\n",
-            component_name
+            "declare const {}: Component<{{}}>;\nexport default {};\n",
+            internal_name, internal_name
         )
     }
 
@@ -156,18 +168,19 @@ mod tests {
             ..Default::default()
         };
         let export_line = exports.generate_typescript_export("Counter");
-        assert!(export_line.contains("class Counter extends SvelteComponent"));
+        // Uses internal name to avoid conflicts with imports
+        assert!(export_line.contains("declare const __SvelteComponent_Counter_: Component<"));
         assert!(export_line.contains("{ count: number }"));
+        assert!(export_line.contains("export default __SvelteComponent_Counter_"));
     }
 
     #[test]
     fn test_generate_javascript_export() {
         let exports = ComponentExports::new();
         let export_line = exports.generate_javascript_export("Button");
-        assert_eq!(
-            export_line,
-            "export default class Button extends SvelteComponent {}\n"
-        );
+        // Uses internal name to avoid conflicts with imports
+        assert!(export_line.contains("declare const __SvelteComponent_Button_: Component<{}>"));
+        assert!(export_line.contains("export default __SvelteComponent_Button_"));
     }
 
     #[test]

@@ -126,8 +126,6 @@ pub enum DiagnosticCode {
     MissingDeclaration,
     /// `invalid-rune-usage`
     InvalidRuneUsage,
-    /// `component-name-lowercase`
-    ComponentNameLowercase,
 }
 
 impl DiagnosticCode {
@@ -171,7 +169,6 @@ impl DiagnosticCode {
 
             // Component hints
             DiagnosticCode::UnusedExportLet => Severity::Hint,
-            DiagnosticCode::ComponentNameLowercase => Severity::Warning,
         }
     }
 
@@ -216,7 +213,6 @@ impl DiagnosticCode {
             DiagnosticCode::UnusedExportLet => "unused-export-let",
             DiagnosticCode::MissingDeclaration => "missing-declaration",
             DiagnosticCode::InvalidRuneUsage => "invalid-rune-usage",
-            DiagnosticCode::ComponentNameLowercase => "component-name-lowercase",
         }
     }
 }

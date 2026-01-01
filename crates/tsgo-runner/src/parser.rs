@@ -135,8 +135,8 @@ fn map_to_original(
     files: &TransformedFiles,
 ) -> (String, u32, u32) {
     // Try to find the transformed file
-    // The file_path may include temp directory prefixes (e.g., ../../../.../file.tsx)
-    // We need to match against our virtual paths which are relative (e.g., file.svelte.tsx)
+    // The file_path may include temp directory prefixes (e.g., /tmp/.../src/App.svelte.tsx)
+    // We need to match against our virtual paths which are relative (e.g., src/App.svelte.tsx)
 
     // First try direct lookup
     let virtual_path = camino::Utf8Path::new(file_path);
@@ -144,12 +144,26 @@ fn map_to_original(
         return do_source_mapping(file, line, column);
     }
 
-    // Try to match by file name (for temp directory paths)
+    // Try to match by suffix - the temp path might be /tmp/.../src/routes/file.svelte.tsx
+    // and we're looking for src/routes/file.svelte.tsx
+    for (key, file) in &files.files {
+        // Check if the tsgo output path ends with our virtual path
+        if file_path.ends_with(key.as_str()) {
+            return do_source_mapping(file, line, column);
+        }
+    }
+
+    // Try to match by filename as a last resort (for very short paths)
+    // but only if there's exactly one match
     if let Some(file_name) = virtual_path.file_name() {
-        for (key, file) in &files.files {
-            if key.file_name() == Some(file_name) {
-                return do_source_mapping(file, line, column);
-            }
+        let matches: Vec<_> = files
+            .files
+            .iter()
+            .filter(|(key, _)| key.file_name() == Some(file_name))
+            .collect();
+
+        if matches.len() == 1 {
+            return do_source_mapping(matches[0].1, line, column);
         }
     }
 

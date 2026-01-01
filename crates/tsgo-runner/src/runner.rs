@@ -153,6 +153,83 @@ impl TsgoRunner {
         Ok(tsgo_path)
     }
 
+    /// Extracts path aliases from the project's tsconfig.json.
+    ///
+    /// This looks for common SvelteKit aliases like `$lib` and converts them
+    /// to paths relative to the project root for use in the temp tsconfig.
+    fn extract_paths_from_tsconfig(&self, tsconfig_path: &Utf8Path) -> String {
+        if !tsconfig_path.exists() {
+            // Default SvelteKit paths
+            return format!(
+                "\"$lib\": [\"{}/src/lib\"],\n      \"$lib/*\": [\"{}/src/lib/*\"],",
+                self.project_root, self.project_root
+            );
+        }
+
+        // Try to read and parse tsconfig
+        let content = match std::fs::read_to_string(tsconfig_path) {
+            Ok(c) => c,
+            Err(_) => {
+                return format!(
+                    "\"$lib\": [\"{}/src/lib\"],\n      \"$lib/*\": [\"{}/src/lib/*\"],",
+                    self.project_root, self.project_root
+                );
+            }
+        };
+
+        // Simple JSON parsing for paths - look for "paths" section
+        // Use a more robust approach: parse with serde_json
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&content);
+        let mut paths_entries = Vec::new();
+
+        if let Ok(json) = parsed {
+            if let Some(compiler_opts) = json.get("compilerOptions") {
+                if let Some(paths) = compiler_opts.get("paths") {
+                    if let Some(paths_obj) = paths.as_object() {
+                        for (key, value) in paths_obj {
+                            if let Some(arr) = value.as_array() {
+                                let resolved: Vec<String> = arr
+                                    .iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(|p| {
+                                        // Convert relative paths to absolute paths from project root
+                                        if p.starts_with("./") || !p.starts_with('/') {
+                                            format!(
+                                                "{}/{}",
+                                                self.project_root,
+                                                p.trim_start_matches("./")
+                                            )
+                                        } else {
+                                            p.to_string()
+                                        }
+                                    })
+                                    .collect();
+                                if !resolved.is_empty() {
+                                    let values_str = resolved
+                                        .iter()
+                                        .map(|s| format!("\"{}\"", s))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    paths_entries.push(format!("\"{}\": [{}]", key, values_str));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no paths found, use default SvelteKit paths
+        if paths_entries.is_empty() {
+            format!(
+                "\"$lib\": [\"{}/src/lib\"],\n      \"$lib/*\": [\"{}/src/lib/*\"],",
+                self.project_root, self.project_root
+            )
+        } else {
+            paths_entries.join(",\n      ") + ","
+        }
+    }
+
     /// Runs type-checking on the transformed files.
     pub async fn check(&self, files: &TransformedFiles) -> Result<Vec<TsgoDiagnostic>, TsgoError> {
         // Verify tsgo exists
@@ -178,46 +255,105 @@ impl TsgoRunner {
             tsx_files.push(full_path.to_string());
         }
 
-        // Create a tsconfig.json in temp dir that extends the project's config
+        // Symlink key directories from project to temp directory for module resolution
+        // Note: Don't symlink 'src' since we write transformed files there
+        let symlinks = [
+            ("node_modules", self.project_root.join("node_modules")),
+            (".svelte-kit", self.project_root.join(".svelte-kit")),
+        ];
+
+        for (name, source) in symlinks {
+            let target = temp_path.join(name);
+            if source.exists() && !target.exists() {
+                #[cfg(unix)]
+                {
+                    std::os::unix::fs::symlink(&source, &target)
+                        .map_err(|e| TsgoError::TempFileFailed(format!("symlink {name}: {e}")))?;
+                }
+                #[cfg(windows)]
+                {
+                    std::os::windows::fs::symlink_dir(&source, &target)
+                        .map_err(|e| TsgoError::TempFileFailed(format!("symlink {name}: {e}")))?;
+                }
+            }
+        }
+
+        // Create a tsconfig.json in temp dir
         let project_tsconfig = self.project_root.join("tsconfig.json");
         let temp_tsconfig = temp_path.join("tsconfig.json");
 
-        // Get paths to project's type dependencies
-        let node_modules = self.project_root.join("node_modules");
-        let svelte_types = node_modules.join("svelte/types");
+        // Build paths configuration for SvelteKit aliases ($lib, etc.)
+        let paths_config = self.extract_paths_from_tsconfig(&project_tsconfig);
 
-        let tsconfig_content = if project_tsconfig.exists() {
-            // Extend the project's tsconfig with proper paths to project dependencies
+        // Check if this is a SvelteKit project with generated tsconfig
+        let svelte_kit_tsconfig = temp_path.join(".svelte-kit/tsconfig.json");
+        let project_src = self.project_root.join("src");
+
+        let tsconfig_content = if svelte_kit_tsconfig.exists() {
+            // Extend SvelteKit's generated tsconfig for proper type resolution
+            // Use absolute paths for $lib to ensure resolution works from temp directory
+            //
+            // Key configuration:
+            // - extends: Inherits SvelteKit's module resolution, paths, and types
+            // - rootDirs: Enables ./$types imports by treating temp root and types folder as equivalent
+            // - paths: Override $lib to use absolute paths since relative paths break in temp dir
             format!(
                 r#"{{
-  "extends": "{}",
+  "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {{
-    "noEmit": true,
-    "skipLibCheck": true,
-    "typeRoots": ["{}/node_modules/@types", "{}"],
-    "types": ["svelte"]
-  }},
-  "include": ["**/*.tsx", "{}/types/index.d.ts"]
-}}"#,
-                project_tsconfig, self.project_root, node_modules, svelte_types
-            )
-        } else {
-            // Create a minimal tsconfig with svelte types
-            format!(
-                r#"{{
-  "compilerOptions": {{
-    "target": "ES2020",
-    "module": "ESNext",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "jsx": "react-jsx",
-    "typeRoots": ["{}/node_modules/@types", "{}"],
-    "types": ["svelte"]
+    "jsx": "preserve",
+    "jsxImportSource": "svelte",
+    "checkJs": false,
+    "verbatimModuleSyntax": false,
+    "rootDirs": [
+      ".",
+      "./.svelte-kit/types"
+    ],
+    "paths": {{
+      {}
+      "$lib": ["{}/lib"],
+      "$lib/*": ["{}/lib/*"]
+    }}
   }},
-  "include": ["**/*.tsx", "{}/types/index.d.ts"]
+  "include": [
+    ".svelte-kit/ambient.d.ts",
+    ".svelte-kit/non-ambient.d.ts",
+    ".svelte-kit/types/**/$types.d.ts",
+    "**/*.tsx"
+  ]
 }}"#,
-                self.project_root, node_modules, svelte_types
+                paths_config, project_src, project_src
+            )
+        } else {
+            // Fallback for non-SvelteKit projects
+            format!(
+                r#"{{
+  "compilerOptions": {{
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "preserve",
+    "jsxImportSource": "svelte",
+    "allowJs": true,
+    "checkJs": false,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "paths": {{
+      {}
+      "$lib": ["{}/lib"],
+      "$lib/*": ["{}/lib/*"]
+    }}
+  }},
+  "include": ["**/*.tsx"]
+}}"#,
+                paths_config, project_src, project_src
             )
         };
 

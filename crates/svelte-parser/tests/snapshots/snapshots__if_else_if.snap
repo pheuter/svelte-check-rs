@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
-assertion_line: 11
+assertion_line: 9
 expression: output
 ---
 Source:
@@ -67,14 +67,14 @@ SvelteDocument {
                         ElseIf(
                             IfBlock {
                                 span: Span {
-                                    start: 56,
+                                    start: 59,
                                     end: 126,
                                 },
                                 condition_span: Span {
-                                    start: 56,
+                                    start: 59,
                                     end: 77,
                                 },
-                                condition: "if status === 'error'",
+                                condition: "status === 'error'",
                                 consequent: Fragment {
                                     nodes: [
                                         Element(

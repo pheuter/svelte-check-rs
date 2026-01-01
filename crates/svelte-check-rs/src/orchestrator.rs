@@ -159,6 +159,19 @@ async fn run_single_check(
 
                 let transform_result = transform(&parse_result.document, transform_options);
 
+                // If emit_tsx is enabled and this file matches the --file filter, print TSX
+                if args.emit_tsx {
+                    if let Some(ref filter_file) = args.file {
+                        let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                        if relative_path.as_str() == filter_file.as_str() {
+                            eprintln!(
+                                "=== TSX for {} ===\n{}",
+                                relative_path, transform_result.tsx_code
+                            );
+                        }
+                    }
+                }
+
                 // Create the virtual path (original.svelte -> original.svelte.tsx)
                 let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
                 let virtual_path = Utf8PathBuf::from(format!("{}.tsx", relative_path));
