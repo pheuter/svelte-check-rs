@@ -182,33 +182,43 @@ impl TsgoRunner {
         let project_tsconfig = self.project_root.join("tsconfig.json");
         let temp_tsconfig = temp_path.join("tsconfig.json");
 
+        // Get paths to project's type dependencies
+        let node_modules = self.project_root.join("node_modules");
+        let svelte_types = node_modules.join("svelte/types");
+
         let tsconfig_content = if project_tsconfig.exists() {
-            // Extend the project's tsconfig
+            // Extend the project's tsconfig with proper paths to project dependencies
             format!(
                 r#"{{
   "extends": "{}",
   "compilerOptions": {{
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "typeRoots": ["{}/node_modules/@types", "{}"],
+    "types": ["svelte"]
   }},
-  "include": ["**/*.tsx"]
+  "include": ["**/*.tsx", "{}/types/index.d.ts"]
 }}"#,
-                project_tsconfig
+                project_tsconfig, self.project_root, node_modules, svelte_types
             )
         } else {
-            // Create a minimal tsconfig
-            r#"{
-  "compilerOptions": {
+            // Create a minimal tsconfig with svelte types
+            format!(
+                r#"{{
+  "compilerOptions": {{
     "target": "ES2020",
     "module": "ESNext",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "jsx": "react-jsx"
-  },
-  "include": ["**/*.tsx"]
-}"#
-            .to_string()
+    "jsx": "react-jsx",
+    "typeRoots": ["{}/node_modules/@types", "{}"],
+    "types": ["svelte"]
+  }},
+  "include": ["**/*.tsx", "{}/types/index.d.ts"]
+}}"#,
+                self.project_root, node_modules, svelte_types
+            )
         };
 
         std::fs::write(&temp_tsconfig, &tsconfig_content)

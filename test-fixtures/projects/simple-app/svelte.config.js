@@ -1,4 +1,13 @@
-// Minimal Svelte configuration
+// SvelteKit configuration with aliases
 export default {
-	// Add preprocessors here if needed
+	kit: {
+		alias: {
+			'$lib': './src/lib',
+			'$components': './src/components'
+		}
+	},
+	compilerOptions: {
+		runes: true
+	},
+	extensions: ['.svelte']
 };

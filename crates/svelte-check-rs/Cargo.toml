@@ -28,6 +28,9 @@ globset.workspace = true
 notify.workspace = true
 camino.workspace = true
 rayon.workspace = true
+swc_ecma_parser.workspace = true
+swc_ecma_ast.workspace = true
+swc_common.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

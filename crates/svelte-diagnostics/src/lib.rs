@@ -25,6 +25,7 @@ pub mod component;
 pub mod css;
 mod diagnostic;
 
+pub use component::ComponentCheckOptions;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 
 use svelte_parser::SvelteDocument;
@@ -38,6 +39,8 @@ pub struct DiagnosticOptions {
     pub css: bool,
     /// Whether to run component checks.
     pub component: bool,
+    /// The filename of the component (for naming checks).
+    pub filename: Option<String>,
 }
 
 impl DiagnosticOptions {
@@ -47,7 +50,14 @@ impl DiagnosticOptions {
             a11y: true,
             css: true,
             component: true,
+            filename: None,
         }
+    }
+
+    /// Sets the filename for component checks.
+    pub fn with_filename(mut self, filename: impl Into<String>) -> Self {
+        self.filename = Some(filename.into());
+        self
     }
 }
 
@@ -64,7 +74,10 @@ pub fn check(doc: &SvelteDocument, options: DiagnosticOptions) -> Vec<Diagnostic
     }
 
     if options.component {
-        diagnostics.extend(component::check(doc));
+        let component_options = ComponentCheckOptions {
+            filename: options.filename.clone(),
+        };
+        diagnostics.extend(component::check(doc, &component_options));
     }
 
     // Sort by position

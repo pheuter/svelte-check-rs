@@ -27,6 +27,9 @@ tsgo-runner = { path = "crates/tsgo-runner" }
 logos = "0.14"
 rowan = "0.15"
 text-size = "1.1"
+swc_ecma_parser = "32.0"
+swc_ecma_ast = "19.0"
+swc_common = { version = "18.0", features = ["sourcemap"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

@@ -528,3 +528,22 @@ fn test_special_characters_in_strings() {
 <p>{message}</p>"#,
     );
 }
+
+#[test]
+fn test_layout_with_children() {
+    transform_snapshot_with_filename(
+        "layout_children",
+        "+layout.svelte",
+        r#"<script lang="ts">
+	import favicon from '$lib/assets/favicon.svg';
+
+	let { children } = $props();
+</script>
+
+<svelte:head>
+	<link rel="icon" href={favicon} />
+</svelte:head>
+
+{@render children()}"#,
+    );
+}

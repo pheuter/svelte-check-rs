@@ -79,12 +79,53 @@ impl ComponentExports {
 ///
 /// Given a path like `/path/to/Counter.svelte`, returns `"Counter"`.
 /// Returns `"Component"` if no valid name can be extracted.
+/// Sanitizes the name to be a valid TypeScript identifier.
 pub fn component_name_from_path(path: &str) -> String {
-    Path::new(path)
+    let name = Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| "Component".to_string())
+        .unwrap_or_else(|| "Component".to_string());
+
+    sanitize_component_name(&name)
+}
+
+/// Sanitizes a component name to be a valid TypeScript identifier.
+/// - Removes leading invalid characters (like `+` in `+page.svelte`)
+/// - Converts to PascalCase
+/// - Replaces invalid characters with underscores
+fn sanitize_component_name(name: &str) -> String {
+    // Skip leading non-alphabetic characters (like `+` in SvelteKit files)
+    let name = name.trim_start_matches(|c: char| !c.is_alphabetic());
+
+    if name.is_empty() {
+        return "Component".to_string();
+    }
+
+    // Convert to PascalCase and remove invalid characters
+    let mut result = String::with_capacity(name.len());
+    let mut capitalize_next = true;
+
+    for c in name.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            if capitalize_next {
+                result.push(c.to_ascii_uppercase());
+                capitalize_next = false;
+            } else {
+                result.push(c);
+            }
+        } else if c == '-' || c == '.' {
+            // These trigger capitalization of the next character
+            capitalize_next = true;
+        }
+        // Other characters are skipped
+    }
+
+    if result.is_empty() {
+        "Component".to_string()
+    } else {
+        result
+    }
 }
 
 #[cfg(test)]
@@ -137,6 +178,22 @@ mod tests {
             "MyComponent"
         );
         assert_eq!(component_name_from_path(""), "Component");
+
+        // SvelteKit special files
+        assert_eq!(component_name_from_path("+page.svelte"), "Page");
+        assert_eq!(component_name_from_path("+layout.svelte"), "Layout");
+        assert_eq!(component_name_from_path("+error.svelte"), "Error");
+        assert_eq!(component_name_from_path("+page.server.ts"), "PageServer");
+    }
+
+    #[test]
+    fn test_sanitize_component_name() {
+        assert_eq!(sanitize_component_name("Counter"), "Counter");
+        assert_eq!(sanitize_component_name("+page"), "Page");
+        assert_eq!(sanitize_component_name("+layout"), "Layout");
+        assert_eq!(sanitize_component_name("my-component"), "MyComponent");
+        assert_eq!(sanitize_component_name("+++"), "Component");
+        assert_eq!(sanitize_component_name(""), "Component");
     }
 
     #[test]

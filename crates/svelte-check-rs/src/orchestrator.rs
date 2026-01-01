@@ -105,11 +105,12 @@ async fn run_single_check(
     let error_count = AtomicUsize::new(0);
     let warning_count = AtomicUsize::new(0);
 
-    // Determine diagnostic options
-    let diag_options = DiagnosticOptions {
+    // Base diagnostic options (filename will be set per-file)
+    let base_diag_options = DiagnosticOptions {
         a11y: args.include_svelte(),
         css: args.include_css(),
         component: args.include_svelte(),
+        filename: None,
     };
 
     // Shared container for transformed files (thread-safe)
@@ -142,8 +143,11 @@ async fn run_single_check(
                 ));
             }
 
-            // Run Svelte diagnostics
-            let svelte_diags = check_svelte(&parse_result.document, diag_options.clone());
+            // Run Svelte diagnostics with filename for component checks
+            let file_diag_options = base_diag_options
+                .clone()
+                .with_filename(file_path.to_string());
+            let svelte_diags = check_svelte(&parse_result.document, file_diag_options);
             all_diagnostics.extend(svelte_diags);
 
             // Transform for TypeScript checking (if JS diagnostics enabled)
