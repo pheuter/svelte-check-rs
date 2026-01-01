@@ -1,0 +1,18 @@
+[package]
+name = "source-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Source position tracking and mapping for Svelte-Check-RS"
+
+[dependencies]
+text-size.workspace = true
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde", "text-size/serde"]

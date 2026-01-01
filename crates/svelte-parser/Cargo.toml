@@ -1,0 +1,24 @@
+[package]
+name = "svelte-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Svelte 5 parser with lexer and AST types"
+
+[dependencies]
+source-map.workspace = true
+logos.workspace = true
+rowan.workspace = true
+text-size.workspace = true
+thiserror.workspace = true
+smol_str.workspace = true
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta.workspace = true
+pretty_assertions.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde", "source-map/serde", "smol_str/serde"]

@@ -1,0 +1,17 @@
+[package]
+name = "svelte-transformer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Svelte to TSX transformation for type-checking"
+
+[dependencies]
+source-map.workspace = true
+svelte-parser.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+pretty_assertions.workspace = true

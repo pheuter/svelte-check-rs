@@ -1,0 +1,18 @@
+[package]
+name = "svelte-diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Svelte-specific diagnostics (a11y, CSS, component validation)"
+
+[dependencies]
+source-map.workspace = true
+svelte-parser.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+pretty_assertions.workspace = true

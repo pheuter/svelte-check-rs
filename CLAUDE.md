@@ -1,0 +1,35 @@
+# CLAUDE.md
+
+Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**). See `ARCHITECTURE.md` for detailed design.
+
+## Commands
+
+```bash
+cargo build                    # Build all crates
+cargo test                     # Run all tests
+cargo test -p <crate>          # Test specific crate (svelte-parser, source-map, etc.)
+cargo insta test               # Run tests with snapshot updates
+cargo insta review             # Review/approve snapshots
+cargo clippy --all-targets     # Lint
+cargo fmt                      # Format (always run before committing)
+cargo run -p svelte-check-rs -- --workspace ./path/to/project
+```
+
+## Conventions
+
+**Git**: Use [Conventional Commits](https://www.conventionalcommits.org/).
+- Types: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`
+- Scopes: `parser`, `transformer`, `diagnostics`, `a11y`, `css`, `cli`, `tsgo`
+- Example: `feat(parser): add support for snippet blocks`
+
+**Code**:
+- Never panic on user input - always return `Result` with errors
+- Use `SmolStr` for identifiers, `String` for large content
+- All AST nodes must have a `Span`
+- Prefer exhaustive pattern matching over `_` wildcards for enums
+- Use `insta` snapshot tests for parser/transformer output
+
+## References
+
+- [Svelte 5 Docs](https://svelte.dev/docs)
+- [svelte-check source](https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check)

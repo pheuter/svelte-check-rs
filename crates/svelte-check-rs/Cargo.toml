@@ -1,0 +1,35 @@
+[package]
+name = "svelte-check-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "High-performance Svelte type-checker and linter"
+
+[[bin]]
+name = "svelte-check-rs"
+path = "src/main.rs"
+
+[dependencies]
+source-map.workspace = true
+svelte-parser.workspace = true
+svelte-transformer.workspace = true
+svelte-diagnostics.workspace = true
+tsgo-runner.workspace = true
+
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+miette.workspace = true
+walkdir.workspace = true
+globset.workspace = true
+notify.workspace = true
+camino.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+pretty_assertions.workspace = true
+text-size.workspace = true
