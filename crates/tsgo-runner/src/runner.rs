@@ -231,9 +231,10 @@ impl TsgoRunner {
         }
     }
 
-    /// Symlinks source files from the project to the temp directory.
-    /// This enables TypeScript to resolve relative imports like `./schema.ts`.
-    fn symlink_source_files(project_src: &Utf8Path, temp_src: &Utf8Path) -> Result<(), TsgoError> {
+    /// Symlinks the entire source directory tree from the project to the temp directory.
+    /// This preserves the exact directory structure so all relative imports resolve correctly.
+    /// .svelte files are skipped since we write transformed .tsx versions.
+    fn symlink_source_tree(project_src: &Utf8Path, temp_src: &Utf8Path) -> Result<(), TsgoError> {
         if !project_src.exists() {
             return Ok(());
         }
@@ -244,32 +245,28 @@ impl TsgoRunner {
                 None => continue,
             };
 
-            // Skip directories - we create them as needed
-            if entry.file_type().is_dir() {
-                continue;
-            }
-
-            // Skip .svelte files - we write transformed versions
-            if path.extension() == Some("svelte") {
-                continue;
-            }
-
-            // Calculate relative path and target
+            // Calculate relative path
             let relative = match path.strip_prefix(project_src) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
             let target = temp_src.join(relative);
 
-            // Skip if target already exists (transformed file takes precedence)
-            if target.exists() {
+            // Create directories
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target)
+                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
                 continue;
             }
 
-            // Create parent directories
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+            // Skip .svelte files - we write transformed .tsx versions
+            if path.extension() == Some("svelte") {
+                continue;
+            }
+
+            // Skip if target already exists (transformed file takes precedence)
+            if target.exists() {
+                continue;
             }
 
             // Symlink the file
@@ -335,12 +332,11 @@ impl TsgoRunner {
 
         let project_src = self.project_root.join("src");
 
-        // Symlink lib directory for relative import resolution
-        // Only symlink lib (not routes) to avoid checking SvelteKit route handlers
-        // which have their own type requirements that may not be satisfied
-        let project_lib = self.project_root.join("src/lib");
-        let temp_lib = temp_path.join("src/lib");
-        Self::symlink_source_files(&project_lib, &temp_lib)?;
+        // Symlink the entire source tree for proper module resolution
+        // This preserves directory structure so relative imports like `./schema` work
+        // and SvelteKit route files (+page.ts, etc.) can access ./$types
+        let temp_src = temp_path.join("src");
+        Self::symlink_source_tree(&project_src, &temp_src)?;
 
         // Create a tsconfig.json in temp dir
         let project_tsconfig = self.project_root.join("tsconfig.json");
@@ -364,18 +360,12 @@ impl TsgoRunner {
                 r#"{{
   "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {{
-    "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "jsx": "preserve",
     "jsxImportSource": "svelte",
     "checkJs": false,
     "verbatimModuleSyntax": false,
-    "rootDirs": [
-      ".",
-      "./.svelte-kit/types",
-      "{}"
-    ],
     "paths": {{
       {}
       "$lib": ["{}/lib"],
@@ -386,10 +376,11 @@ impl TsgoRunner {
     ".svelte-kit/ambient.d.ts",
     ".svelte-kit/non-ambient.d.ts",
     ".svelte-kit/types/**/$types.d.ts",
-    "**/*.tsx"
+    "**/*.tsx",
+    "**/*.ts"
   ]
 }}"#,
-                project_src, paths_config, project_src, project_src
+                paths_config, project_src, project_src
             )
         } else {
             // Fallback for non-SvelteKit projects

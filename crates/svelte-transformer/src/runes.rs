@@ -92,7 +92,8 @@ enum ScanContext {
 /// Transform store subscriptions in an expression.
 ///
 /// In Svelte, `$storeName` is shorthand for subscribing to a store and getting its value.
-/// For TypeScript compatibility, we transform `$storeName` to `storeName`.
+/// We transform `$storeName` to `__svelte_store_get(storeName)` so TypeScript sees the
+/// dereferenced value type, not the store type.
 ///
 /// This only applies to store subscriptions (identifier after $), not to:
 /// - Runes like `$state()`, `$derived()` (have parentheses)
@@ -113,22 +114,35 @@ fn transform_store_subscriptions(expr: &str) -> String {
 
                 // Check if followed by valid identifier start
                 if next.is_ascii_alphabetic() || next == '_' {
-                    // Peek ahead to see if this is followed by '(' (would be a rune)
-                    let rest: String = chars.clone().collect();
-                    let id_end = rest
-                        .chars()
-                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                        .count();
-
-                    let after_id = &rest[id_end..];
-                    let next_non_ws = after_id.chars().find(|c| !c.is_whitespace());
-
-                    // If followed by ( or <, it's a rune - keep the $
-                    if next_non_ws == Some('(') || next_non_ws == Some('<') {
-                        result.push(ch);
+                    // Collect the identifier
+                    let mut identifier = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            identifier.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
                     }
-                    // Otherwise it's a store subscription - skip the $
-                    // The identifier will be added in subsequent iterations
+
+                    // Peek ahead to see what follows
+                    let rest: String = chars.clone().collect();
+                    let next_non_ws = rest.chars().find(|c| !c.is_whitespace());
+
+                    // If followed by ( or <, it's a rune - keep the $identifier
+                    // If followed by :, it's an object property key (e.g., { $or: ... })
+                    if next_non_ws == Some('(')
+                        || next_non_ws == Some('<')
+                        || next_non_ws == Some(':')
+                    {
+                        result.push(ch);
+                        result.push_str(&identifier);
+                    } else {
+                        // It's a store subscription - wrap with helper function
+                        result.push_str("__svelte_store_get(");
+                        result.push_str(&identifier);
+                        result.push(')');
+                    }
                 } else {
                     result.push(ch);
                 }
@@ -278,9 +292,16 @@ impl<'a> RuneScanner<'a> {
                 } else {
                     // Check if this is a store subscription like $formData
                     // In Svelte, $storeName auto-subscribes to the store
-                    // Transform to just storeName for TypeScript compatibility
-                    if self.is_store_subscription(pos) {
-                        // Skip the $ - the identifier will be pushed by subsequent iterations
+                    // Transform to __svelte_store_get(storeName) for proper TypeScript typing
+                    if let Some(identifier) = self.get_store_identifier(pos) {
+                        // Skip the identifier characters ($ is already consumed)
+                        for _ in 0..identifier.len() {
+                            self.chars.next();
+                        }
+                        // Emit the helper wrapper
+                        self.push_str("__svelte_store_get(");
+                        self.push_str(&identifier);
+                        self.push_char(')');
                     } else {
                         self.push_char(ch);
                     }
@@ -597,36 +618,37 @@ impl<'a> RuneScanner<'a> {
         None
     }
 
-    /// Check if the $ at the given position is a store subscription.
+    /// Get the store identifier if the $ at the given position is a store subscription.
     ///
-    /// Store subscriptions look like `$storeName` where the $ is followed by
-    /// an identifier (letter, underscore, or subsequent alphanumeric chars).
-    /// They are NOT followed by `(` which would make them runes.
-    fn is_store_subscription(&self, pos: usize) -> bool {
+    /// Returns `Some(identifier)` if this is a store subscription like `$formData`,
+    /// or `None` if it's a rune or not a valid store reference.
+    fn get_store_identifier(&self, pos: usize) -> Option<String> {
         let remaining = &self.source[pos..];
 
         // Must start with $ followed by valid identifier start
         if !remaining.starts_with('$') {
-            return false;
+            return None;
         }
 
         let after_dollar = &remaining[1..];
         if after_dollar.is_empty() {
-            return false;
+            return None;
         }
 
         let first_char = after_dollar.chars().next().unwrap();
 
         // Valid identifier start: letter or underscore
         if !first_char.is_ascii_alphabetic() && first_char != '_' {
-            return false;
+            return None;
         }
 
-        // Find end of identifier
-        let id_len = after_dollar
+        // Find end of identifier and collect it
+        let identifier: String = after_dollar
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .count();
+            .collect();
+
+        let id_len = identifier.len();
 
         // Check what follows the identifier - should NOT be `(` (that would be a rune)
         let after_id = &after_dollar[id_len..];
@@ -634,11 +656,12 @@ impl<'a> RuneScanner<'a> {
 
         // If followed by `(`, it's a rune pattern (already handled), not a store
         // If followed by `<` then `(`, could be a generic rune like $props<Type>()
-        if next_non_ws == Some('(') || next_non_ws == Some('<') {
-            return false;
+        // If followed by `:`, it's an object property key (e.g., { $or: ... })
+        if next_non_ws == Some('(') || next_non_ws == Some('<') || next_non_ws == Some(':') {
+            return None;
         }
 
-        true
+        Some(identifier)
     }
 
     /// Apply the transformation for a matched rune.
