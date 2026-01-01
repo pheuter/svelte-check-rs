@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use thiserror::Error;
 use tokio::process::Command;
+use walkdir::WalkDir;
 
 /// Error types for tsgo runner.
 #[derive(Debug, Error)]
@@ -230,6 +231,60 @@ impl TsgoRunner {
         }
     }
 
+    /// Symlinks source files from the project to the temp directory.
+    /// This enables TypeScript to resolve relative imports like `./schema.ts`.
+    fn symlink_source_files(project_src: &Utf8Path, temp_src: &Utf8Path) -> Result<(), TsgoError> {
+        if !project_src.exists() {
+            return Ok(());
+        }
+
+        for entry in WalkDir::new(project_src).into_iter().filter_map(|e| e.ok()) {
+            let path = match Utf8Path::from_path(entry.path()) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Skip directories - we create them as needed
+            if entry.file_type().is_dir() {
+                continue;
+            }
+
+            // Skip .svelte files - we write transformed versions
+            if path.extension() == Some("svelte") {
+                continue;
+            }
+
+            // Calculate relative path and target
+            let relative = match path.strip_prefix(project_src) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let target = temp_src.join(relative);
+
+            // Skip if target already exists (transformed file takes precedence)
+            if target.exists() {
+                continue;
+            }
+
+            // Create parent directories
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+            }
+
+            // Symlink the file
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(path, &target)
+                .map_err(|e| TsgoError::TempFileFailed(format!("symlink {}: {}", relative, e)))?;
+
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(path, &target)
+                .map_err(|e| TsgoError::TempFileFailed(format!("symlink {}: {}", relative, e)))?;
+        }
+
+        Ok(())
+    }
+
     /// Runs type-checking on the transformed files.
     pub async fn check(&self, files: &TransformedFiles) -> Result<Vec<TsgoDiagnostic>, TsgoError> {
         // Verify tsgo exists
@@ -278,6 +333,15 @@ impl TsgoRunner {
             }
         }
 
+        let project_src = self.project_root.join("src");
+
+        // Symlink lib directory for relative import resolution
+        // Only symlink lib (not routes) to avoid checking SvelteKit route handlers
+        // which have their own type requirements that may not be satisfied
+        let project_lib = self.project_root.join("src/lib");
+        let temp_lib = temp_path.join("src/lib");
+        Self::symlink_source_files(&project_lib, &temp_lib)?;
+
         // Create a tsconfig.json in temp dir
         let project_tsconfig = self.project_root.join("tsconfig.json");
         let temp_tsconfig = temp_path.join("tsconfig.json");
@@ -287,7 +351,6 @@ impl TsgoRunner {
 
         // Check if this is a SvelteKit project with generated tsconfig
         let svelte_kit_tsconfig = temp_path.join(".svelte-kit/tsconfig.json");
-        let project_src = self.project_root.join("src");
 
         let tsconfig_content = if svelte_kit_tsconfig.exists() {
             // Extend SvelteKit's generated tsconfig for proper type resolution
@@ -310,7 +373,8 @@ impl TsgoRunner {
     "verbatimModuleSyntax": false,
     "rootDirs": [
       ".",
-      "./.svelte-kit/types"
+      "./.svelte-kit/types",
+      "{}"
     ],
     "paths": {{
       {}
@@ -325,7 +389,7 @@ impl TsgoRunner {
     "**/*.tsx"
   ]
 }}"#,
-                paths_config, project_src, project_src
+                project_src, paths_config, project_src, project_src
             )
         } else {
             // Fallback for non-SvelteKit projects
@@ -345,6 +409,10 @@ impl TsgoRunner {
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
+    "rootDirs": [
+      ".",
+      "{}"
+    ],
     "paths": {{
       {}
       "$lib": ["{}/lib"],
@@ -353,7 +421,7 @@ impl TsgoRunner {
   }},
   "include": ["**/*.tsx"]
 }}"#,
-                paths_config, project_src, project_src
+                project_src, paths_config, project_src, project_src
             )
         };
 

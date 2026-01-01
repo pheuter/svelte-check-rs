@@ -181,8 +181,6 @@ struct TemplateContext {
     indent: usize,
     /// Counter for generating unique variable names.
     counter: usize,
-    /// Counter for generating unique snippet function names.
-    snippet_counter: usize,
 }
 
 impl TemplateContext {
@@ -192,7 +190,6 @@ impl TemplateContext {
             expressions: Vec::new(),
             indent: 1,
             counter: 0,
-            snippet_counter: 0,
         }
     }
 
@@ -735,13 +732,9 @@ impl TemplateContext {
     }
 
     fn generate_snippet_block(&mut self, block: &SnippetBlock) {
-        // Snippets are local functions, use unique names to avoid conflicts
-        let id = self.snippet_counter;
-        self.snippet_counter += 1;
-        self.emit(&format!(
-            "function {}_{id}({}) {{",
-            block.name, block.parameters
-        ));
+        // Snippets are local functions, use original names so @render tags can call them
+        // JavaScript's block scoping handles uniqueness when snippets appear in different scopes
+        self.emit(&format!("function {}({}) {{", block.name, block.parameters));
         self.indent += 1;
         self.generate_fragment(&block.body);
         self.indent -= 1;
@@ -870,9 +863,8 @@ mod tests {
     fn test_snippet_block() {
         let result = parse("{#snippet button(text)}<button>{text}</button>{/snippet}");
         let output = generate_template_check(&result.document.fragment);
-        // Snippet names include counter for uniqueness: button_0, button_1, etc.
-        assert!(output.contains("function button_"));
-        assert!(output.contains("(text)"));
+        // Snippet functions use original names so @render tags can call them
+        assert!(output.contains("function button(text)"));
     }
 
     #[test]
