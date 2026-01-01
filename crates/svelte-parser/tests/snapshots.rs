@@ -4,9 +4,7 @@ fn parse_snapshot(name: &str, source: &str) {
     let result = parse(source);
     let output = format!(
         "Source:\n{}\n\nErrors: {:?}\n\nAST:\n{:#?}",
-        source,
-        result.errors,
-        result.document
+        source, result.errors, result.document
     );
     insta::assert_snapshot!(name, output);
 }
@@ -110,7 +108,10 @@ fn test_snapshot_snippet_and_render() {
 
 #[test]
 fn test_snapshot_special_tags() {
-    parse_snapshot("special_tags", r#"{@html content}{@const x = 1}{@debug foo}"#);
+    parse_snapshot(
+        "special_tags",
+        r#"{@html content}{@const x = 1}{@debug foo}"#,
+    );
 }
 
 #[test]

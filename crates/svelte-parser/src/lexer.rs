@@ -637,10 +637,7 @@ mod tests {
     fn test_colon_token() {
         // a: matches as NamespacedIdent, then b as Ident
         let tokens = tokenize("a:b");
-        assert_eq!(
-            tokens,
-            vec![TokenKind::NamespacedIdent, TokenKind::Ident]
-        );
+        assert_eq!(tokens, vec![TokenKind::NamespacedIdent, TokenKind::Ident]);
     }
 
     #[test]

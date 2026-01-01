@@ -841,8 +841,7 @@ impl<'src> Parser<'src> {
                         expression_span: expr_span,
                         expression: expr,
                     })
-                } else if self.check(TokenKind::DoubleQuote) || self.check(TokenKind::SingleQuote)
-                {
+                } else if self.check(TokenKind::DoubleQuote) || self.check(TokenKind::SingleQuote) {
                     // Handle quoted string values like style:color="red"
                     let quote = if self.check(TokenKind::DoubleQuote) {
                         "\""
@@ -1193,8 +1192,8 @@ impl<'src> Parser<'src> {
             })
         } else if self.check_source("{:else}") {
             self.eat(TokenKind::LBraceColon); // {:
-            self.eat(TokenKind::Else);        // else
-            self.eat(TokenKind::RBrace);      // }
+            self.eat(TokenKind::Else); // else
+            self.eat(TokenKind::RBrace); // }
             let else_body = self.parse_block_children(&["{/if"]);
             Some(ElseBranch::Else(else_body))
         } else {
@@ -1326,8 +1325,8 @@ impl<'src> Parser<'src> {
         // Check for else
         let fallback = if self.check_source("{:else}") {
             self.eat(TokenKind::LBraceColon); // {:
-            self.eat(TokenKind::Else);        // else
-            self.eat(TokenKind::RBrace);      // }
+            self.eat(TokenKind::Else); // else
+            self.eat(TokenKind::RBrace); // }
             Some(self.parse_block_children(&["{/each"]))
         } else {
             None
@@ -1387,7 +1386,7 @@ impl<'src> Parser<'src> {
             let catch_block = if self.check_source("{:catch") {
                 let catch_start = self.current().span.start;
                 self.eat(TokenKind::LBraceColon); // {:
-                self.eat(TokenKind::Catch);       // catch
+                self.eat(TokenKind::Catch); // catch
                 let (error_name, _) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
                 let catch_body = self.parse_block_children(&["{/await"]);
@@ -1424,7 +1423,7 @@ impl<'src> Parser<'src> {
             let then_block = if self.check_source("{:then") {
                 let then_start = self.current().span.start;
                 self.eat(TokenKind::LBraceColon); // {:
-                self.eat(TokenKind::Then);        // then
+                self.eat(TokenKind::Then); // then
                 let (value_name, _) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
                 let then_body = self.parse_block_children(&["{:catch", "{/await"]);
@@ -1445,7 +1444,7 @@ impl<'src> Parser<'src> {
             let catch_block = if self.check_source("{:catch") {
                 let catch_start = self.current().span.start;
                 self.eat(TokenKind::LBraceColon); // {:
-                self.eat(TokenKind::Catch);       // catch
+                self.eat(TokenKind::Catch); // catch
                 let (error_name, _) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
                 let catch_body = self.parse_block_children(&["{/await"]);
@@ -1969,7 +1968,10 @@ mod tests {
         if let TemplateNode::Comment(comment) = &result.document.fragment.nodes[0] {
             assert_eq!(comment.data.trim(), "This is a comment");
         } else {
-            panic!("Expected Comment, got {:?}", result.document.fragment.nodes[0]);
+            panic!(
+                "Expected Comment, got {:?}",
+                result.document.fragment.nodes[0]
+            );
         }
     }
 
@@ -2033,11 +2035,7 @@ mod tests {
 
     #[test]
     fn test_parse_expression_only_in_attribute() {
-        let result = Parser::new(
-            "<div class=\"{dynamic}\"/>",
-            ParseOptions::default(),
-        )
-        .parse();
+        let result = Parser::new("<div class=\"{dynamic}\"/>", ParseOptions::default()).parse();
         assert!(result.errors.is_empty());
 
         if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {

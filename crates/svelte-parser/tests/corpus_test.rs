@@ -149,16 +149,16 @@ fn test_new_test_fixtures() {
 fn test_edge_cases() {
     // Test various edge cases that shouldn't panic
     let edge_cases = [
-        "", // Empty file
-        "   ", // Whitespace only
-        "<div>", // Unclosed tag
-        "{#if", // Incomplete block
-        "<!-- comment", // Unclosed comment
-        "{expression", // Unclosed expression
-        "<div attr=", // Incomplete attribute
-        "<div attr=\"", // Unclosed quote
+        "",              // Empty file
+        "   ",           // Whitespace only
+        "<div>",         // Unclosed tag
+        "{#if",          // Incomplete block
+        "<!-- comment",  // Unclosed comment
+        "{expression",   // Unclosed expression
+        "<div attr=",    // Incomplete attribute
+        "<div attr=\"",  // Unclosed quote
         "{#each items}", // Missing as pattern
-        "{#await}", // Missing expression
+        "{#await}",      // Missing expression
     ];
 
     for (i, source) in edge_cases.iter().enumerate() {

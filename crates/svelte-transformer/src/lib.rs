@@ -26,10 +26,17 @@
 //! println!("TSX output:\n{}", result.tsx_code);
 //! ```
 
+mod props;
 mod runes;
 mod template;
 mod transform;
 mod types;
 
+pub use props::{extract_props_info, generate_props_type, PropProperty, PropsInfo};
+pub use runes::{transform_runes, RuneInfo, RuneKind, RuneMapping, RuneTransformResult};
+pub use template::{
+    generate_template_check, generate_template_check_with_spans, ExpressionContext,
+    TemplateCheckResult, TemplateExpression,
+};
 pub use transform::{transform, TransformOptions, TransformResult};
-pub use types::ComponentExports;
+pub use types::{component_name_from_path, ComponentExports};

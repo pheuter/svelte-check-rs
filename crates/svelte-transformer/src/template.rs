@@ -1,140 +1,632 @@
 //! Template to TSX transformation.
 //!
 //! Converts Svelte template nodes to TSX for type-checking expressions.
+//! This module generates proper TypeScript that preserves type narrowing
+//! for control flow blocks and tracks spans for source mapping.
 
+use source_map::Span;
 use svelte_parser::*;
+
+/// An expression collected from the template with its original span.
+#[derive(Debug, Clone)]
+pub struct TemplateExpression {
+    /// The expression text.
+    pub expression: String,
+    /// The span in the original source.
+    pub span: Span,
+    /// The context in which this expression appears.
+    pub context: ExpressionContext,
+}
+
+/// The context in which an expression appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpressionContext {
+    /// `{expression}` - mustache interpolation.
+    Interpolation,
+    /// `attr={expression}` - attribute value.
+    Attribute,
+    /// `onclick={handler}` or `on:click={handler}` - event handler.
+    EventHandler,
+    /// `bind:value={x}` - binding.
+    Binding,
+    /// `{...props}` - spread attribute.
+    Spread,
+    /// `{#if condition}` - block condition.
+    IfCondition,
+    /// `{#each items as item}` - each iterable.
+    EachIterable,
+    /// `(key)` expression in each block.
+    EachKey,
+    /// `{#await promise}` - await expression.
+    AwaitPromise,
+    /// `{#key expr}` - key expression.
+    KeyExpression,
+    /// `{@html expr}` - html tag.
+    HtmlTag,
+    /// `{@render snippet()}` - render tag.
+    RenderTag,
+    /// `{@const x = ...}` - const tag.
+    ConstTag,
+    /// `{@debug ...}` - debug tag.
+    DebugTag,
+}
+
+/// Result of template TSX generation.
+#[derive(Debug)]
+pub struct TemplateCheckResult {
+    /// The generated TSX code.
+    pub code: String,
+    /// Expressions with their spans for source mapping.
+    pub expressions: Vec<TemplateExpression>,
+}
 
 /// Generates a TSX type-checking block for the template.
 ///
-/// This generates a function that includes all expressions from the template
-/// so they can be type-checked by TypeScript.
+/// This generates code that includes all expressions from the template
+/// with proper control flow to preserve TypeScript type narrowing.
 pub fn generate_template_check(fragment: &Fragment) -> String {
-    let mut expressions = Vec::new();
-    collect_expressions(&fragment.nodes, &mut expressions);
-
-    if expressions.is_empty() {
-        return String::new();
-    }
-
-    let mut output = String::new();
-    output.push_str("\n// === TEMPLATE TYPE-CHECK BLOCK ===\n");
-    output.push_str("// This is never executed, just type-checked\n");
-    output.push_str("function __svelte_template_check__() {\n");
-
-    for expr in expressions {
-        output.push_str("  ");
-        output.push_str(&expr);
-        output.push_str(";\n");
-    }
-
-    output.push_str("}\n");
-    output
+    let result = generate_template_check_with_spans(fragment);
+    result.code
 }
 
-/// Collects all expressions from template nodes.
-fn collect_expressions(nodes: &[TemplateNode], expressions: &mut Vec<String>) {
-    for node in nodes {
+/// Generates a TSX type-checking block with span information.
+pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckResult {
+    let mut ctx = TemplateContext::new();
+    ctx.generate_fragment(fragment);
+
+    if ctx.expressions.is_empty() && ctx.output.is_empty() {
+        return TemplateCheckResult {
+            code: String::new(),
+            expressions: Vec::new(),
+        };
+    }
+
+    let mut code = String::new();
+    code.push_str("\n// === TEMPLATE TYPE-CHECK BLOCK ===\n");
+    code.push_str("// This is never executed, just type-checked\n");
+    code.push_str("function __svelte_template_check__() {\n");
+    code.push_str(&ctx.output);
+    code.push_str("}\n");
+
+    TemplateCheckResult {
+        code,
+        expressions: ctx.expressions,
+    }
+}
+
+/// Context for template transformation.
+struct TemplateContext {
+    output: String,
+    expressions: Vec<TemplateExpression>,
+    indent: usize,
+    /// Counter for generating unique variable names.
+    counter: usize,
+}
+
+impl TemplateContext {
+    fn new() -> Self {
+        Self {
+            output: String::new(),
+            expressions: Vec::new(),
+            indent: 1,
+            counter: 0,
+        }
+    }
+
+    fn indent_str(&self) -> String {
+        "  ".repeat(self.indent)
+    }
+
+    fn next_id(&mut self) -> usize {
+        let id = self.counter;
+        self.counter += 1;
+        id
+    }
+
+    fn emit(&mut self, s: &str) {
+        self.output.push_str(&self.indent_str());
+        self.output.push_str(s);
+        self.output.push('\n');
+    }
+
+    fn emit_expression(&mut self, expr: &str, span: Span, context: ExpressionContext) {
+        self.expressions.push(TemplateExpression {
+            expression: expr.to_string(),
+            span,
+            context,
+        });
+        self.emit(&format!("{};", expr));
+    }
+
+    fn generate_fragment(&mut self, fragment: &Fragment) {
+        for node in &fragment.nodes {
+            self.generate_node(node);
+        }
+    }
+
+    fn generate_node(&mut self, node: &TemplateNode) {
         match node {
             TemplateNode::Expression(expr) => {
-                expressions.push(expr.expression.clone());
+                self.emit_expression(
+                    &expr.expression,
+                    expr.expression_span,
+                    ExpressionContext::Interpolation,
+                );
             }
             TemplateNode::Element(el) => {
-                collect_attribute_expressions(&el.attributes, expressions);
-                collect_expressions(&el.children, expressions);
+                self.generate_element_attributes(&el.name, &el.attributes);
+                self.generate_fragment_nodes(&el.children);
             }
             TemplateNode::Component(comp) => {
-                collect_attribute_expressions(&comp.attributes, expressions);
-                collect_expressions(&comp.children, expressions);
+                self.generate_component(&comp.name, &comp.attributes, &comp.children);
             }
             TemplateNode::SvelteElement(el) => {
-                collect_attribute_expressions(&el.attributes, expressions);
-                collect_expressions(&el.children, expressions);
+                // Special svelte:* elements
+                let element_name = match el.kind {
+                    SvelteElementKind::Self_ => "svelte:self",
+                    SvelteElementKind::Component => "svelte:component",
+                    SvelteElementKind::Element => "svelte:element",
+                    SvelteElementKind::Window => "svelte:window",
+                    SvelteElementKind::Document => "svelte:document",
+                    SvelteElementKind::Body => "svelte:body",
+                    SvelteElementKind::Head => "svelte:head",
+                    SvelteElementKind::Options => "svelte:options",
+                    SvelteElementKind::Fragment => "svelte:fragment",
+                    SvelteElementKind::Boundary => "svelte:boundary",
+                };
+                self.generate_element_attributes(element_name, &el.attributes);
+                self.generate_fragment_nodes(&el.children);
             }
             TemplateNode::HtmlTag(tag) => {
-                expressions.push(tag.expression.clone());
+                self.emit_expression(
+                    &tag.expression,
+                    tag.expression_span,
+                    ExpressionContext::HtmlTag,
+                );
             }
             TemplateNode::RenderTag(tag) => {
-                expressions.push(tag.expression.clone());
+                self.emit_expression(
+                    &tag.expression,
+                    tag.expression_span,
+                    ExpressionContext::RenderTag,
+                );
+            }
+            TemplateNode::ConstTag(tag) => {
+                // @const creates a local binding - emit as-is
+                self.emit(&format!("const {};", tag.declaration));
+            }
+            TemplateNode::DebugTag(tag) => {
+                for ident in &tag.identifiers {
+                    self.expressions.push(TemplateExpression {
+                        expression: ident.to_string(),
+                        span: tag.span,
+                        context: ExpressionContext::DebugTag,
+                    });
+                    self.emit(&format!("{};", ident));
+                }
             }
             TemplateNode::IfBlock(block) => {
-                expressions.push(block.condition.clone());
-                collect_expressions(&block.consequent.nodes, expressions);
-                if let Some(alt) = &block.alternate {
-                    match alt {
-                        ElseBranch::Else(frag) => {
-                            collect_expressions(&frag.nodes, expressions);
-                        }
-                        ElseBranch::ElseIf(elif) => {
-                            expressions.push(elif.condition.clone());
-                            collect_expressions(&elif.consequent.nodes, expressions);
-                        }
+                self.generate_if_block(block);
+            }
+            TemplateNode::EachBlock(block) => {
+                self.generate_each_block(block);
+            }
+            TemplateNode::AwaitBlock(block) => {
+                self.generate_await_block(block);
+            }
+            TemplateNode::KeyBlock(block) => {
+                self.emit_expression(
+                    &block.expression,
+                    block.expression_span,
+                    ExpressionContext::KeyExpression,
+                );
+                self.generate_fragment(&block.body);
+            }
+            TemplateNode::SnippetBlock(block) => {
+                self.generate_snippet_block(block);
+            }
+            TemplateNode::Text(_) | TemplateNode::Comment(_) => {
+                // No expressions to type-check
+            }
+        }
+    }
+
+    fn generate_fragment_nodes(&mut self, nodes: &[TemplateNode]) {
+        for node in nodes {
+            self.generate_node(node);
+        }
+    }
+
+    fn generate_element_attributes(&mut self, element_name: &str, attrs: &[Attribute]) {
+        for attr in attrs {
+            match attr {
+                Attribute::Normal(a) => {
+                    self.generate_attribute_value(&a.value);
+                }
+                Attribute::Spread(s) => {
+                    self.emit_expression(
+                        &s.expression,
+                        s.expression_span,
+                        ExpressionContext::Spread,
+                    );
+                }
+                Attribute::Directive(d) => {
+                    self.generate_directive(element_name, d);
+                }
+                Attribute::Shorthand(s) => {
+                    // {name} is shorthand for name={name}
+                    self.emit_expression(s.name.as_ref(), s.span, ExpressionContext::Attribute);
+                }
+            }
+        }
+    }
+
+    fn generate_attribute_value(&mut self, value: &AttributeValue) {
+        match value {
+            AttributeValue::Expression(expr) => {
+                self.emit_expression(
+                    &expr.expression,
+                    expr.expression_span,
+                    ExpressionContext::Attribute,
+                );
+            }
+            AttributeValue::Concat(parts) => {
+                for part in parts {
+                    if let AttributeValuePart::Expression(expr) = part {
+                        self.emit_expression(
+                            &expr.expression,
+                            expr.expression_span,
+                            ExpressionContext::Attribute,
+                        );
                     }
                 }
             }
-            TemplateNode::EachBlock(block) => {
-                expressions.push(block.expression.clone());
-                if let Some(key) = &block.key {
-                    expressions.push(key.expression.clone());
-                }
-                collect_expressions(&block.body.nodes, expressions);
-                if let Some(fallback) = &block.fallback {
-                    collect_expressions(&fallback.nodes, expressions);
-                }
+            AttributeValue::Text(_) | AttributeValue::True => {
+                // No expression to type-check
             }
-            TemplateNode::AwaitBlock(block) => {
-                expressions.push(block.expression.clone());
-                if let Some(pending) = &block.pending {
-                    collect_expressions(&pending.nodes, expressions);
-                }
-                if let Some(then) = &block.then {
-                    collect_expressions(&then.body.nodes, expressions);
-                }
-                if let Some(catch) = &block.catch {
-                    collect_expressions(&catch.body.nodes, expressions);
-                }
-            }
-            TemplateNode::KeyBlock(block) => {
-                expressions.push(block.expression.clone());
-                collect_expressions(&block.body.nodes, expressions);
-            }
-            TemplateNode::SnippetBlock(block) => {
-                collect_expressions(&block.body.nodes, expressions);
-            }
-            TemplateNode::Text(_)
-            | TemplateNode::Comment(_)
-            | TemplateNode::ConstTag(_)
-            | TemplateNode::DebugTag(_) => {}
         }
+    }
+
+    fn generate_directive(&mut self, element_name: &str, directive: &Directive) {
+        if let Some(expr) = &directive.expression {
+            let context = match directive.kind {
+                DirectiveKind::On => ExpressionContext::EventHandler,
+                DirectiveKind::Bind => ExpressionContext::Binding,
+                _ => ExpressionContext::Attribute,
+            };
+
+            // For event handlers, we can add type annotations
+            if directive.kind == DirectiveKind::On {
+                let event_type = get_event_type(element_name, &directive.name);
+                let id = self.next_id();
+                self.expressions.push(TemplateExpression {
+                    expression: expr.expression.clone(),
+                    span: expr.expression_span,
+                    context,
+                });
+                // Generate typed event handler check
+                self.emit(&format!(
+                    "const __event_{}: (e: {}) => void = {};",
+                    id, event_type, expr.expression
+                ));
+            } else if directive.kind == DirectiveKind::Bind {
+                // For bindings, check the variable
+                self.emit_expression(&expr.expression, expr.expression_span, context);
+            } else {
+                self.emit_expression(&expr.expression, expr.expression_span, context);
+            }
+        }
+    }
+
+    fn generate_component(&mut self, name: &str, attrs: &[Attribute], children: &[TemplateNode]) {
+        // Collect props for the component
+        let id = self.next_id();
+        let mut has_props = false;
+
+        for attr in attrs {
+            match attr {
+                Attribute::Normal(a) => {
+                    if !has_props {
+                        self.emit(&format!("const __props_{} = {{", id));
+                        has_props = true;
+                    }
+                    self.indent += 1;
+                    match &a.value {
+                        AttributeValue::Expression(expr) => {
+                            self.expressions.push(TemplateExpression {
+                                expression: expr.expression.clone(),
+                                span: expr.expression_span,
+                                context: ExpressionContext::Attribute,
+                            });
+                            self.emit(&format!("{}: {},", a.name, expr.expression));
+                        }
+                        AttributeValue::Text(t) => {
+                            self.emit(&format!("{}: \"{}\",", a.name, t.value));
+                        }
+                        AttributeValue::True => {
+                            self.emit(&format!("{}: true,", a.name));
+                        }
+                        AttributeValue::Concat(_) => {
+                            // Template string - just emit as string for now
+                            self.generate_attribute_value(&a.value);
+                        }
+                    }
+                    self.indent -= 1;
+                }
+                Attribute::Spread(s) => {
+                    self.emit_expression(
+                        &s.expression,
+                        s.expression_span,
+                        ExpressionContext::Spread,
+                    );
+                }
+                Attribute::Directive(d) => {
+                    self.generate_directive(name, d);
+                }
+                Attribute::Shorthand(s) => {
+                    if !has_props {
+                        self.emit(&format!("const __props_{} = {{", id));
+                        has_props = true;
+                    }
+                    self.indent += 1;
+                    self.expressions.push(TemplateExpression {
+                        expression: s.name.to_string(),
+                        span: s.span,
+                        context: ExpressionContext::Attribute,
+                    });
+                    self.emit(&format!("{},", s.name));
+                    self.indent -= 1;
+                }
+            }
+        }
+
+        if has_props {
+            self.emit("};");
+            // Type check that props match the component
+            self.emit(&format!("new {}(__props_{});", name, id));
+        }
+
+        self.generate_fragment_nodes(children);
+    }
+
+    fn generate_if_block(&mut self, block: &IfBlock) {
+        // Use real if statements to preserve type narrowing
+        self.expressions.push(TemplateExpression {
+            expression: block.condition.clone(),
+            span: block.condition_span,
+            context: ExpressionContext::IfCondition,
+        });
+        self.emit(&format!("if ({}) {{", block.condition));
+        self.indent += 1;
+        self.generate_fragment(&block.consequent);
+        self.indent -= 1;
+
+        if let Some(alt) = &block.alternate {
+            match alt {
+                ElseBranch::Else(frag) => {
+                    self.emit("} else {");
+                    self.indent += 1;
+                    self.generate_fragment(frag);
+                    self.indent -= 1;
+                    self.emit("}");
+                }
+                ElseBranch::ElseIf(elif) => {
+                    self.output.push_str(&self.indent_str());
+                    self.output.push_str("} else ");
+                    // Continue with else-if - use the boxed IfBlock directly
+                    self.generate_if_block_continuation(elif);
+                }
+            }
+        } else {
+            self.emit("}");
+        }
+    }
+
+    fn generate_if_block_continuation(&mut self, block: &IfBlock) {
+        self.expressions.push(TemplateExpression {
+            expression: block.condition.clone(),
+            span: block.condition_span,
+            context: ExpressionContext::IfCondition,
+        });
+        self.output
+            .push_str(&format!("if ({}) {{\n", block.condition));
+        self.indent += 1;
+        self.generate_fragment(&block.consequent);
+        self.indent -= 1;
+
+        if let Some(alt) = &block.alternate {
+            match alt {
+                ElseBranch::Else(frag) => {
+                    self.emit("} else {");
+                    self.indent += 1;
+                    self.generate_fragment(frag);
+                    self.indent -= 1;
+                    self.emit("}");
+                }
+                ElseBranch::ElseIf(elif) => {
+                    self.output.push_str(&self.indent_str());
+                    self.output.push_str("} else ");
+                    self.generate_if_block_continuation(elif);
+                }
+            }
+        } else {
+            self.emit("}");
+        }
+    }
+
+    fn generate_each_block(&mut self, block: &EachBlock) {
+        let id = self.next_id();
+
+        // Emit the iterable expression
+        self.expressions.push(TemplateExpression {
+            expression: block.expression.clone(),
+            span: block.expression_span,
+            context: ExpressionContext::EachIterable,
+        });
+
+        // Generate a for loop that introduces the loop variable
+        self.emit(&format!("const __each_{} = {};", id, block.expression));
+
+        // Determine the loop variable pattern
+        let item_pattern = &block.context;
+        let index_var = block.index.as_ref().map(|i| i.to_string());
+
+        if let Some(ref idx) = index_var {
+            self.emit(&format!(
+                "for (const [{}, {}] of __svelte_each_indexed(__each_{})) {{",
+                idx, item_pattern, id
+            ));
+        } else {
+            self.emit(&format!("for (const {} of __each_{}) {{", item_pattern, id));
+        }
+
+        self.indent += 1;
+
+        // Key expression if present
+        if let Some(key) = &block.key {
+            self.emit_expression(&key.expression, key.span, ExpressionContext::EachKey);
+        }
+
+        self.generate_fragment(&block.body);
+        self.indent -= 1;
+        self.emit("}");
+
+        // Fallback (else) block
+        if let Some(fallback) = &block.fallback {
+            self.emit(&format!("if (__svelte_is_empty(__each_{})) {{", id));
+            self.indent += 1;
+            self.generate_fragment(fallback);
+            self.indent -= 1;
+            self.emit("}");
+        }
+    }
+
+    fn generate_await_block(&mut self, block: &AwaitBlock) {
+        let id = self.next_id();
+
+        self.expressions.push(TemplateExpression {
+            expression: block.expression.clone(),
+            span: block.expression_span,
+            context: ExpressionContext::AwaitPromise,
+        });
+
+        self.emit(&format!("const __await_{} = {};", id, block.expression));
+
+        // Pending block
+        if let Some(pending) = &block.pending {
+            self.emit("{");
+            self.indent += 1;
+            self.emit("// pending");
+            self.generate_fragment(pending);
+            self.indent -= 1;
+            self.emit("}");
+        }
+
+        // Then block
+        if let Some(then) = &block.then {
+            self.emit("{");
+            self.indent += 1;
+            if let Some(ref value) = then.value {
+                self.emit(&format!(
+                    "const {}: Awaited<typeof __await_{}> = await __await_{};",
+                    value, id, id
+                ));
+            }
+            self.generate_fragment(&then.body);
+            self.indent -= 1;
+            self.emit("}");
+        }
+
+        // Catch block
+        if let Some(catch) = &block.catch {
+            self.emit("{");
+            self.indent += 1;
+            if let Some(ref error) = catch.error {
+                self.emit(&format!(
+                    "const {}: unknown = __svelte_catch_error(__await_{});",
+                    error, id
+                ));
+            }
+            self.generate_fragment(&catch.body);
+            self.indent -= 1;
+            self.emit("}");
+        }
+    }
+
+    fn generate_snippet_block(&mut self, block: &SnippetBlock) {
+        // Snippets are local functions
+        self.emit(&format!("function {}({}) {{", block.name, block.parameters));
+        self.indent += 1;
+        self.generate_fragment(&block.body);
+        self.indent -= 1;
+        self.emit("}");
     }
 }
 
-/// Collects expressions from attributes.
-fn collect_attribute_expressions(attrs: &[Attribute], expressions: &mut Vec<String>) {
-    for attr in attrs {
-        match attr {
-            Attribute::Normal(a) => {
-                if let AttributeValue::Expression(expr) = &a.value {
-                    expressions.push(expr.expression.clone());
-                } else if let AttributeValue::Concat(parts) = &a.value {
-                    for part in parts {
-                        if let AttributeValuePart::Expression(expr) = part {
-                            expressions.push(expr.expression.clone());
-                        }
-                    }
-                }
-            }
-            Attribute::Spread(s) => {
-                expressions.push(s.expression.clone());
-            }
-            Attribute::Directive(d) => {
-                if let Some(expr) = &d.expression {
-                    expressions.push(expr.expression.clone());
-                }
-            }
-            Attribute::Shorthand(s) => {
-                expressions.push(s.name.to_string());
-            }
+/// Get the TypeScript event type for a given element and event name.
+fn get_event_type(element: &str, event: &str) -> &'static str {
+    match (element, event) {
+        // Mouse events
+        (_, "click" | "dblclick" | "contextmenu") => "MouseEvent",
+        (
+            _,
+            "mousedown" | "mouseup" | "mouseenter" | "mouseleave" | "mousemove" | "mouseover"
+            | "mouseout",
+        ) => "MouseEvent",
+
+        // Keyboard events
+        (_, "keydown" | "keyup" | "keypress") => "KeyboardEvent",
+
+        // Input events
+        ("input" | "textarea", "input") => "InputEvent",
+        ("input" | "textarea" | "select", "change") => "Event",
+        (_, "input") => "InputEvent",
+
+        // Focus events
+        (_, "focus" | "blur" | "focusin" | "focusout") => "FocusEvent",
+
+        // Form events
+        ("form", "submit") => "SubmitEvent",
+        ("form", "reset") => "Event",
+
+        // Drag events
+        (_, "drag" | "dragstart" | "dragend" | "dragover" | "dragenter" | "dragleave" | "drop") => {
+            "DragEvent"
         }
+
+        // Touch events
+        (_, "touchstart" | "touchend" | "touchmove" | "touchcancel") => "TouchEvent",
+
+        // Wheel events
+        (_, "wheel") => "WheelEvent",
+
+        // Animation events
+        (_, "animationstart" | "animationend" | "animationiteration") => "AnimationEvent",
+
+        // Transition events
+        (_, "transitionstart" | "transitionend" | "transitionrun" | "transitioncancel") => {
+            "TransitionEvent"
+        }
+
+        // Pointer events
+        (
+            _,
+            "pointerdown" | "pointerup" | "pointermove" | "pointerenter" | "pointerleave"
+            | "pointerover" | "pointerout" | "pointercancel",
+        ) => "PointerEvent",
+
+        // Clipboard events
+        (_, "copy" | "cut" | "paste") => "ClipboardEvent",
+
+        // Media events
+        (
+            "audio" | "video",
+            "play" | "pause" | "ended" | "volumechange" | "timeupdate" | "seeking" | "seeked",
+        ) => "Event",
+        ("audio" | "video", "error") => "ErrorEvent",
+
+        // Default
+        _ => "Event",
     }
 }
 
@@ -154,7 +646,7 @@ mod tests {
     fn test_collect_if_condition() {
         let result = parse("{#if condition}yes{/if}");
         let output = generate_template_check(&result.document.fragment);
-        assert!(output.contains("condition"));
+        assert!(output.contains("if (condition)"));
     }
 
     #[test]
@@ -163,5 +655,57 @@ mod tests {
         let output = generate_template_check(&result.document.fragment);
         assert!(output.contains("items"));
         assert!(output.contains("item"));
+    }
+
+    #[test]
+    fn test_if_preserves_type_narrowing() {
+        let result = parse("{#if user}{user.name}{/if}");
+        let output = generate_template_check(&result.document.fragment);
+        // Should generate real if statement
+        assert!(output.contains("if (user) {"));
+        assert!(output.contains("user.name"));
+    }
+
+    #[test]
+    fn test_each_with_index() {
+        let result = parse("{#each items as item, i}{i}: {item}{/each}");
+        let output = generate_template_check(&result.document.fragment);
+        assert!(output.contains("__svelte_each_indexed"));
+    }
+
+    #[test]
+    fn test_await_block() {
+        let result = parse("{#await promise then value}{value}{/await}");
+        let output = generate_template_check(&result.document.fragment);
+        assert!(output.contains("Awaited<typeof"));
+    }
+
+    #[test]
+    fn test_snippet_block() {
+        let result = parse("{#snippet button(text)}<button>{text}</button>{/snippet}");
+        let output = generate_template_check(&result.document.fragment);
+        assert!(output.contains("function button(text)"));
+    }
+
+    #[test]
+    fn test_event_handler_typed() {
+        let result = parse("<button on:click={handleClick}>Click</button>");
+        let output = generate_template_check(&result.document.fragment);
+        assert!(output.contains("MouseEvent"));
+        assert!(output.contains("handleClick"));
+    }
+
+    #[test]
+    fn test_expressions_have_spans() {
+        let result = parse("{#if x}{y}{/if}");
+        let check = generate_template_check_with_spans(&result.document.fragment);
+        assert_eq!(check.expressions.len(), 2);
+        assert_eq!(check.expressions[0].expression, "x");
+        assert_eq!(check.expressions[0].context, ExpressionContext::IfCondition);
+        assert_eq!(check.expressions[1].expression, "y");
+        assert_eq!(
+            check.expressions[1].context,
+            ExpressionContext::Interpolation
+        );
     }
 }

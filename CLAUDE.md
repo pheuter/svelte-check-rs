@@ -15,9 +15,10 @@ cargo fmt                      # Format (always run before committing)
 cargo run -p svelte-check-rs -- --workspace ./path/to/project
 ```
 
-**Snapshots**: Located in `crates/svelte-parser/tests/snapshots/`. To accept new snapshots after parser changes:
+**Snapshots**: Located in `crates/*/tests/snapshots/`. To accept new snapshots:
 ```bash
-for f in crates/svelte-parser/tests/snapshots/*.snap.new; do mv "$f" "${f%.new}"; done
+# Accept all new snapshots
+find crates -name "*.snap.new" -exec sh -c 'mv "$1" "${1%.new}"' _ {} \;
 ```
 
 ## Conventions

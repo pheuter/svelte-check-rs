@@ -148,6 +148,32 @@ impl SourceMapBuilder {
         self.generated_offset += TextSize::from(len);
     }
 
+    /// Adds transformed content where the generated text differs from the original.
+    ///
+    /// This creates a mapping from the original span to the generated text,
+    /// even when they have different lengths. Useful for rune transformations.
+    pub fn add_transformed(&mut self, original: Span, generated_text: &str) {
+        let gen_len = generated_text.len() as u32;
+        self.mappings.push(Mapping {
+            generated: Span::new(
+                self.generated_offset,
+                self.generated_offset + TextSize::from(gen_len),
+            ),
+            original,
+        });
+        self.generated_offset += TextSize::from(gen_len);
+    }
+
+    /// Adds an expression with its original span, appending a semicolon.
+    ///
+    /// This is a convenience method for template expressions.
+    pub fn add_expression(&mut self, original_span: Span, expression: &str) {
+        // Map the expression
+        self.add_transformed(original_span, expression);
+        // Add untracked semicolon and newline
+        self.add_generated(";\n");
+    }
+
     /// Builds the final source map.
     pub fn build(mut self) -> SourceMap {
         // Sort mappings by generated position for efficient lookup
