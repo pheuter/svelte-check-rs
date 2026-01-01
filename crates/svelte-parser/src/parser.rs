@@ -201,8 +201,8 @@ impl<'src> Parser<'src> {
                             while nested_depth > 0 {
                                 if let Some((ni, nc)) = chars.next() {
                                     let nested_abs_i = start_offset + ni;
-                                    let nc_escaped =
-                                        nested_abs_i > 0 && bytes.get(nested_abs_i - 1) == Some(&b'\\');
+                                    let nc_escaped = nested_abs_i > 0
+                                        && bytes.get(nested_abs_i - 1) == Some(&b'\\');
 
                                     if nested_expr_depth == 0 {
                                         // In template literal text
@@ -226,7 +226,8 @@ impl<'src> Parser<'src> {
                                                 for (si, sc) in chars.by_ref() {
                                                     let string_abs_i = start_offset + si;
                                                     let sc_escaped = string_abs_i > 0
-                                                        && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                                        && bytes.get(string_abs_i - 1)
+                                                            == Some(&b'\\');
                                                     if sc == quote && !sc_escaped {
                                                         break;
                                                     }
@@ -237,6 +238,30 @@ impl<'src> Parser<'src> {
                                     }
                                 } else {
                                     break;
+                                }
+                            }
+                        }
+                        '/' => {
+                            // Check for JavaScript comments inside template expression
+                            if let Some(&(_, next_c)) = chars.peek() {
+                                if next_c == '/' {
+                                    // Single-line comment - skip until end of line
+                                    chars.next();
+                                    for (_, sc) in chars.by_ref() {
+                                        if sc == '\n' {
+                                            break;
+                                        }
+                                    }
+                                } else if next_c == '*' {
+                                    // Multi-line comment - skip until */
+                                    chars.next();
+                                    let mut prev_star = false;
+                                    for (_, sc) in chars.by_ref() {
+                                        if prev_star && sc == '/' {
+                                            break;
+                                        }
+                                        prev_star = sc == '*';
+                                    }
                                 }
                             }
                         }
@@ -265,6 +290,30 @@ impl<'src> Parser<'src> {
             }
 
             match c {
+                '/' => {
+                    // Check for JavaScript comments
+                    if let Some(&(_, next_c)) = chars.peek() {
+                        if next_c == '/' {
+                            // Single-line comment - skip until end of line
+                            chars.next(); // consume second '/'
+                            for (_, sc) in chars.by_ref() {
+                                if sc == '\n' {
+                                    break;
+                                }
+                            }
+                        } else if next_c == '*' {
+                            // Multi-line comment - skip until */
+                            chars.next(); // consume '*'
+                            let mut prev_star = false;
+                            for (_, sc) in chars.by_ref() {
+                                if prev_star && sc == '/' {
+                                    break;
+                                }
+                                prev_star = sc == '*';
+                            }
+                        }
+                    }
+                }
                 '"' | '\'' => {
                     in_string = true;
                     string_char = c;
@@ -938,7 +987,8 @@ impl<'src> Parser<'src> {
                 || self.check(TokenKind::NamespacedIdent)
                 || self.check(TokenKind::Text)  // For !, [, ], etc.
                 || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
-                || self.check(TokenKind::Number) // For sizes: [100px], grid-cols-2
+                || self.check(TokenKind::Number)
+            // For sizes: [100px], grid-cols-2
             {
                 full_name.push_str(self.current_text());
                 self.advance();
@@ -1900,7 +1950,11 @@ impl<'src> Parser<'src> {
 
         while matches!(
             self.current_kind(),
-            TokenKind::Text | TokenKind::Ident | TokenKind::Number | TokenKind::Newline | TokenKind::Dot
+            TokenKind::Text
+                | TokenKind::Ident
+                | TokenKind::Number
+                | TokenKind::Newline
+                | TokenKind::Dot
         ) {
             text.push_str(self.current_text());
             self.advance();

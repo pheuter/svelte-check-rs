@@ -91,3 +91,40 @@ mod tests {
         assert!(result.document.instance_script.is_some());
     }
 }
+
+#[test]
+fn test_comment_with_apostrophe_in_expression() {
+    // Regression test: apostrophes in JS comments inside expressions
+    // were being treated as string delimiters
+    let source = r#"<script></script>
+<div onclick={() => {
+    // When enabling times per day, pre-populate each day's start and end times with
+    // the values from startTime and endTime, if any. Then clear startTime and endTime,
+    // as those fields will be removed.
+    console.log('clicked');
+}}></div>"#;
+    let result = parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "Expected no errors, got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn test_multiline_comment_in_expression() {
+    // Ensure /* */ comments are also handled
+    let source = r#"<script></script>
+<div onclick={() => {
+    /* This is a multi-line comment
+       with an apostrophe: it's great
+       and some "quotes" too */
+    console.log('clicked');
+}}></div>"#;
+    let result = parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "Expected no errors, got: {:?}",
+        result.errors
+    );
+}
