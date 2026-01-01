@@ -1,0 +1,93 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{#snippet button(text)}
+    <button>{text}</button>
+{/snippet}
+
+{@render button('Click me')}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            SnippetBlock(
+                SnippetBlock {
+                    span: Span {
+                        start: 0,
+                        end: 62,
+                    },
+                    name: "button",
+                    parameters_span: Span {
+                        start: 17,
+                        end: 21,
+                    },
+                    parameters: "text",
+                    body: Fragment {
+                        nodes: [
+                            Element(
+                                Element {
+                                    span: Span {
+                                        start: 28,
+                                        end: 51,
+                                    },
+                                    name: "button",
+                                    attributes: [],
+                                    children: [
+                                        Expression(
+                                            ExpressionTag {
+                                                span: Span {
+                                                    start: 36,
+                                                    end: 42,
+                                                },
+                                                expression_span: Span {
+                                                    start: 37,
+                                                    end: 41,
+                                                },
+                                                expression: "text",
+                                            },
+                                        ),
+                                    ],
+                                    self_closing: false,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 23,
+                            end: 51,
+                        },
+                    },
+                },
+            ),
+            RenderTag(
+                RenderTag {
+                    span: Span {
+                        start: 64,
+                        end: 92,
+                    },
+                    expression_span: Span {
+                        start: 73,
+                        end: 91,
+                    },
+                    expression: "button('Click me')",
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 92,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 92,
+    },
+}

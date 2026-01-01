@@ -148,6 +148,151 @@ impl<'src> Parser<'src> {
         (text, Span::new(start, end))
     }
 
+    /// Reads an expression until the given closing delimiter, respecting nested braces.
+    /// This handles cases like `{items.map(x => { return x; })}` correctly.
+    fn read_expression_until(&mut self, close_char: char) -> (String, Span) {
+        let start = self.current().span.start;
+        let start_offset = u32::from(start) as usize;
+
+        let mut depth = 0;
+        let mut in_string = false;
+        let mut string_char = ' ';
+        let mut pos = start_offset;
+        let bytes = self.source.as_bytes();
+
+        for (i, c) in self.source[start_offset..].char_indices() {
+            let absolute_i = start_offset + i;
+
+            if in_string {
+                // Check for escape sequence
+                let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
+                if c == string_char && !is_escaped {
+                    in_string = false;
+                }
+                pos = start_offset + i + c.len_utf8();
+                continue;
+            }
+
+            match c {
+                '"' | '\'' | '`' => {
+                    in_string = true;
+                    string_char = c;
+                }
+                '{' | '(' | '[' => depth += 1,
+                '}' if close_char == '}' => {
+                    if depth == 0 {
+                        pos = start_offset + i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ')' if close_char == ')' => {
+                    if depth == 0 {
+                        pos = start_offset + i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ']' if close_char == ']' => {
+                    if depth == 0 {
+                        pos = start_offset + i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                '}' => depth -= 1,
+                ')' => depth -= 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+            pos = start_offset + i + c.len_utf8();
+        }
+
+        let text = self.source[start_offset..pos].to_string();
+        let end = TextSize::from(pos as u32);
+
+        // Advance past the tokens we consumed
+        while self.current().span.start < end && !self.check(TokenKind::Eof) {
+            self.advance();
+        }
+
+        (text, Span::new(start, end))
+    }
+
+    /// Finds a keyword in an expression, respecting nesting and string boundaries.
+    /// Returns the position of the keyword if found at depth 0.
+    /// Note: For keywords with spaces like " as " or " then ", word boundaries are
+    /// already handled by the spaces in the keyword itself.
+    fn find_keyword_in_expr(expr: &str, keyword: &str) -> Option<usize> {
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut string_char = ' ';
+        let bytes = expr.as_bytes();
+
+        let mut i = 0;
+        while i < expr.len() {
+            let c = expr[i..].chars().next().unwrap();
+
+            if in_string {
+                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                if c == string_char && !is_escaped {
+                    in_string = false;
+                }
+                i += c.len_utf8();
+                continue;
+            }
+
+            match c {
+                '"' | '\'' | '`' => {
+                    in_string = true;
+                    string_char = c;
+                }
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' => depth = depth.saturating_sub(1),
+                _ if depth == 0 && expr[i..].starts_with(keyword) => {
+                    return Some(i);
+                }
+                _ => {}
+            }
+            i += c.len_utf8();
+        }
+        None
+    }
+
+    /// Finds a character in an expression at depth 0, respecting nesting.
+    fn find_char_in_expr(expr: &str, target: char) -> Option<usize> {
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut string_char = ' ';
+        let bytes = expr.as_bytes();
+
+        for (i, c) in expr.char_indices() {
+            if in_string {
+                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                if c == string_char && !is_escaped {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            // Check for target at depth 0 BEFORE updating depth
+            if depth == 0 && c == target {
+                return Some(i);
+            }
+
+            match c {
+                '"' | '\'' | '`' => {
+                    in_string = true;
+                    string_char = c;
+                }
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        None
+    }
+
     // === Parsing methods ===
 
     /// Parses a complete Svelte document.
@@ -450,17 +595,49 @@ impl<'src> Parser<'src> {
     /// Parses a template node.
     fn parse_template_node(&mut self) -> Option<TemplateNode> {
         match self.current_kind() {
-            TokenKind::LAngle => self.parse_element_or_component(),
+            TokenKind::LAngle => {
+                // Check if this is a comment
+                if self.check_source("<!--") {
+                    self.parse_comment()
+                } else {
+                    self.parse_element_or_component()
+                }
+            }
             TokenKind::LBraceHash => self.parse_block(),
             TokenKind::LBraceAt => self.parse_special_tag(),
             TokenKind::LBrace => self.parse_expression_tag(),
             TokenKind::Text | TokenKind::Ident | TokenKind::Number => self.parse_text(),
-            TokenKind::Newline => {
-                self.advance();
-                None
-            }
+            // Newline returns None without advancing - caller handles it
+            TokenKind::Newline => None,
             _ => None,
         }
+    }
+
+    /// Parses an HTML comment.
+    fn parse_comment(&mut self) -> Option<TemplateNode> {
+        let start = self.current().span.start;
+        let start_offset = u32::from(start) as usize;
+
+        // Skip past "<!--"
+        let content_start = start_offset + 4;
+
+        // Find "-->"
+        let remaining = &self.source[content_start..];
+        let end_pos = remaining.find("-->").unwrap_or(remaining.len());
+        let content = remaining[..end_pos].to_string();
+
+        let end_offset = content_start + end_pos + 3; // Include "-->"
+        let end = TextSize::from(end_offset as u32);
+
+        // Advance past the tokens we consumed
+        while self.current().span.start < end && !self.check(TokenKind::Eof) {
+            self.advance();
+        }
+
+        Some(TemplateNode::Comment(Comment {
+            span: Span::new(start, end),
+            data: content,
+        }))
     }
 
     /// Parses an element or component.
@@ -472,13 +649,24 @@ impl<'src> Parser<'src> {
             return None;
         }
 
-        // Get tag name
-        let name = if self.check(TokenKind::Ident) || self.check(TokenKind::NamespacedIdent) {
-            SmolStr::new(self.current_text())
+        // Get tag name - for namespaced elements like svelte:head,
+        // combine NamespacedIdent + Ident
+        let name = if self.check(TokenKind::NamespacedIdent) {
+            let mut full_name = self.current_text().to_string();
+            self.advance();
+            // Check for following identifier (e.g., "head" in "svelte:head")
+            if self.check(TokenKind::Ident) {
+                full_name.push_str(self.current_text());
+                self.advance();
+            }
+            SmolStr::new(full_name)
+        } else if self.check(TokenKind::Ident) {
+            let name = SmolStr::new(self.current_text());
+            self.advance();
+            name
         } else {
             return None;
         };
-        self.advance();
 
         // Check if this is a component (PascalCase) or svelte: element
         let is_component = name
@@ -594,8 +782,19 @@ impl<'src> Parser<'src> {
             return None;
         }
 
-        let full_name = self.current_text().to_string();
+        let mut full_name = self.current_text().to_string();
+        let is_namespaced = self.check(TokenKind::NamespacedIdent);
         self.advance();
+
+        // For namespaced identifiers (directives), continue reading tokens
+        // to build the full name including modifiers: on:click|preventDefault|stopPropagation
+        if is_namespaced {
+            // Read the argument name and modifiers
+            while self.check(TokenKind::Ident) || self.check(TokenKind::Pipe) {
+                full_name.push_str(self.current_text());
+                self.advance();
+            }
+        }
 
         // Check for directive (name:arg)
         if let Some(colon_pos) = full_name.find(':') {
@@ -617,18 +816,20 @@ impl<'src> Parser<'src> {
             };
 
             // Parse modifiers (|modifier)
-            let mut modifiers = Vec::new();
-            let mut remaining = arg_name.to_string();
-            while let Some(pipe_pos) = remaining.find('|') {
-                let modifier = &remaining[pipe_pos + 1..];
-                modifiers.push(SmolStr::new(modifier));
-                remaining = remaining[..pipe_pos].to_string();
-            }
+            // Split on '|' - first part is directive name, rest are modifiers
+            let parts: Vec<&str> = arg_name.split('|').collect();
+            let remaining = parts.first().unwrap_or(&"").to_string();
+            let modifiers: Vec<SmolStr> = parts[1..]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|s| SmolStr::new(*s))
+                .collect();
 
-            // Parse value
+            // Parse value - directives can have expression or quoted string values
             let expression = if self.eat(TokenKind::Eq) {
-                if self.eat(TokenKind::LBrace) {
-                    let (expr, expr_span) = self.read_until(&["}"]);
+                if self.check(TokenKind::LBrace) {
+                    self.advance();
+                    let (expr, expr_span) = self.read_expression_until('}');
                     self.eat(TokenKind::RBrace);
                     let end = self
                         .tokens
@@ -639,6 +840,30 @@ impl<'src> Parser<'src> {
                         span: Span::new(start, end),
                         expression_span: expr_span,
                         expression: expr,
+                    })
+                } else if self.check(TokenKind::DoubleQuote) || self.check(TokenKind::SingleQuote)
+                {
+                    // Handle quoted string values like style:color="red"
+                    let quote = if self.check(TokenKind::DoubleQuote) {
+                        "\""
+                    } else {
+                        "'"
+                    };
+                    let quote_start = self.current().span.start;
+                    self.advance(); // consume opening quote
+                    let (text, text_span) = self.read_until(&[quote]);
+                    if self.check(TokenKind::DoubleQuote) || self.check(TokenKind::SingleQuote) {
+                        self.advance(); // consume closing quote
+                    }
+                    let end = self
+                        .tokens
+                        .get(self.pos.saturating_sub(1))
+                        .map(|t| t.span.end)
+                        .unwrap_or(quote_start);
+                    Some(ExpressionValue {
+                        span: Span::new(quote_start, end),
+                        expression_span: text_span,
+                        expression: text,
                     })
                 } else {
                     None
@@ -687,18 +912,14 @@ impl<'src> Parser<'src> {
     fn parse_attribute_value(&mut self) -> AttributeValue {
         if self.check(TokenKind::DoubleQuote) {
             self.advance();
-            let (text, span) = self.read_until(&["\""]);
-            self.eat(TokenKind::DoubleQuote);
-            AttributeValue::Text(TextValue { span, value: text })
+            self.parse_quoted_attribute_value('"')
         } else if self.check(TokenKind::SingleQuote) {
             self.advance();
-            let (text, span) = self.read_until(&["'"]);
-            self.eat(TokenKind::SingleQuote);
-            AttributeValue::Text(TextValue { span, value: text })
+            self.parse_quoted_attribute_value('\'')
         } else if self.check(TokenKind::LBrace) {
             let start = self.current().span.start;
             self.advance();
-            let (expr, expr_span) = self.read_until(&["}"]);
+            let (expr, expr_span) = self.read_expression_until('}');
             self.eat(TokenKind::RBrace);
             let end = self
                 .tokens
@@ -715,6 +936,116 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Parses a quoted attribute value that may contain expressions.
+    fn parse_quoted_attribute_value(&mut self, quote: char) -> AttributeValue {
+        let start = self.current().span.start;
+        let start_offset = u32::from(start) as usize;
+        let quote_token = if quote == '"' {
+            TokenKind::DoubleQuote
+        } else {
+            TokenKind::SingleQuote
+        };
+
+        // Read the content between quotes
+        let quote_str = if quote == '"' { "\"" } else { "'" };
+        let (full_text, full_span) = self.read_until(&[quote_str]);
+        self.eat(quote_token);
+
+        // Check if it contains any expressions
+        if !full_text.contains('{') {
+            // Simple text value
+            return AttributeValue::Text(TextValue {
+                span: full_span,
+                value: full_text,
+            });
+        }
+
+        // Parse concatenated parts
+        let mut parts = Vec::new();
+        let mut pos = 0;
+        let bytes = full_text.as_bytes();
+
+        while pos < full_text.len() {
+            if bytes[pos] == b'{' {
+                // Find matching closing brace
+                let expr_start = pos + 1;
+                let mut depth: i32 = 1;
+                let mut end = expr_start;
+                let mut in_string = false;
+                let mut string_char = ' ';
+
+                while end < full_text.len() && depth > 0 {
+                    let c = full_text[end..].chars().next().unwrap();
+                    if in_string {
+                        let is_escaped = end > 0 && bytes.get(end - 1) == Some(&b'\\');
+                        if c == string_char && !is_escaped {
+                            in_string = false;
+                        }
+                    } else {
+                        match c {
+                            '"' | '\'' | '`' => {
+                                in_string = true;
+                                string_char = c;
+                            }
+                            '{' => depth += 1,
+                            '}' => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    end += c.len_utf8();
+                }
+
+                // The expression content (without braces)
+                let expr_end = if depth == 0 { end - 1 } else { end };
+                let expression = full_text[expr_start..expr_end].to_string();
+                let expr_span = Span::new(
+                    TextSize::from((start_offset + expr_start) as u32),
+                    TextSize::from((start_offset + expr_end) as u32),
+                );
+                let full_expr_span = Span::new(
+                    TextSize::from((start_offset + pos) as u32),
+                    TextSize::from((start_offset + end) as u32),
+                );
+
+                parts.push(AttributeValuePart::Expression(ExpressionValue {
+                    span: full_expr_span,
+                    expression_span: expr_span,
+                    expression,
+                }));
+
+                pos = end;
+            } else {
+                // Find the next '{' or end of string
+                let text_start = pos;
+                while pos < full_text.len() && bytes[pos] != b'{' {
+                    pos += 1;
+                }
+
+                if pos > text_start {
+                    let text = full_text[text_start..pos].to_string();
+                    let text_span = Span::new(
+                        TextSize::from((start_offset + text_start) as u32),
+                        TextSize::from((start_offset + pos) as u32),
+                    );
+                    parts.push(AttributeValuePart::Text(TextValue {
+                        span: text_span,
+                        value: text,
+                    }));
+                }
+            }
+        }
+
+        // If only one part, simplify to the appropriate type
+        if parts.len() == 1 {
+            match parts.remove(0) {
+                AttributeValuePart::Text(text) => return AttributeValue::Text(text),
+                AttributeValuePart::Expression(expr) => return AttributeValue::Expression(expr),
+            }
+        }
+
+        AttributeValue::Concat(parts)
+    }
+
     /// Parses a spread attribute or shorthand.
     fn parse_spread_or_shorthand(&mut self) -> Option<Attribute> {
         let start = self.current().span.start;
@@ -723,7 +1054,7 @@ impl<'src> Parser<'src> {
             return None;
         }
 
-        let (expr, expr_span) = self.read_until(&["}"]);
+        let (expr, expr_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
         let end = self
@@ -784,12 +1115,23 @@ impl<'src> Parser<'src> {
             return;
         }
 
-        let found_name = if self.check(TokenKind::Ident) || self.check(TokenKind::NamespacedIdent) {
-            self.current_text().to_string()
+        // Parse tag name - handle namespaced elements like svelte:head
+        let found_name = if self.check(TokenKind::NamespacedIdent) {
+            let mut full_name = self.current_text().to_string();
+            self.advance();
+            // Check for following identifier (e.g., "head" in "svelte:head")
+            if self.check(TokenKind::Ident) {
+                full_name.push_str(self.current_text());
+                self.advance();
+            }
+            full_name
+        } else if self.check(TokenKind::Ident) {
+            let name = self.current_text().to_string();
+            self.advance();
+            name
         } else {
             String::new()
         };
-        self.advance();
 
         if found_name != expected_name {
             self.error(ParseErrorKind::MismatchedClosingTag {
@@ -830,7 +1172,7 @@ impl<'src> Parser<'src> {
     /// Parses an if block.
     fn parse_if_block(&mut self, start: TextSize) -> Option<TemplateNode> {
         // Parse condition
-        let (condition, condition_span) = self.read_until(&["}"]);
+        let (condition, condition_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
         // Parse consequent
@@ -850,10 +1192,9 @@ impl<'src> Parser<'src> {
                 }
             })
         } else if self.check_source("{:else}") {
-            self.advance(); // {
-            self.advance(); // :
-            self.advance(); // else
-            self.eat(TokenKind::RBrace);
+            self.eat(TokenKind::LBraceColon); // {:
+            self.eat(TokenKind::Else);        // else
+            self.eat(TokenKind::RBrace);      // }
             let else_body = self.parse_block_children(&["{/if"]);
             Some(ElseBranch::Else(else_body))
         } else {
@@ -883,59 +1224,110 @@ impl<'src> Parser<'src> {
     /// Parses an each block.
     fn parse_each_block(&mut self, start: TextSize) -> Option<TemplateNode> {
         // Parse expression and pattern: {#each items as item, index (key)}
-        let (full_expr, _) = self.read_until(&["}"]);
+        let expr_start = self.current().span.start;
+        let (full_expr, full_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
-        // Parse the expression
-        let parts: Vec<&str> = full_expr.split(" as ").collect();
-        let expression = parts.first().unwrap_or(&"").trim().to_string();
-        let expression_span = Span::empty(start); // Simplified
+        // Use brace-aware parsing to find " as "
+        let (expression, expression_span, rest, rest_offset) =
+            if let Some(as_pos) = Self::find_keyword_in_expr(&full_expr, " as ") {
+                let expr = full_expr[..as_pos].trim().to_string();
+                let expr_span = Span::new(
+                    expr_start,
+                    TextSize::from(u32::from(expr_start) + as_pos as u32),
+                );
+                let rest_start = as_pos + 4; // " as " is 4 chars
+                (expr, expr_span, &full_expr[rest_start..], rest_start)
+            } else {
+                (full_expr.trim().to_string(), full_span, "", 0)
+            };
 
-        let rest = parts.get(1).unwrap_or(&"").trim();
+        let rest = rest.trim();
 
-        // Parse context and index
-        let (context, index, key) = if let Some(paren_pos) = rest.find('(') {
-            let before_paren = &rest[..paren_pos].trim();
-            let key_expr = &rest[paren_pos + 1..rest.len() - 1];
+        // Parse context and index using brace-aware parsing
+        let (context, context_span, index, key) = if let Some(paren_pos) =
+            Self::find_char_in_expr(rest, '(')
+        {
+            // Has key expression: item, index (key)
+            let before_paren = rest[..paren_pos].trim();
 
-            let (ctx, idx) = if let Some(comma_pos) = before_paren.find(',') {
+            // Find the matching closing paren
+            let key_start = paren_pos + 1;
+            let key_end = rest.len().saturating_sub(1); // Remove trailing )
+            let key_expr = if key_start < key_end {
+                rest[key_start..key_end].trim().to_string()
+            } else {
+                String::new()
+            };
+
+            // Calculate key span
+            let key_span_start =
+                TextSize::from(u32::from(expr_start) + rest_offset as u32 + paren_pos as u32 + 1);
+            let key_span_end =
+                TextSize::from(u32::from(expr_start) + rest_offset as u32 + key_end as u32);
+
+            // Parse context and index from before_paren
+            let (ctx, ctx_span, idx) = if let Some(comma_pos) =
+                Self::find_char_in_expr(before_paren, ',')
+            {
+                let ctx = before_paren[..comma_pos].trim().to_string();
+                let ctx_span_start = TextSize::from(u32::from(expr_start) + rest_offset as u32);
+                let ctx_span_end =
+                    TextSize::from(u32::from(expr_start) + rest_offset as u32 + comma_pos as u32);
+                let idx = before_paren[comma_pos + 1..].trim();
                 (
-                    before_paren[..comma_pos].trim().to_string(),
-                    Some(SmolStr::new(before_paren[comma_pos + 1..].trim())),
+                    ctx,
+                    Span::new(ctx_span_start, ctx_span_end),
+                    Some(SmolStr::new(idx)),
                 )
             } else {
-                (before_paren.to_string(), None)
+                let ctx = before_paren.to_string();
+                let ctx_span_start = TextSize::from(u32::from(expr_start) + rest_offset as u32);
+                let ctx_span_end = TextSize::from(
+                    u32::from(expr_start) + rest_offset as u32 + before_paren.len() as u32,
+                );
+                (ctx, Span::new(ctx_span_start, ctx_span_end), None)
             };
 
             (
                 ctx,
+                ctx_span,
                 idx,
                 Some(EachKey {
-                    span: Span::empty(start),
-                    expression: key_expr.trim().to_string(),
+                    span: Span::new(key_span_start, key_span_end),
+                    expression: key_expr,
                 }),
             )
-        } else if let Some(comma_pos) = rest.find(',') {
+        } else if let Some(comma_pos) = Self::find_char_in_expr(rest, ',') {
+            // Has index but no key: item, index
+            let ctx = rest[..comma_pos].trim().to_string();
+            let ctx_span_start = TextSize::from(u32::from(expr_start) + rest_offset as u32);
+            let ctx_span_end =
+                TextSize::from(u32::from(expr_start) + rest_offset as u32 + comma_pos as u32);
+            let idx = rest[comma_pos + 1..].trim();
             (
-                rest[..comma_pos].trim().to_string(),
-                Some(SmolStr::new(rest[comma_pos + 1..].trim())),
+                ctx,
+                Span::new(ctx_span_start, ctx_span_end),
+                Some(SmolStr::new(idx)),
                 None,
             )
         } else {
-            (rest.to_string(), None, None)
+            // Just context: item
+            let ctx = rest.to_string();
+            let ctx_span_start = TextSize::from(u32::from(expr_start) + rest_offset as u32);
+            let ctx_span_end =
+                TextSize::from(u32::from(expr_start) + rest_offset as u32 + rest.len() as u32);
+            (ctx, Span::new(ctx_span_start, ctx_span_end), None, None)
         };
-
-        let context_span = Span::empty(start); // Simplified
 
         // Parse body
         let body = self.parse_block_children(&["{:else", "{/each"]);
 
         // Check for else
         let fallback = if self.check_source("{:else}") {
-            self.advance(); // {
-            self.advance(); // :
-            self.advance(); // else
-            self.eat(TokenKind::RBrace);
+            self.eat(TokenKind::LBraceColon); // {:
+            self.eat(TokenKind::Else);        // else
+            self.eat(TokenKind::RBrace);      // }
             Some(self.parse_block_children(&["{/each"]))
         } else {
             None
@@ -967,33 +1359,41 @@ impl<'src> Parser<'src> {
 
     /// Parses an await block.
     fn parse_await_block(&mut self, start: TextSize) -> Option<TemplateNode> {
-        let (full_expr, expression_span) = self.read_until(&["}"]);
+        let expr_start = self.current().span.start;
+        let (full_expr, full_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
         // Check for shorthand: {#await promise then value}
-        let (expression, immediate_then) = if full_expr.contains(" then ") {
-            let parts: Vec<&str> = full_expr.split(" then ").collect();
-            (
-                parts[0].trim().to_string(),
-                Some(parts.get(1).unwrap_or(&"").trim().to_string()),
-            )
-        } else {
-            (full_expr.trim().to_string(), None)
-        };
+        // Use brace-aware parsing to find " then "
+        let (expression, expression_span, immediate_then) =
+            if let Some(then_pos) = Self::find_keyword_in_expr(&full_expr, " then ") {
+                let expr = full_expr[..then_pos].trim().to_string();
+                let expr_span = Span::new(
+                    expr_start,
+                    TextSize::from(u32::from(expr_start) + then_pos as u32),
+                );
+                let then_value = full_expr[then_pos + 6..].trim().to_string(); // " then " is 6 chars
+                (expr, expr_span, Some(then_value))
+            } else {
+                (full_expr.trim().to_string(), full_span, None)
+            };
 
         // Parse pending content or body
         let (pending, then, catch) = if let Some(then_value) = immediate_then {
+            let then_start = self.current().span.start;
             let body = self.parse_block_children(&["{:catch", "{/await"]);
+            let then_end = self.current().span.start;
 
             let catch_block = if self.check_source("{:catch") {
-                self.advance();
-                self.advance();
-                self.advance();
-                let (error_name, _) = self.read_until(&["}"]);
+                let catch_start = self.current().span.start;
+                self.eat(TokenKind::LBraceColon); // {:
+                self.eat(TokenKind::Catch);       // catch
+                let (error_name, _) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
                 let catch_body = self.parse_block_children(&["{/await"]);
+                let catch_end = self.current().span.start;
                 Some(AwaitCatch {
-                    span: Span::empty(start),
+                    span: Span::new(catch_start, catch_end),
                     error: if error_name.trim().is_empty() {
                         None
                     } else {
@@ -1008,7 +1408,7 @@ impl<'src> Parser<'src> {
             (
                 None,
                 Some(AwaitThen {
-                    span: Span::empty(start),
+                    span: Span::new(then_start, then_end),
                     value: if then_value.is_empty() {
                         None
                     } else {
@@ -1022,14 +1422,15 @@ impl<'src> Parser<'src> {
             let pending = self.parse_block_children(&["{:then", "{:catch", "{/await"]);
 
             let then_block = if self.check_source("{:then") {
-                self.advance();
-                self.advance();
-                self.advance();
-                let (value_name, _) = self.read_until(&["}"]);
+                let then_start = self.current().span.start;
+                self.eat(TokenKind::LBraceColon); // {:
+                self.eat(TokenKind::Then);        // then
+                let (value_name, _) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
                 let then_body = self.parse_block_children(&["{:catch", "{/await"]);
+                let then_end = self.current().span.start;
                 Some(AwaitThen {
-                    span: Span::empty(start),
+                    span: Span::new(then_start, then_end),
                     value: if value_name.trim().is_empty() {
                         None
                     } else {
@@ -1042,14 +1443,15 @@ impl<'src> Parser<'src> {
             };
 
             let catch_block = if self.check_source("{:catch") {
-                self.advance();
-                self.advance();
-                self.advance();
-                let (error_name, _) = self.read_until(&["}"]);
+                let catch_start = self.current().span.start;
+                self.eat(TokenKind::LBraceColon); // {:
+                self.eat(TokenKind::Catch);       // catch
+                let (error_name, _) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
                 let catch_body = self.parse_block_children(&["{/await"]);
+                let catch_end = self.current().span.start;
                 Some(AwaitCatch {
-                    span: Span::empty(start),
+                    span: Span::new(catch_start, catch_end),
                     error: if error_name.trim().is_empty() {
                         None
                     } else {
@@ -1087,7 +1489,7 @@ impl<'src> Parser<'src> {
 
     /// Parses a key block.
     fn parse_key_block(&mut self, start: TextSize) -> Option<TemplateNode> {
-        let (expression, expression_span) = self.read_until(&["}"]);
+        let (expression, expression_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
         let body = self.parse_block_children(&["{/key"]);
@@ -1113,23 +1515,41 @@ impl<'src> Parser<'src> {
 
     /// Parses a snippet block.
     fn parse_snippet_block(&mut self, start: TextSize) -> Option<TemplateNode> {
-        let (full_signature, _) = self.read_until(&["}"]);
+        let sig_start = self.current().span.start;
+        let (full_signature, _) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
         // Parse name and parameters: name(params)
-        let (name, parameters, parameters_span) = if let Some(paren_pos) = full_signature.find('(')
-        {
-            let name = full_signature[..paren_pos].trim();
-            let params_end = full_signature.rfind(')').unwrap_or(full_signature.len());
-            let params = &full_signature[paren_pos + 1..params_end];
-            (SmolStr::new(name), params.to_string(), Span::empty(start))
-        } else {
-            (
-                SmolStr::new(full_signature.trim()),
-                String::new(),
-                Span::empty(start),
-            )
-        };
+        // Use brace-aware parsing for the parenthesis
+        let (name, parameters, parameters_span) =
+            if let Some(paren_pos) = Self::find_char_in_expr(&full_signature, '(') {
+                let name = full_signature[..paren_pos].trim();
+
+                // Find matching closing paren at depth 0
+                let params_start = paren_pos + 1;
+                let params_end = full_signature.len().saturating_sub(1); // Remove trailing )
+                let params = if params_start < params_end {
+                    full_signature[params_start..params_end].to_string()
+                } else {
+                    String::new()
+                };
+
+                // Calculate parameters span
+                let params_span_start = TextSize::from(u32::from(sig_start) + paren_pos as u32 + 1);
+                let params_span_end = TextSize::from(u32::from(sig_start) + params_end as u32);
+
+                (
+                    SmolStr::new(name),
+                    params,
+                    Span::new(params_span_start, params_span_end),
+                )
+            } else {
+                (
+                    SmolStr::new(full_signature.trim()),
+                    String::new(),
+                    Span::empty(sig_start),
+                )
+            };
 
         let body = self.parse_block_children(&["{/snippet"]);
 
@@ -1204,7 +1624,7 @@ impl<'src> Parser<'src> {
 
         match tag_type.as_str() {
             "html" => {
-                let (expression, expression_span) = self.read_until(&["}"]);
+                let (expression, expression_span) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
 
                 let end = self
@@ -1220,7 +1640,7 @@ impl<'src> Parser<'src> {
                 }))
             }
             "const" => {
-                let (declaration, declaration_span) = self.read_until(&["}"]);
+                let (declaration, declaration_span) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
 
                 let end = self
@@ -1236,7 +1656,7 @@ impl<'src> Parser<'src> {
                 }))
             }
             "debug" => {
-                let (identifiers_str, _) = self.read_until(&["}"]);
+                let (identifiers_str, _) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
 
                 let identifiers: Vec<SmolStr> = identifiers_str
@@ -1257,7 +1677,7 @@ impl<'src> Parser<'src> {
                 }))
             }
             "render" => {
-                let (expression, expression_span) = self.read_until(&["}"]);
+                let (expression, expression_span) = self.read_expression_until('}');
                 self.eat(TokenKind::RBrace);
 
                 let end = self
@@ -1289,7 +1709,7 @@ impl<'src> Parser<'src> {
             return None;
         }
 
-        let (expression, expression_span) = self.read_until(&["}"]);
+        let (expression, expression_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
         let end = self
@@ -1430,6 +1850,209 @@ mod tests {
             assert_eq!(expr.expression.trim(), "value");
         } else {
             panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_nested_braces_in_expression() {
+        // Test that expressions with nested braces are parsed correctly
+        let result =
+            Parser::new("{items.map(x => { return x; })}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "items.map(x => { return x; })");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_object_literal_in_expression() {
+        let result = Parser::new("{obj = { a: 1, b: 2 }}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "obj = { a: 1, b: 2 }");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_directive_with_modifiers() {
+        let result = Parser::new(
+            r#"<button on:click|preventDefault|stopPropagation={handler}>Click</button>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert_eq!(el.attributes.len(), 1);
+            if let Attribute::Directive(dir) = &el.attributes[0] {
+                assert_eq!(dir.kind, DirectiveKind::On);
+                assert_eq!(dir.name.as_str(), "click");
+                assert_eq!(dir.modifiers.len(), 2);
+                assert_eq!(dir.modifiers[0].as_str(), "preventDefault");
+                assert_eq!(dir.modifiers[1].as_str(), "stopPropagation");
+            } else {
+                panic!("Expected Directive");
+            }
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    #[test]
+    fn test_parse_each_with_index_and_key() {
+        let result = Parser::new(
+            "{#each items as item, index (item.id)}{item}{/each}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::EachBlock(block) = &result.document.fragment.nodes[0] {
+            assert_eq!(block.expression.trim(), "items");
+            assert_eq!(block.context.trim(), "item");
+            assert_eq!(block.index, Some(SmolStr::new("index")));
+            assert!(block.key.is_some());
+            let key = block.key.as_ref().unwrap();
+            assert_eq!(key.expression.trim(), "item.id");
+        } else {
+            panic!("Expected EachBlock");
+        }
+    }
+
+    #[test]
+    fn test_parse_if_with_complex_condition() {
+        let result = Parser::new(
+            "{#if obj.method({ key: 'value' })}yes{/if}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::IfBlock(block) = &result.document.fragment.nodes[0] {
+            assert_eq!(block.condition.trim(), "obj.method({ key: 'value' })");
+        } else {
+            panic!("Expected IfBlock");
+        }
+    }
+
+    #[test]
+    fn test_parse_render_with_nested_call() {
+        let result = Parser::new(
+            "{@render snippet({ data: { nested: true } })}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::RenderTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.expression.trim(), "snippet({ data: { nested: true } })");
+        } else {
+            panic!("Expected RenderTag");
+        }
+    }
+
+    #[test]
+    fn test_parse_comment() {
+        let result = Parser::new(
+            "<!-- This is a comment --><div>content</div>",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Comment(comment) = &result.document.fragment.nodes[0] {
+            assert_eq!(comment.data.trim(), "This is a comment");
+        } else {
+            panic!("Expected Comment, got {:?}", result.document.fragment.nodes[0]);
+        }
+    }
+
+    #[test]
+    fn test_parse_comment_multiline() {
+        let result = Parser::new(
+            "<!--\n  Multi-line\n  comment\n--><div/>",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Comment(comment) = &result.document.fragment.nodes[0] {
+            assert!(comment.data.contains("Multi-line"));
+            assert!(comment.data.contains("comment"));
+        } else {
+            panic!("Expected Comment");
+        }
+    }
+
+    #[test]
+    fn test_parse_concatenated_attribute() {
+        let result = Parser::new(
+            "<div class=\"static-{dynamic}-end\"/>",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert_eq!(el.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &el.attributes[0] {
+                assert_eq!(attr.name.as_str(), "class");
+                if let AttributeValue::Concat(parts) = &attr.value {
+                    assert_eq!(parts.len(), 3);
+                    if let AttributeValuePart::Text(text) = &parts[0] {
+                        assert_eq!(text.value, "static-");
+                    } else {
+                        panic!("Expected Text");
+                    }
+                    if let AttributeValuePart::Expression(expr) = &parts[1] {
+                        assert_eq!(expr.expression.trim(), "dynamic");
+                    } else {
+                        panic!("Expected Expression");
+                    }
+                    if let AttributeValuePart::Text(text) = &parts[2] {
+                        assert_eq!(text.value, "-end");
+                    } else {
+                        panic!("Expected Text");
+                    }
+                } else {
+                    panic!("Expected Concat, got {:?}", attr.value);
+                }
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_only_in_attribute() {
+        let result = Parser::new(
+            "<div class=\"{dynamic}\"/>",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            if let Attribute::Normal(attr) = &el.attributes[0] {
+                // Single expression in quotes simplifies to Expression
+                if let AttributeValue::Expression(expr) = &attr.value {
+                    assert_eq!(expr.expression.trim(), "dynamic");
+                } else {
+                    panic!("Expected Expression, got {:?}", attr.value);
+                }
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Element");
         }
     }
 }

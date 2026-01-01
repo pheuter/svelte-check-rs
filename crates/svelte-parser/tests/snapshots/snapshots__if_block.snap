@@ -1,0 +1,111 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{#if show}
+    <p>Visible</p>
+{:else}
+    <p>Hidden</p>
+{/if}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            IfBlock(
+                IfBlock {
+                    span: Span {
+                        start: 0,
+                        end: 61,
+                    },
+                    condition_span: Span {
+                        start: 5,
+                        end: 9,
+                    },
+                    condition: "show",
+                    consequent: Fragment {
+                        nodes: [
+                            Element(
+                                Element {
+                                    span: Span {
+                                        start: 15,
+                                        end: 29,
+                                    },
+                                    name: "p",
+                                    attributes: [],
+                                    children: [
+                                        Text(
+                                            Text {
+                                                span: Span {
+                                                    start: 18,
+                                                    end: 25,
+                                                },
+                                                data: "Visible",
+                                                is_whitespace: false,
+                                            },
+                                        ),
+                                    ],
+                                    self_closing: false,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 10,
+                            end: 29,
+                        },
+                    },
+                    alternate: Some(
+                        Else(
+                            Fragment {
+                                nodes: [
+                                    Element(
+                                        Element {
+                                            span: Span {
+                                                start: 42,
+                                                end: 55,
+                                            },
+                                            name: "p",
+                                            attributes: [],
+                                            children: [
+                                                Text(
+                                                    Text {
+                                                        span: Span {
+                                                            start: 45,
+                                                            end: 51,
+                                                        },
+                                                        data: "Hidden",
+                                                        is_whitespace: false,
+                                                    },
+                                                ),
+                                            ],
+                                            self_closing: false,
+                                        },
+                                    ),
+                                ],
+                                span: Span {
+                                    start: 37,
+                                    end: 55,
+                                },
+                            },
+                        ),
+                    ),
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 61,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 61,
+    },
+}

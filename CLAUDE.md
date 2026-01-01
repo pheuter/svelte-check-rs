@@ -8,11 +8,16 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**). See `ARCHITECT
 cargo build                    # Build all crates
 cargo test                     # Run all tests
 cargo test -p <crate>          # Test specific crate (svelte-parser, source-map, etc.)
-cargo insta test               # Run tests with snapshot updates
-cargo insta review             # Review/approve snapshots
+cargo test --test snapshots    # Run snapshot tests only
+cargo test --test corpus_test  # Run corpus/fixture tests only
 cargo clippy --all-targets     # Lint
 cargo fmt                      # Format (always run before committing)
 cargo run -p svelte-check-rs -- --workspace ./path/to/project
+```
+
+**Snapshots**: Located in `crates/svelte-parser/tests/snapshots/`. To accept new snapshots after parser changes:
+```bash
+for f in crates/svelte-parser/tests/snapshots/*.snap.new; do mv "$f" "${f%.new}"; done
 ```
 
 ## Conventions

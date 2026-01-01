@@ -407,4 +407,249 @@ mod tests {
             ]
         );
     }
+
+    // === Edge Case Tests ===
+
+    #[test]
+    fn test_adjacent_braces() {
+        let tokens = tokenize("{}}{");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LBrace,
+                TokenKind::RBrace,
+                TokenKind::RBrace,
+                TokenKind::LBrace
+            ]
+        );
+    }
+
+    #[test]
+    fn test_block_token_priority() {
+        // {# has higher priority than {
+        let tokens = tokenize("{#if}{:else}{/if}");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LBraceHash,
+                TokenKind::If,
+                TokenKind::RBrace,
+                TokenKind::LBraceColon,
+                TokenKind::Else,
+                TokenKind::RBrace,
+                TokenKind::LBraceSlash,
+                TokenKind::If,
+                TokenKind::RBrace
+            ]
+        );
+    }
+
+    #[test]
+    fn test_namespaced_identifier() {
+        let tokens = tokenize("<svelte:head>");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LAngle,
+                TokenKind::NamespacedIdent,
+                TokenKind::Ident,
+                TokenKind::RAngle
+            ]
+        );
+    }
+
+    #[test]
+    fn test_directive_tokens() {
+        let tokens = tokenize("on:click|preventDefault");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::NamespacedIdent,
+                TokenKind::Ident,
+                TokenKind::Pipe,
+                TokenKind::Ident
+            ]
+        );
+    }
+
+    #[test]
+    fn test_each_block_tokens() {
+        let tokens = tokenize("{#each items as item, index (item.id)}");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LBraceHash,
+                TokenKind::Each,
+                TokenKind::Ident,
+                TokenKind::As,
+                TokenKind::Ident,
+                TokenKind::Comma,
+                TokenKind::Ident,
+                TokenKind::LParen,
+                TokenKind::Ident,
+                TokenKind::Text, // .
+                TokenKind::Ident,
+                TokenKind::RParen,
+                TokenKind::RBrace
+            ]
+        );
+    }
+
+    #[test]
+    fn test_await_block_tokens() {
+        let tokens = tokenize("{#await promise then value}");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LBraceHash,
+                TokenKind::Await,
+                TokenKind::Ident,
+                TokenKind::Then,
+                TokenKind::Ident,
+                TokenKind::RBrace
+            ]
+        );
+    }
+
+    #[test]
+    fn test_special_tags() {
+        let tokens = tokenize("{@html content}{@const x = 1}{@debug foo}");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LBraceAt,
+                TokenKind::Html,
+                TokenKind::Ident,
+                TokenKind::RBrace,
+                TokenKind::LBraceAt,
+                TokenKind::Const,
+                TokenKind::Ident,
+                TokenKind::Eq,
+                TokenKind::Number,
+                TokenKind::RBrace,
+                TokenKind::LBraceAt,
+                TokenKind::Debug,
+                TokenKind::Ident,
+                TokenKind::RBrace
+            ]
+        );
+    }
+
+    #[test]
+    fn test_quotes() {
+        let tokens = tokenize("class=\"foo\" id='bar'");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::Ident,
+                TokenKind::Eq,
+                TokenKind::DoubleQuote,
+                TokenKind::Ident,
+                TokenKind::DoubleQuote,
+                TokenKind::Ident,
+                TokenKind::Eq,
+                TokenKind::SingleQuote,
+                TokenKind::Ident,
+                TokenKind::SingleQuote
+            ]
+        );
+    }
+
+    #[test]
+    fn test_numbers() {
+        // + is not in the Text regex, so it becomes Error
+        let tokens = tokenize("{count + 42}");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LBrace,
+                TokenKind::Ident,
+                TokenKind::Error, // +
+                TokenKind::Number,
+                TokenKind::RBrace
+            ]
+        );
+    }
+
+    #[test]
+    fn test_newlines() {
+        let tokens = tokenize("<div\n  class=\"foo\"\n>");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LAngle,
+                TokenKind::Ident,
+                TokenKind::Newline,
+                TokenKind::Ident,
+                TokenKind::Eq,
+                TokenKind::DoubleQuote,
+                TokenKind::Ident,
+                TokenKind::DoubleQuote,
+                TokenKind::Newline,
+                TokenKind::RAngle
+            ]
+        );
+    }
+
+    #[test]
+    fn test_slash_token() {
+        let tokens = tokenize("a/b");
+        assert_eq!(
+            tokens,
+            vec![TokenKind::Ident, TokenKind::Slash, TokenKind::Ident]
+        );
+    }
+
+    #[test]
+    fn test_script_and_style_keywords() {
+        let tokens = tokenize("<script><style>");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LAngle,
+                TokenKind::Script,
+                TokenKind::RAngle,
+                TokenKind::LAngle,
+                TokenKind::Style,
+                TokenKind::RAngle
+            ]
+        );
+    }
+
+    #[test]
+    fn test_key_block() {
+        let tokens = tokenize("{#key id}{/key}");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::LBraceHash,
+                TokenKind::Key,
+                TokenKind::Ident,
+                TokenKind::RBrace,
+                TokenKind::LBraceSlash,
+                TokenKind::Key,
+                TokenKind::RBrace
+            ]
+        );
+    }
+
+    #[test]
+    fn test_colon_token() {
+        // a: matches as NamespacedIdent, then b as Ident
+        let tokens = tokenize("a:b");
+        assert_eq!(
+            tokens,
+            vec![TokenKind::NamespacedIdent, TokenKind::Ident]
+        );
+    }
+
+    #[test]
+    fn test_standalone_colon() {
+        // Standalone colon after space
+        let tokens = tokenize("a : b");
+        assert_eq!(
+            tokens,
+            vec![TokenKind::Ident, TokenKind::Colon, TokenKind::Ident]
+        );
+    }
 }

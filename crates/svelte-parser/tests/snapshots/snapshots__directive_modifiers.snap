@@ -1,0 +1,79 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+<button on:click|preventDefault|stopPropagation={handler}>Click</button>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 72,
+                    },
+                    name: "button",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 8,
+                                    end: 57,
+                                },
+                                kind: On,
+                                name: "click",
+                                modifiers: [
+                                    "preventDefault",
+                                    "stopPropagation",
+                                ],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 8,
+                                            end: 57,
+                                        },
+                                        expression_span: Span {
+                                            start: 49,
+                                            end: 56,
+                                        },
+                                        expression: "handler",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 58,
+                                    end: 63,
+                                },
+                                data: "Click",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 72,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 72,
+    },
+}

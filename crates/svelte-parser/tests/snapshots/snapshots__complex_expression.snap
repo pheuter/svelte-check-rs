@@ -1,0 +1,98 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{#each items.map(x => ({ ...x, doubled: x.value * 2 })) as item}
+    <p>{item.name}: {item.doubled}</p>
+{/each}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            EachBlock(
+                EachBlock {
+                    span: Span {
+                        start: 0,
+                        end: 111,
+                    },
+                    expression_span: Span {
+                        start: 7,
+                        end: 55,
+                    },
+                    expression: "items.map(x => ({ ...x, doubled: x.value * 2 }))",
+                    context: "item",
+                    context_span: Span {
+                        start: 59,
+                        end: 63,
+                    },
+                    index: None,
+                    key: None,
+                    body: Fragment {
+                        nodes: [
+                            Element(
+                                Element {
+                                    span: Span {
+                                        start: 69,
+                                        end: 103,
+                                    },
+                                    name: "p",
+                                    attributes: [],
+                                    children: [
+                                        Expression(
+                                            ExpressionTag {
+                                                span: Span {
+                                                    start: 72,
+                                                    end: 83,
+                                                },
+                                                expression_span: Span {
+                                                    start: 73,
+                                                    end: 82,
+                                                },
+                                                expression: "item.name",
+                                            },
+                                        ),
+                                        Expression(
+                                            ExpressionTag {
+                                                span: Span {
+                                                    start: 85,
+                                                    end: 99,
+                                                },
+                                                expression_span: Span {
+                                                    start: 86,
+                                                    end: 98,
+                                                },
+                                                expression: "item.doubled",
+                                            },
+                                        ),
+                                    ],
+                                    self_closing: false,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 64,
+                            end: 103,
+                        },
+                    },
+                    fallback: None,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 111,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 111,
+    },
+}

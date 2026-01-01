@@ -1,0 +1,142 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{#each items as item, index (item.id)}
+    <p>{index}: {item.name}</p>
+{:else}
+    <p>No items</p>
+{/each}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            EachBlock(
+                EachBlock {
+                    span: Span {
+                        start: 0,
+                        end: 106,
+                    },
+                    expression_span: Span {
+                        start: 7,
+                        end: 12,
+                    },
+                    expression: "items",
+                    context: "item",
+                    context_span: Span {
+                        start: 16,
+                        end: 20,
+                    },
+                    index: Some(
+                        "index",
+                    ),
+                    key: Some(
+                        EachKey {
+                            span: Span {
+                                start: 29,
+                                end: 36,
+                            },
+                            expression: "item.id",
+                        },
+                    ),
+                    body: Fragment {
+                        nodes: [
+                            Element(
+                                Element {
+                                    span: Span {
+                                        start: 43,
+                                        end: 70,
+                                    },
+                                    name: "p",
+                                    attributes: [],
+                                    children: [
+                                        Expression(
+                                            ExpressionTag {
+                                                span: Span {
+                                                    start: 46,
+                                                    end: 53,
+                                                },
+                                                expression_span: Span {
+                                                    start: 47,
+                                                    end: 52,
+                                                },
+                                                expression: "index",
+                                            },
+                                        ),
+                                        Expression(
+                                            ExpressionTag {
+                                                span: Span {
+                                                    start: 55,
+                                                    end: 66,
+                                                },
+                                                expression_span: Span {
+                                                    start: 56,
+                                                    end: 65,
+                                                },
+                                                expression: "item.name",
+                                            },
+                                        ),
+                                    ],
+                                    self_closing: false,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 38,
+                            end: 70,
+                        },
+                    },
+                    fallback: Some(
+                        Fragment {
+                            nodes: [
+                                Element(
+                                    Element {
+                                        span: Span {
+                                            start: 83,
+                                            end: 98,
+                                        },
+                                        name: "p",
+                                        attributes: [],
+                                        children: [
+                                            Text(
+                                                Text {
+                                                    span: Span {
+                                                        start: 86,
+                                                        end: 94,
+                                                    },
+                                                    data: "Noitems",
+                                                    is_whitespace: false,
+                                                },
+                                            ),
+                                        ],
+                                        self_closing: false,
+                                    },
+                                ),
+                            ],
+                            span: Span {
+                                start: 78,
+                                end: 98,
+                            },
+                        },
+                    ),
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 106,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 106,
+    },
+}

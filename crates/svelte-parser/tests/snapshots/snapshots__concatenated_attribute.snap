@@ -1,0 +1,131 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+<div class="prefix-{middle}-suffix" data-id="id-{id}">Content</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 67,
+                    },
+                    name: "div",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 35,
+                                },
+                                name: "class",
+                                value: Concat(
+                                    [
+                                        Text(
+                                            TextValue {
+                                                span: Span {
+                                                    start: 12,
+                                                    end: 19,
+                                                },
+                                                value: "prefix-",
+                                            },
+                                        ),
+                                        Expression(
+                                            ExpressionValue {
+                                                span: Span {
+                                                    start: 19,
+                                                    end: 27,
+                                                },
+                                                expression_span: Span {
+                                                    start: 20,
+                                                    end: 26,
+                                                },
+                                                expression: "middle",
+                                            },
+                                        ),
+                                        Text(
+                                            TextValue {
+                                                span: Span {
+                                                    start: 27,
+                                                    end: 34,
+                                                },
+                                                value: "-suffix",
+                                            },
+                                        ),
+                                    ],
+                                ),
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 36,
+                                    end: 53,
+                                },
+                                name: "data-id",
+                                value: Concat(
+                                    [
+                                        Text(
+                                            TextValue {
+                                                span: Span {
+                                                    start: 45,
+                                                    end: 48,
+                                                },
+                                                value: "id-",
+                                            },
+                                        ),
+                                        Expression(
+                                            ExpressionValue {
+                                                span: Span {
+                                                    start: 48,
+                                                    end: 52,
+                                                },
+                                                expression_span: Span {
+                                                    start: 49,
+                                                    end: 51,
+                                                },
+                                                expression: "id",
+                                            },
+                                        ),
+                                    ],
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 54,
+                                    end: 61,
+                                },
+                                data: "Content",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 67,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 67,
+    },
+}

@@ -1,0 +1,159 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{#if status === 'loading'}
+    <p>Loading...</p>
+{:else if status === 'error'}
+    <p>Error</p>
+{:else}
+    <p>Ready</p>
+{/if}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            IfBlock(
+                IfBlock {
+                    span: Span {
+                        start: 0,
+                        end: 126,
+                    },
+                    condition_span: Span {
+                        start: 5,
+                        end: 25,
+                    },
+                    condition: "status === 'loading'",
+                    consequent: Fragment {
+                        nodes: [
+                            Element(
+                                Element {
+                                    span: Span {
+                                        start: 31,
+                                        end: 48,
+                                    },
+                                    name: "p",
+                                    attributes: [],
+                                    children: [
+                                        Text(
+                                            Text {
+                                                span: Span {
+                                                    start: 34,
+                                                    end: 44,
+                                                },
+                                                data: "Loading...",
+                                                is_whitespace: false,
+                                            },
+                                        ),
+                                    ],
+                                    self_closing: false,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 26,
+                            end: 48,
+                        },
+                    },
+                    alternate: Some(
+                        ElseIf(
+                            IfBlock {
+                                span: Span {
+                                    start: 56,
+                                    end: 126,
+                                },
+                                condition_span: Span {
+                                    start: 56,
+                                    end: 77,
+                                },
+                                condition: "if status === 'error'",
+                                consequent: Fragment {
+                                    nodes: [
+                                        Element(
+                                            Element {
+                                                span: Span {
+                                                    start: 83,
+                                                    end: 95,
+                                                },
+                                                name: "p",
+                                                attributes: [],
+                                                children: [
+                                                    Text(
+                                                        Text {
+                                                            span: Span {
+                                                                start: 86,
+                                                                end: 91,
+                                                            },
+                                                            data: "Error",
+                                                            is_whitespace: false,
+                                                        },
+                                                    ),
+                                                ],
+                                                self_closing: false,
+                                            },
+                                        ),
+                                    ],
+                                    span: Span {
+                                        start: 78,
+                                        end: 95,
+                                    },
+                                },
+                                alternate: Some(
+                                    Else(
+                                        Fragment {
+                                            nodes: [
+                                                Element(
+                                                    Element {
+                                                        span: Span {
+                                                            start: 108,
+                                                            end: 120,
+                                                        },
+                                                        name: "p",
+                                                        attributes: [],
+                                                        children: [
+                                                            Text(
+                                                                Text {
+                                                                    span: Span {
+                                                                        start: 111,
+                                                                        end: 116,
+                                                                    },
+                                                                    data: "Ready",
+                                                                    is_whitespace: false,
+                                                                },
+                                                            ),
+                                                        ],
+                                                        self_closing: false,
+                                                    },
+                                                ),
+                                            ],
+                                            span: Span {
+                                                start: 103,
+                                                end: 120,
+                                            },
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 126,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 126,
+    },
+}

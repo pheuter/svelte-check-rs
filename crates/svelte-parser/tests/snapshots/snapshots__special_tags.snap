@@ -1,0 +1,65 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{@html content}{@const x = 1}{@debug foo}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            HtmlTag(
+                HtmlTag {
+                    span: Span {
+                        start: 0,
+                        end: 15,
+                    },
+                    expression_span: Span {
+                        start: 7,
+                        end: 14,
+                    },
+                    expression: "content",
+                },
+            ),
+            ConstTag(
+                ConstTag {
+                    span: Span {
+                        start: 15,
+                        end: 29,
+                    },
+                    declaration_span: Span {
+                        start: 23,
+                        end: 28,
+                    },
+                    declaration: "x = 1",
+                },
+            ),
+            DebugTag(
+                DebugTag {
+                    span: Span {
+                        start: 29,
+                        end: 41,
+                    },
+                    identifiers: [
+                        "foo",
+                    ],
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 41,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 41,
+    },
+}

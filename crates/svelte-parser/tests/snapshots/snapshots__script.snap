@@ -1,0 +1,98 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+<script>
+    let count = $state(0);
+</script>
+
+<button on:click={() => count++}>{count}</button>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: Some(
+        Script {
+            span: Span {
+                start: 0,
+                end: 45,
+            },
+            content_span: Span {
+                start: 8,
+                end: 36,
+            },
+            content: "\n    let count = $state(0);\n",
+            lang: JavaScript,
+            context: Default,
+            attributes: [],
+        },
+    ),
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 47,
+                        end: 96,
+                    },
+                    name: "button",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 55,
+                                    end: 79,
+                                },
+                                kind: On,
+                                name: "click",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 55,
+                                            end: 79,
+                                        },
+                                        expression_span: Span {
+                                            start: 65,
+                                            end: 78,
+                                        },
+                                        expression: "() => count++",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Expression(
+                            ExpressionTag {
+                                span: Span {
+                                    start: 80,
+                                    end: 87,
+                                },
+                                expression_span: Span {
+                                    start: 81,
+                                    end: 86,
+                                },
+                                expression: "count",
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 96,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 96,
+    },
+}

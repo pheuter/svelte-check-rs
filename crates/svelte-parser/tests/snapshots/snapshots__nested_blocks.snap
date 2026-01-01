@@ -1,0 +1,133 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{#if outer}
+    {#each items as item}
+        {#if item.visible}
+            <p>{item.name}</p>
+        {/if}
+    {/each}
+{/if}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            IfBlock(
+                IfBlock {
+                    span: Span {
+                        start: 0,
+                        end: 127,
+                    },
+                    condition_span: Span {
+                        start: 5,
+                        end: 10,
+                    },
+                    condition: "outer",
+                    consequent: Fragment {
+                        nodes: [
+                            EachBlock(
+                                EachBlock {
+                                    span: Span {
+                                        start: 16,
+                                        end: 121,
+                                    },
+                                    expression_span: Span {
+                                        start: 23,
+                                        end: 28,
+                                    },
+                                    expression: "items",
+                                    context: "item",
+                                    context_span: Span {
+                                        start: 32,
+                                        end: 36,
+                                    },
+                                    index: None,
+                                    key: None,
+                                    body: Fragment {
+                                        nodes: [
+                                            IfBlock(
+                                                IfBlock {
+                                                    span: Span {
+                                                        start: 46,
+                                                        end: 109,
+                                                    },
+                                                    condition_span: Span {
+                                                        start: 51,
+                                                        end: 63,
+                                                    },
+                                                    condition: "item.visible",
+                                                    consequent: Fragment {
+                                                        nodes: [
+                                                            Element(
+                                                                Element {
+                                                                    span: Span {
+                                                                        start: 77,
+                                                                        end: 95,
+                                                                    },
+                                                                    name: "p",
+                                                                    attributes: [],
+                                                                    children: [
+                                                                        Expression(
+                                                                            ExpressionTag {
+                                                                                span: Span {
+                                                                                    start: 80,
+                                                                                    end: 91,
+                                                                                },
+                                                                                expression_span: Span {
+                                                                                    start: 81,
+                                                                                    end: 90,
+                                                                                },
+                                                                                expression: "item.name",
+                                                                            },
+                                                                        ),
+                                                                    ],
+                                                                    self_closing: false,
+                                                                },
+                                                            ),
+                                                        ],
+                                                        span: Span {
+                                                            start: 64,
+                                                            end: 95,
+                                                        },
+                                                    },
+                                                    alternate: None,
+                                                },
+                                            ),
+                                        ],
+                                        span: Span {
+                                            start: 37,
+                                            end: 109,
+                                        },
+                                    },
+                                    fallback: None,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 11,
+                            end: 121,
+                        },
+                    },
+                    alternate: None,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 127,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 127,
+    },
+}

@@ -1,0 +1,143 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+<MyComponent prop={value} on:click={handler}>
+    <span slot="header">Header</span>
+    Content
+</MyComponent>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 110,
+                    },
+                    name: "MyComponent",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 13,
+                                    end: 25,
+                                },
+                                name: "prop",
+                                value: Expression(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 18,
+                                            end: 25,
+                                        },
+                                        expression_span: Span {
+                                            start: 19,
+                                            end: 24,
+                                        },
+                                        expression: "value",
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 26,
+                                    end: 44,
+                                },
+                                kind: On,
+                                name: "click",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 26,
+                                            end: 44,
+                                        },
+                                        expression_span: Span {
+                                            start: 36,
+                                            end: 43,
+                                        },
+                                        expression: "handler",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Element(
+                            Element {
+                                span: Span {
+                                    start: 50,
+                                    end: 83,
+                                },
+                                name: "span",
+                                attributes: [
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 56,
+                                                end: 69,
+                                            },
+                                            name: "slot",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 62,
+                                                        end: 68,
+                                                    },
+                                                    value: "header",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ],
+                                children: [
+                                    Text(
+                                        Text {
+                                            span: Span {
+                                                start: 70,
+                                                end: 76,
+                                            },
+                                            data: "Header",
+                                            is_whitespace: false,
+                                        },
+                                    ),
+                                ],
+                                self_closing: false,
+                            },
+                        ),
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 88,
+                                    end: 96,
+                                },
+                                data: "Content\n",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 110,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 110,
+    },
+}

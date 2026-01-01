@@ -1,0 +1,60 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+<!-- This is a comment --><div>Content</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Comment(
+                Comment {
+                    span: Span {
+                        start: 0,
+                        end: 26,
+                    },
+                    data: " This is a comment ",
+                },
+            ),
+            Element(
+                Element {
+                    span: Span {
+                        start: 26,
+                        end: 44,
+                    },
+                    name: "div",
+                    attributes: [],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 31,
+                                    end: 38,
+                                },
+                                data: "Content",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 44,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 44,
+    },
+}

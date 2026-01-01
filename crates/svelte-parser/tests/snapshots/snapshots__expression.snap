@@ -1,0 +1,54 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+<p>{message}</p>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 16,
+                    },
+                    name: "p",
+                    attributes: [],
+                    children: [
+                        Expression(
+                            ExpressionTag {
+                                span: Span {
+                                    start: 3,
+                                    end: 12,
+                                },
+                                expression_span: Span {
+                                    start: 4,
+                                    end: 11,
+                                },
+                                expression: "message",
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 16,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 16,
+    },
+}

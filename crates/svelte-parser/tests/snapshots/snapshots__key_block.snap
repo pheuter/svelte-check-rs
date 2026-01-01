@@ -1,0 +1,73 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+{#key id}
+    <Component {id}/>
+{/key}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            KeyBlock(
+                KeyBlock {
+                    span: Span {
+                        start: 0,
+                        end: 38,
+                    },
+                    expression_span: Span {
+                        start: 6,
+                        end: 8,
+                    },
+                    expression: "id",
+                    body: Fragment {
+                        nodes: [
+                            Component(
+                                Component {
+                                    span: Span {
+                                        start: 14,
+                                        end: 31,
+                                    },
+                                    name: "Component",
+                                    attributes: [
+                                        Shorthand(
+                                            ShorthandAttribute {
+                                                span: Span {
+                                                    start: 25,
+                                                    end: 29,
+                                                },
+                                                name: "id",
+                                            },
+                                        ),
+                                    ],
+                                    children: [],
+                                    self_closing: true,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 9,
+                            end: 31,
+                        },
+                    },
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 38,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 38,
+    },
+}

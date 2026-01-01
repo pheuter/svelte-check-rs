@@ -1,0 +1,52 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 11
+expression: output
+---
+Source:
+<br/><input/>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 5,
+                    },
+                    name: "br",
+                    attributes: [],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+            Element(
+                Element {
+                    span: Span {
+                        start: 5,
+                        end: 13,
+                    },
+                    name: "input",
+                    attributes: [],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 13,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 13,
+    },
+}
