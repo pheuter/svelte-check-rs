@@ -28,5 +28,5 @@
 mod parser;
 mod runner;
 
-pub use parser::{TsgoDiagnostic, TsgoOutput};
-pub use runner::{TransformedFile, TransformedFiles, TsgoRunner};
+pub use parser::{DiagnosticSeverity, TsgoDiagnostic, TsgoOutput};
+pub use runner::{TransformedFile, TransformedFiles, TsgoError, TsgoRunner};

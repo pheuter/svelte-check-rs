@@ -30,6 +30,14 @@ pub enum TsgoError {
     /// Failed to write temporary files.
     #[error("failed to write temporary files: {0}")]
     TempFileFailed(String),
+
+    /// Failed to install tsgo.
+    #[error("failed to install tsgo: {0}")]
+    InstallFailed(String),
+
+    /// npm not found.
+    #[error("npm not found - please install Node.js to auto-download tsgo")]
+    NpmNotFound,
 }
 
 /// The tsgo runner.
@@ -69,7 +77,80 @@ impl TsgoRunner {
             }
         }
 
+        // Try cache directory
+        if let Some(cache_dir) = Self::get_cache_dir() {
+            let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
+            if tsgo_path.exists() {
+                return Some(tsgo_path);
+            }
+        }
+
         None
+    }
+
+    /// Gets the cache directory for svelte-check-rs.
+    fn get_cache_dir() -> Option<Utf8PathBuf> {
+        // Use XDG cache dir on Linux, ~/Library/Caches on macOS, etc.
+        dirs::cache_dir()
+            .and_then(|p| Utf8PathBuf::try_from(p).ok())
+            .map(|p| p.join("svelte-check-rs"))
+    }
+
+    /// Finds tsgo or installs it if not found.
+    ///
+    /// This will:
+    /// 1. Check if tsgo is in PATH
+    /// 2. Check common installation locations
+    /// 3. Check the cache directory
+    /// 4. If not found, install via npm in the cache directory
+    pub async fn ensure_tsgo() -> Result<Utf8PathBuf, TsgoError> {
+        // First try to find existing installation
+        if let Some(path) = Self::find_tsgo() {
+            return Ok(path);
+        }
+
+        // Need to install - check if npm is available
+        if which::which("npm").is_err() {
+            return Err(TsgoError::NpmNotFound);
+        }
+
+        // Get or create cache directory
+        let cache_dir = Self::get_cache_dir().ok_or_else(|| {
+            TsgoError::InstallFailed("could not determine cache directory".into())
+        })?;
+
+        std::fs::create_dir_all(&cache_dir)
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to create cache dir: {e}")))?;
+
+        eprintln!("tsgo not found, installing @typescript/native-preview...");
+
+        // Run npm install in cache directory
+        let output = Command::new("npm")
+            .args(["install", "@typescript/native-preview"])
+            .current_dir(&cache_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to run npm: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TsgoError::InstallFailed(format!(
+                "npm install failed: {stderr}"
+            )));
+        }
+
+        // Verify installation
+        let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
+        if !tsgo_path.exists() {
+            return Err(TsgoError::InstallFailed(
+                "tsgo binary not found after npm install".into(),
+            ));
+        }
+
+        eprintln!("tsgo installed successfully at {}", tsgo_path);
+        Ok(tsgo_path)
     }
 
     /// Runs type-checking on the transformed files.
@@ -85,6 +166,7 @@ impl TsgoRunner {
             .ok_or_else(|| TsgoError::TempFileFailed("invalid temp path".to_string()))?;
 
         // Write transformed files
+        let mut tsx_files = Vec::new();
         for (virtual_path, file) in &files.files {
             let full_path = temp_path.join(virtual_path);
             if let Some(parent) = full_path.parent() {
@@ -93,17 +175,50 @@ impl TsgoRunner {
             }
             std::fs::write(&full_path, &file.tsx_content)
                 .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+            tsx_files.push(full_path.to_string());
         }
 
-        // Find or create tsconfig.json
-        let tsconfig_path = self.project_root.join("tsconfig.json");
+        // Create a tsconfig.json in temp dir that extends the project's config
+        let project_tsconfig = self.project_root.join("tsconfig.json");
+        let temp_tsconfig = temp_path.join("tsconfig.json");
 
-        // Run tsgo
+        let tsconfig_content = if project_tsconfig.exists() {
+            // Extend the project's tsconfig
+            format!(
+                r#"{{
+  "extends": "{}",
+  "compilerOptions": {{
+    "noEmit": true,
+    "skipLibCheck": true
+  }},
+  "include": ["**/*.tsx"]
+}}"#,
+                project_tsconfig
+            )
+        } else {
+            // Create a minimal tsconfig
+            r#"{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["**/*.tsx"]
+}"#
+            .to_string()
+        };
+
+        std::fs::write(&temp_tsconfig, &tsconfig_content)
+            .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+
+        // Run tsgo on the temp directory
         let output = Command::new(&self.tsgo_path)
             .arg("--project")
-            .arg(&tsconfig_path)
-            .arg("--noEmit")
-            .current_dir(&self.project_root)
+            .arg(&temp_tsconfig)
+            .current_dir(temp_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -137,6 +252,8 @@ pub struct TransformedFile {
     pub tsx_content: String,
     /// The source map for position mapping.
     pub source_map: SourceMap,
+    /// Line index for the original source (for position mapping).
+    pub original_line_index: source_map::LineIndex,
 }
 
 /// A collection of transformed files.
@@ -176,6 +293,9 @@ mod tests {
 
     #[test]
     fn test_transformed_files() {
+        use source_map::LineIndex;
+
+        let original_source = "<script>let x = 1;</script>";
         let mut files = TransformedFiles::new();
         files.add(
             Utf8PathBuf::from("src/App.svelte.tsx"),
@@ -183,6 +303,7 @@ mod tests {
                 original_path: Utf8PathBuf::from("src/App.svelte"),
                 tsx_content: "// generated".to_string(),
                 source_map: SourceMap::new(),
+                original_line_index: LineIndex::new(original_source),
             },
         );
 

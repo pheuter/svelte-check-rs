@@ -68,29 +68,32 @@ pub fn parse_tsgo_output(
 
 /// Parses a single diagnostic line.
 fn parse_diagnostic_line(line: &str, files: &TransformedFiles) -> Option<TsgoDiagnostic> {
-    // Format: file.ts:line:column - error TS1234: message
-    let parts: Vec<&str> = line.splitn(2, " - ").collect();
-    if parts.len() != 2 {
+    // tsgo outputs: file.tsx(line,column): error TS1234: message
+    // We need to parse this format
+
+    // Find the opening paren for position
+    let paren_start = line.find('(')?;
+    let paren_end = line.find(')')?;
+
+    let file_path = &line[..paren_start];
+    let position = &line[paren_start + 1..paren_end];
+
+    // Parse line,column from position
+    let pos_parts: Vec<&str> = position.split(',').collect();
+    if pos_parts.len() != 2 {
         return None;
     }
+    let line_num: u32 = pos_parts[0].trim().parse().ok()?;
+    let column: u32 = pos_parts[1].trim().parse().ok()?;
 
-    let location = parts[0];
-    let message_part = parts[1];
-
-    // Parse location (file:line:column)
-    let loc_parts: Vec<&str> = location.rsplitn(3, ':').collect();
-    if loc_parts.len() < 3 {
-        return None;
-    }
-
-    let column: u32 = loc_parts[0].parse().ok()?;
-    let line_num: u32 = loc_parts[1].parse().ok()?;
-    let file_path = loc_parts[2..].join(":");
+    // The rest after "): " contains the diagnostic
+    let rest = &line[paren_end + 1..];
+    let rest = rest.trim_start_matches(':').trim();
 
     // Parse severity and code
-    let (severity, rest) = if let Some(rest) = message_part.strip_prefix("error") {
+    let (severity, rest) = if let Some(rest) = rest.strip_prefix("error") {
         (DiagnosticSeverity::Error, rest)
-    } else if let Some(rest) = message_part.strip_prefix("warning") {
+    } else if let Some(rest) = rest.strip_prefix("warning") {
         (DiagnosticSeverity::Warning, rest)
     } else {
         return None;
@@ -104,7 +107,7 @@ fn parse_diagnostic_line(line: &str, files: &TransformedFiles) -> Option<TsgoDia
 
     // Map back to original file if needed
     let (original_file, original_line, original_column) =
-        map_to_original(&file_path, line_num, column, files);
+        map_to_original(file_path, line_num, column, files);
 
     Some(TsgoDiagnostic {
         file: Utf8PathBuf::from(original_file),
@@ -132,30 +135,58 @@ fn map_to_original(
     files: &TransformedFiles,
 ) -> (String, u32, u32) {
     // Try to find the transformed file
+    // The file_path may include temp directory prefixes (e.g., ../../../.../file.tsx)
+    // We need to match against our virtual paths which are relative (e.g., file.svelte.tsx)
+
+    // First try direct lookup
     let virtual_path = camino::Utf8Path::new(file_path);
-
     if let Some(file) = files.get(virtual_path) {
-        // Create a line index for the generated content
-        let line_index = LineIndex::new(&file.tsx_content);
+        return do_source_mapping(file, line, column);
+    }
 
-        // Convert line/column to byte offset
-        if let Some(offset) = line_index.offset(LineCol {
-            line: line.saturating_sub(1),
-            col: column.saturating_sub(1),
-        }) {
-            // Try to map back using source map
-            if let Some(_original_offset) = file.source_map.original_position(offset) {
-                // We would need the original source to convert back to line/col
-                // For now, return the generated position
-                return (file.original_path.to_string(), line, column);
+    // Try to match by file name (for temp directory paths)
+    if let Some(file_name) = virtual_path.file_name() {
+        for (key, file) in &files.files {
+            if key.file_name() == Some(file_name) {
+                return do_source_mapping(file, line, column);
             }
         }
-
-        return (file.original_path.to_string(), line, column);
     }
 
     // File not in our transformed set, return as-is
     (file_path.to_string(), line, column)
+}
+
+/// Performs source map lookup to get original position.
+fn do_source_mapping(
+    file: &crate::runner::TransformedFile,
+    line: u32,
+    column: u32,
+) -> (String, u32, u32) {
+    // Create a line index for the generated content
+    let generated_line_index = LineIndex::new(&file.tsx_content);
+
+    // Convert line/column to byte offset (tsgo uses 1-indexed)
+    if let Some(generated_offset) = generated_line_index.offset(LineCol {
+        line: line.saturating_sub(1),
+        col: column.saturating_sub(1),
+    }) {
+        // Try to map back using source map
+        if let Some(original_offset) = file.source_map.original_position(generated_offset) {
+            // Convert original byte offset back to line/column
+            if let Some(original_line_col) = file.original_line_index.line_col(original_offset) {
+                // Return 1-indexed line/column for tsgo format
+                return (
+                    file.original_path.to_string(),
+                    original_line_col.line + 1,
+                    original_line_col.col + 1,
+                );
+            }
+        }
+    }
+
+    // Fallback: return original file but keep generated position
+    (file.original_path.to_string(), line, column)
 }
 
 #[cfg(test)]
@@ -164,7 +195,8 @@ mod tests {
 
     #[test]
     fn test_parse_diagnostic_line() {
-        let line = "src/App.svelte.tsx:10:5 - error TS2322: Type 'string' is not assignable to type 'number'";
+        let line =
+            "src/App.svelte.tsx(10,5): error TS2322: Type 'string' is not assignable to type 'number'";
         let files = TransformedFiles::new();
 
         let diag = parse_diagnostic_line(line, &files).unwrap();

@@ -60,6 +60,7 @@ rayon = "1.10"
 which = "6.0"
 shellexpand = "3.1"
 tempfile = "3.13"
+dirs = "5.0"
 
 [profile.release]
 lto = true
