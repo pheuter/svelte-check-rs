@@ -159,6 +159,10 @@ pub enum TokenKind {
     #[token("|", priority = 10)]
     Pipe,
 
+    /// `.` - Used for namespaced components like `Module.Component`
+    #[token(".", priority = 10)]
+    Dot,
+
     /// Newline
     #[token("\n", priority = 10)]
     Newline,
@@ -181,7 +185,7 @@ pub enum TokenKind {
 
     /// Text content - used sparingly, most text is handled by read_until
     /// Only matches specific punctuation that appears in text content
-    #[regex(r"[.!?;#@$%^&*\[\]~`]+", priority = 1)]
+    #[regex(r"[!?;#@$%^&*\[\]~`]+", priority = 1)]
     Text,
 
     /// End of file
@@ -234,6 +238,7 @@ impl TokenKind {
             TokenKind::RParen => "')'",
             TokenKind::Colon => "':'",
             TokenKind::Pipe => "'|'",
+            TokenKind::Dot => "'.'",
             TokenKind::Newline => "newline",
             TokenKind::Ident => "identifier",
             TokenKind::NamespacedIdent => "namespaced identifier",
@@ -487,7 +492,7 @@ mod tests {
                 TokenKind::Ident,
                 TokenKind::LParen,
                 TokenKind::Ident,
-                TokenKind::Text, // .
+                TokenKind::Dot, // .
                 TokenKind::Ident,
                 TokenKind::RParen,
                 TokenKind::RBrace
@@ -647,6 +652,21 @@ mod tests {
         assert_eq!(
             tokens,
             vec![TokenKind::Ident, TokenKind::Colon, TokenKind::Ident]
+        );
+    }
+
+    #[test]
+    fn test_tailwind_class_directive() {
+        // class:hover:underline - used for Tailwind CSS class directives
+        let tokens = tokenize("class:hover:underline");
+        // class: is NamespacedIdent, hover: is also NamespacedIdent, underline is Ident
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::NamespacedIdent,
+                TokenKind::NamespacedIdent,
+                TokenKind::Ident
+            ]
         );
     }
 }

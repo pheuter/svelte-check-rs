@@ -150,22 +150,26 @@ impl<'src> Parser<'src> {
 
     /// Reads an expression until the given closing delimiter, respecting nested braces.
     /// This handles cases like `{items.map(x => { return x; })}` correctly.
+    /// Also properly handles template literals with embedded expressions like `${expr}`.
     fn read_expression_until(&mut self, close_char: char) -> (String, Span) {
         let start = self.current().span.start;
         let start_offset = u32::from(start) as usize;
 
         let mut depth = 0;
         let mut in_string = false;
+        let mut in_template_literal = false;
+        let mut template_expr_depth = 0; // Track depth within template expressions
         let mut string_char = ' ';
         let mut pos = start_offset;
         let bytes = self.source.as_bytes();
 
-        for (i, c) in self.source[start_offset..].char_indices() {
+        let mut chars = self.source[start_offset..].char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
             let absolute_i = start_offset + i;
+            let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
 
-            if in_string {
-                // Check for escape sequence
-                let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
+            if in_string && !in_template_literal {
+                // Regular string - just look for end quote
                 if c == string_char && !is_escaped {
                     in_string = false;
                 }
@@ -173,10 +177,101 @@ impl<'src> Parser<'src> {
                 continue;
             }
 
+            if in_template_literal {
+                if c == '`' && !is_escaped && template_expr_depth == 0 {
+                    // End of template literal (not inside a ${...})
+                    in_template_literal = false;
+                    in_string = false;
+                } else if c == '$' && template_expr_depth == 0 {
+                    // Check for ${ to enter expression
+                    if let Some(&(_, '{')) = chars.peek() {
+                        chars.next(); // consume '{'
+                        template_expr_depth = 1;
+                        pos = start_offset + i + 2;
+                        continue;
+                    }
+                } else if template_expr_depth > 0 {
+                    // Inside a ${...} expression
+                    match c {
+                        '`' => {
+                            // Nested template literal - need to skip it entirely
+                            // Track nested template depth (including ${} inside nested templates)
+                            let mut nested_depth = 1;
+                            let mut nested_expr_depth = 0;
+                            while nested_depth > 0 {
+                                if let Some((ni, nc)) = chars.next() {
+                                    let nested_abs_i = start_offset + ni;
+                                    let nc_escaped =
+                                        nested_abs_i > 0 && bytes.get(nested_abs_i - 1) == Some(&b'\\');
+
+                                    if nested_expr_depth == 0 {
+                                        // In template literal text
+                                        if nc == '`' && !nc_escaped {
+                                            nested_depth -= 1;
+                                        } else if nc == '$' {
+                                            if let Some(&(_, '{')) = chars.peek() {
+                                                chars.next();
+                                                nested_expr_depth += 1;
+                                            }
+                                        }
+                                    } else {
+                                        // In ${...} expression inside nested template
+                                        match nc {
+                                            '`' => nested_depth += 1, // Even deeper nested template
+                                            '{' => nested_expr_depth += 1,
+                                            '}' => nested_expr_depth -= 1,
+                                            '"' | '\'' => {
+                                                // Skip string inside nested expression
+                                                let quote = nc;
+                                                for (si, sc) in chars.by_ref() {
+                                                    let string_abs_i = start_offset + si;
+                                                    let sc_escaped = string_abs_i > 0
+                                                        && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                                    if sc == quote && !sc_escaped {
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        '"' | '\'' => {
+                            // String inside template expression
+                            let quote = c;
+                            for (si, sc) in chars.by_ref() {
+                                let string_abs_i = start_offset + si;
+                                let sc_escaped =
+                                    string_abs_i > 0 && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                if sc == quote && !sc_escaped {
+                                    break;
+                                }
+                            }
+                        }
+                        '{' => template_expr_depth += 1,
+                        '}' => {
+                            template_expr_depth -= 1;
+                            // When template_expr_depth becomes 0, we're back in template string
+                        }
+                        _ => {}
+                    }
+                }
+                pos = start_offset + i + c.len_utf8();
+                continue;
+            }
+
             match c {
-                '"' | '\'' | '`' => {
+                '"' | '\'' => {
                     in_string = true;
                     string_char = c;
+                }
+                '`' => {
+                    in_string = true;
+                    in_template_literal = true;
                 }
                 '{' | '(' | '[' => depth += 1,
                 '}' if close_char == '}' => {
@@ -649,8 +744,18 @@ impl<'src> Parser<'src> {
             return None;
         }
 
-        // Get tag name - for namespaced elements like svelte:head,
-        // combine NamespacedIdent + Ident
+        // Get tag name - handles:
+        // - Simple elements: div, span
+        // - Svelte elements: svelte:head, svelte:window
+        // - Components: Button, MyComponent
+        // - Namespaced components: Module.Component, Tooltip.Root
+        // Check for valid tag name token - could be Ident, NamespacedIdent, or
+        // keyword tokens like Script/Style when used as elements in template
+        let is_element_name = self.check(TokenKind::Ident)
+            || self.check(TokenKind::NamespacedIdent)
+            || self.check(TokenKind::Script)
+            || self.check(TokenKind::Style);
+
         let name = if self.check(TokenKind::NamespacedIdent) {
             let mut full_name = self.current_text().to_string();
             self.advance();
@@ -660,10 +765,25 @@ impl<'src> Parser<'src> {
                 self.advance();
             }
             SmolStr::new(full_name)
-        } else if self.check(TokenKind::Ident) {
-            let name = SmolStr::new(self.current_text());
+        } else if is_element_name {
+            let mut full_name = self.current_text().to_string();
             self.advance();
-            name
+
+            // Handle namespaced components like Module.Component or Tooltip.Root
+            // Keep consuming .Ident patterns
+            while self.check(TokenKind::Dot) {
+                self.advance(); // consume the dot
+                if self.check(TokenKind::Ident) {
+                    full_name.push('.');
+                    full_name.push_str(self.current_text());
+                    self.advance();
+                } else {
+                    // Dot not followed by identifier - stop
+                    break;
+                }
+            }
+
+            SmolStr::new(full_name)
         } else {
             return None;
         };
@@ -778,7 +898,25 @@ impl<'src> Parser<'src> {
         }
 
         // Check for identifier (normal attribute or directive)
-        if !self.check(TokenKind::Ident) && !self.check(TokenKind::NamespacedIdent) {
+        // Also accept keyword tokens that can be valid HTML attribute names
+        let is_keyword_as_attr = matches!(
+            self.current_kind(),
+            TokenKind::Style
+                | TokenKind::Script
+                | TokenKind::If
+                | TokenKind::Else
+                | TokenKind::Each
+                | TokenKind::Key
+                | TokenKind::Await
+                | TokenKind::Then
+                | TokenKind::Catch
+                | TokenKind::As
+        );
+
+        if !self.check(TokenKind::Ident)
+            && !self.check(TokenKind::NamespacedIdent)
+            && !is_keyword_as_attr
+        {
             return None;
         }
 
@@ -788,9 +926,20 @@ impl<'src> Parser<'src> {
 
         // For namespaced identifiers (directives), continue reading tokens
         // to build the full name including modifiers: on:click|preventDefault|stopPropagation
+        // Also handle Tailwind-style class names:
+        // - class:hover:underline (nested pseudo-classes)
+        // - class:!items-start (important modifier)
+        // - class:sm:grid-cols-[auto,1fr,1fr] (arbitrary values with brackets and commas)
         if is_namespaced {
-            // Read the argument name and modifiers
-            while self.check(TokenKind::Ident) || self.check(TokenKind::Pipe) {
+            // Read the argument name and all its modifiers/content
+            while self.check(TokenKind::Ident)
+                || self.check(TokenKind::Pipe)
+                || self.check(TokenKind::Colon)
+                || self.check(TokenKind::NamespacedIdent)
+                || self.check(TokenKind::Text)  // For !, [, ], etc.
+                || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
+                || self.check(TokenKind::Number) // For sizes: [100px], grid-cols-2
+            {
                 full_name.push_str(self.current_text());
                 self.advance();
             }
@@ -1114,7 +1263,14 @@ impl<'src> Parser<'src> {
             return;
         }
 
-        // Parse tag name - handle namespaced elements like svelte:head
+        // Parse tag name - handle:
+        // - Svelte elements: svelte:head
+        // - Namespaced components: Module.Component, Tooltip.Root
+        // - Keyword elements: script, style (when used in templates)
+        let is_element_name = self.check(TokenKind::Ident)
+            || self.check(TokenKind::Script)
+            || self.check(TokenKind::Style);
+
         let found_name = if self.check(TokenKind::NamespacedIdent) {
             let mut full_name = self.current_text().to_string();
             self.advance();
@@ -1124,10 +1280,23 @@ impl<'src> Parser<'src> {
                 self.advance();
             }
             full_name
-        } else if self.check(TokenKind::Ident) {
-            let name = self.current_text().to_string();
+        } else if is_element_name {
+            let mut full_name = self.current_text().to_string();
             self.advance();
-            name
+
+            // Handle namespaced components like Module.Component
+            while self.check(TokenKind::Dot) {
+                self.advance(); // consume the dot
+                if self.check(TokenKind::Ident) {
+                    full_name.push('.');
+                    full_name.push_str(self.current_text());
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            full_name
         } else {
             String::new()
         };
@@ -1731,7 +1900,7 @@ impl<'src> Parser<'src> {
 
         while matches!(
             self.current_kind(),
-            TokenKind::Text | TokenKind::Ident | TokenKind::Number | TokenKind::Newline
+            TokenKind::Text | TokenKind::Ident | TokenKind::Number | TokenKind::Newline | TokenKind::Dot
         ) {
             text.push_str(self.current_text());
             self.advance();
