@@ -707,7 +707,96 @@ impl TemplateContext {
         }
     }
 
+    fn emit_element_attribute_checks(&mut self, element_name: &str, attrs: &[Attribute]) {
+        // Only check real HTML/SVG elements. Special svelte:* elements have custom attributes.
+        if element_name.starts_with("svelte:") {
+            return;
+        }
+
+        let mut has_check_attrs = false;
+        for attr in attrs {
+            match attr {
+                Attribute::Normal(_) | Attribute::Shorthand(_) => {
+                    has_check_attrs = true;
+                    break;
+                }
+                Attribute::Directive(d)
+                    if (matches!(d.kind, DirectiveKind::On)
+                        || (matches!(d.kind, DirectiveKind::Bind) && d.name != "this")) =>
+                {
+                    has_check_attrs = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        if !has_check_attrs {
+            return;
+        }
+
+        let indent_str = self.indent_str();
+        self.output.push_str(&indent_str);
+        self.output.push_str(&format!(
+            "__svelte_check_element(\"{}\", {{\n",
+            element_name
+        ));
+        self.indent += 1;
+
+        for attr in attrs {
+            match attr {
+                Attribute::Normal(a) => {
+                    let name_span = Span::new(
+                        a.span.start,
+                        a.span.start + ByteOffset::from(a.name.len() as u32),
+                    );
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.emit_prop_name_with_mapping(&a.name, name_span);
+                    self.output.push_str("__svelte_any,\n");
+                }
+                Attribute::Shorthand(s) => {
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.emit_prop_name_with_mapping(&s.name, s.span);
+                    self.output.push_str("__svelte_any,\n");
+                }
+                Attribute::Directive(d) if d.kind == DirectiveKind::On => {
+                    let name = format!("on:{}", d.name);
+                    let name_span = Span::new(
+                        d.span.start,
+                        d.span.start + ByteOffset::from((3 + d.name.len()) as u32), // "on:"
+                    );
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.emit_prop_name_with_mapping(&name, name_span);
+                    self.output.push_str("__svelte_any,\n");
+                }
+                Attribute::Directive(d) if d.kind == DirectiveKind::Bind => {
+                    if d.name == "this" {
+                        continue;
+                    }
+                    let name = format!("bind:{}", d.name);
+                    let name_span = Span::new(
+                        d.span.start,
+                        d.span.start + ByteOffset::from((5 + d.name.len()) as u32), // "bind:"
+                    );
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.emit_prop_name_with_mapping(&name, name_span);
+                    self.output.push_str("__svelte_any,\n");
+                }
+                _ => {}
+            }
+        }
+
+        self.indent -= 1;
+        self.emit("});");
+    }
+
     fn generate_element_attributes(&mut self, element_name: &str, attrs: &[Attribute]) {
+        self.emit_element_attribute_checks(element_name, attrs);
+
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {

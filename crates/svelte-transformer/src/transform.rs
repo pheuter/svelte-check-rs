@@ -747,7 +747,8 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
 
     // Add Svelte imports - alias to avoid collisions with user imports
     let imports = String::from(
-        "import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n",
+        "import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n\
+import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';\n",
     );
     output.push_str(&imports);
     builder.add_generated(&imports);
@@ -814,6 +815,22 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
   currentTarget: Target;
   target: Target;
 };
+
+// Helper types for element attribute name checking.
+type __SvelteIntrinsicElements = __SvelteHTMLElements;
+type __SvelteEventProps<T> =
+  T & { [K in keyof T as K extends `on:${infer E}` ? `on${E}` : never]?: T[K] };
+type __SvelteElementAttributes<K extends string> =
+  __SvelteEventProps<
+    K extends keyof __SvelteIntrinsicElements ? __SvelteIntrinsicElements[K] : __SvelteHTMLAttributes<any>
+  >;
+
+declare function __svelte_check_element<K extends string>(
+  tag: K | undefined | null,
+  attrs: __SvelteElementAttributes<K>
+): void;
+
+declare const __svelte_any: any;
 
 "#;
     output.push_str(helpers);

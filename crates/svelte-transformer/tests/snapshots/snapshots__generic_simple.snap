@@ -22,6 +22,7 @@ expression: output
 // This file is for type-checking only
 
 import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';
+import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';
 
 // Helper functions for template type-checking
 type __SvelteComponent<
@@ -75,6 +76,22 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
   target: Target;
 };
 
+// Helper types for element attribute name checking.
+type __SvelteIntrinsicElements = __SvelteHTMLElements;
+type __SvelteEventProps<T> =
+  T & { [K in keyof T as K extends `on:${infer E}` ? `on${E}` : never]?: T[K] };
+type __SvelteElementAttributes<K extends string> =
+  __SvelteEventProps<
+    K extends keyof __SvelteIntrinsicElements ? __SvelteIntrinsicElements[K] : __SvelteHTMLAttributes<any>
+  >;
+
+declare function __svelte_check_element<K extends string>(
+  tag: K | undefined | null,
+  attrs: __SvelteElementAttributes<K>
+): void;
+
+declare const __svelte_any: any;
+
 // === INSTANCE SCRIPT ===
 function __svelte_render<T extends { id: string; label: string }>() {
 
@@ -89,6 +106,9 @@ function __svelte_render<T extends { id: string; label: string }>() {
 async function __svelte_template_check__() {
   const __each_0 = options;
   for (const option of __each_0) {
+    __svelte_check_element("button", {
+      onclick: __svelte_any,
+    });
     const __event_1: ((e: __SvelteEvent<HTMLButtonElement, MouseEvent>) => void) | null | undefined = () => selected = option;
     option.label;
   }
@@ -109,4 +129,4 @@ z_$$bindings?: any;
 export default __SvelteComponent_Select_;
 
 
-=== Source Map Mappings: 3 ===
+=== Source Map Mappings: 4 ===

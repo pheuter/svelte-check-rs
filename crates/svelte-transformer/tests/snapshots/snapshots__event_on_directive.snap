@@ -17,6 +17,7 @@ expression: output
 // This file is for type-checking only
 
 import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';
+import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';
 
 // Helper functions for template type-checking
 type __SvelteComponent<
@@ -70,6 +71,22 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
   target: Target;
 };
 
+// Helper types for element attribute name checking.
+type __SvelteIntrinsicElements = __SvelteHTMLElements;
+type __SvelteEventProps<T> =
+  T & { [K in keyof T as K extends `on:${infer E}` ? `on${E}` : never]?: T[K] };
+type __SvelteElementAttributes<K extends string> =
+  __SvelteEventProps<
+    K extends keyof __SvelteIntrinsicElements ? __SvelteIntrinsicElements[K] : __SvelteHTMLAttributes<any>
+  >;
+
+declare function __svelte_check_element<K extends string>(
+  tag: K | undefined | null,
+  attrs: __SvelteElementAttributes<K>
+): void;
+
+declare const __svelte_any: any;
+
 // === INSTANCE SCRIPT ===
 
     function handleInput(e: Event) {
@@ -80,6 +97,9 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
 // === TEMPLATE TYPE-CHECK BLOCK ===
 // This is never executed, just type-checked
 async function __svelte_template_check__() {
+  __svelte_check_element("input", {
+    "on:input": __svelte_any,
+  });
   const __event_0: ((e: __SvelteEvent<HTMLInputElement, InputEvent>) => void) | null | undefined = handleInput;
 }
 
@@ -89,4 +109,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_>;
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 1 ===
+=== Source Map Mappings: 2 ===
