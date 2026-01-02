@@ -1,6 +1,6 @@
 //! Main orchestration logic.
 
-use crate::cli::Args;
+use crate::cli::{Args, TimingFormat};
 use crate::config::{SvelteConfig, TsConfig};
 use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -10,11 +10,14 @@ use source_map::LineIndex;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 use svelte_diagnostics::{check as check_svelte, DiagnosticOptions, Severity};
 use svelte_parser::parse;
 use svelte_transformer::{transform, TransformOptions};
 use thiserror::Error;
-use tsgo_runner::{TransformedFile, TransformedFiles, TsgoDiagnostic, TsgoRunner};
+use tsgo_runner::{
+    TransformedFile, TransformedFiles, TsgoCheckOutput, TsgoCheckStats, TsgoDiagnostic, TsgoRunner,
+};
 use walkdir::WalkDir;
 
 /// Orchestration errors.
@@ -53,6 +56,10 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     let svelte_config = SvelteConfig::load(&workspace);
     let _ts_config = TsConfig::find(&workspace);
 
+    let timings_enabled = args.timings
+        || args.timings_format == TimingFormat::Json
+        || read_env_bool("SVELTE_CHECK_RS_TIMINGS").unwrap_or(false);
+
     // Build ignore glob set
     let mut ignore_builder = GlobSetBuilder::new();
     for pattern in &args.ignore {
@@ -77,6 +84,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         .map_err(|e| OrchestratorError::InvalidGlob(e.to_string()))?;
 
     // Find Svelte files
+    let scan_start = Instant::now();
     let extensions = svelte_config.file_extensions();
     let files: Vec<Utf8PathBuf> = WalkDir::new(&workspace)
         .into_iter()
@@ -92,11 +100,16 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             !ignore_set.is_match(relative.as_str())
         })
         .collect();
+    let file_scan_time = if timings_enabled {
+        Some(scan_start.elapsed())
+    } else {
+        None
+    };
 
     if args.watch {
-        run_watch_mode(&args, &workspace, files).await
+        run_watch_mode(&args, &workspace, files, file_scan_time).await
     } else {
-        run_single_check(&args, &workspace, files).await
+        run_single_check(&args, &workspace, files, file_scan_time).await
     }
 }
 
@@ -105,7 +118,12 @@ async fn run_single_check(
     args: &Args,
     workspace: &Utf8Path,
     files: Vec<Utf8PathBuf>,
+    file_scan_time: Option<std::time::Duration>,
 ) -> Result<CheckSummary, OrchestratorError> {
+    let total_start = Instant::now();
+    let timings_enabled = args.timings
+        || args.timings_format == TimingFormat::Json
+        || read_env_bool("SVELTE_CHECK_RS_TIMINGS").unwrap_or(false);
     let formatter = Formatter::new(args.output);
     let output_json = matches!(args.output, crate::cli::OutputFormat::Json);
     let error_count = AtomicUsize::new(0);
@@ -127,6 +145,7 @@ async fn run_single_check(
         json: Vec<FormattedDiagnostic>,
     }
 
+    let svelte_start = Instant::now();
     // Process files in parallel: parse, run Svelte diagnostics, and transform
     let outputs: Vec<FileOutput> = files
         .par_iter()
@@ -230,6 +249,7 @@ async fn run_single_check(
             }
         })
         .collect();
+    let svelte_time = svelte_start.elapsed();
 
     let mut json_output = Vec::new();
 
@@ -246,18 +266,34 @@ async fn run_single_check(
         }
     }
 
+    let mut transformed_count = 0usize;
+    let mut tsgo_stats: Option<TsgoCheckStats> = None;
+    let mut tsgo_total_time = None;
+    let mut sveltekit_sync_time = None;
+    let mut sveltekit_sync_ran = None;
+
     // Run TypeScript type-checking if JS diagnostics are enabled
     if args.include_js() {
         let transformed = transformed_files.into_inner().unwrap_or_default();
+        transformed_count = transformed.files.len();
 
         if !transformed.files.is_empty() {
             // Ensure SvelteKit types are generated before running tsgo
-            if let Err(e) = TsgoRunner::ensure_sveltekit_sync(workspace).await {
-                eprintln!("Warning: {}", e);
-            }
+            let tsgo_start = Instant::now();
+            let sync_start = Instant::now();
+            let sync_ran = match TsgoRunner::ensure_sveltekit_sync(workspace).await {
+                Ok(ran) => ran,
+                Err(e) => {
+                    eprintln!("Warning: {}", e);
+                    false
+                }
+            };
+            sveltekit_sync_time = Some(sync_start.elapsed());
+            sveltekit_sync_ran = Some(sync_ran);
 
-            match run_tsgo_check(workspace, &transformed, args).await {
-                Ok(mut ts_diagnostics) => {
+            match run_tsgo_check(workspace, &transformed, args, args.tsgo_diagnostics).await {
+                Ok(output) => {
+                    let mut ts_diagnostics = output.diagnostics;
                     ts_diagnostics
                         .retain(|diag| include_ts_severity(diag.severity, args.threshold));
 
@@ -282,10 +318,96 @@ async fn run_single_check(
                             format_ts_diagnostics(&ts_diagnostics, workspace, args.output);
                         print!("{}", ts_output);
                     }
+
+                    tsgo_stats = Some(output.stats);
+                    tsgo_total_time = Some(tsgo_start.elapsed());
                 }
                 Err(e) => {
                     eprintln!("TypeScript checking failed: {}", e);
                 }
+            }
+
+            if args.tsgo_diagnostics {
+                if let Some(stats) = &tsgo_stats {
+                    if let Some(diag) = &stats.diagnostics {
+                        eprintln!("=== tsgo diagnostics ===");
+                        eprintln!("{}", diag);
+                    }
+                }
+            }
+        }
+    }
+
+    if timings_enabled {
+        match args.timings_format {
+            TimingFormat::Json => {
+                let json = timings_json(
+                    file_scan_time,
+                    svelte_time,
+                    files.len(),
+                    transformed_count,
+                    sveltekit_sync_time,
+                    sveltekit_sync_ran,
+                    tsgo_total_time,
+                    tsgo_stats.as_ref(),
+                    total_start.elapsed(),
+                );
+                eprintln!("{}", json);
+            }
+            TimingFormat::Text => {
+                eprintln!("=== svelte-check-rs timings ===");
+                if let Some(scan_time) = file_scan_time {
+                    eprintln!("file scan: {:?} ({} files)", scan_time, files.len());
+                }
+                eprintln!(
+                    "svelte phase: {:?} ({} files, {} transformed)",
+                    svelte_time,
+                    files.len(),
+                    transformed_count
+                );
+                if let (Some(sync_time), Some(sync_ran)) = (sveltekit_sync_time, sveltekit_sync_ran)
+                {
+                    eprintln!(
+                        "svelte-kit sync: {:?} ({})",
+                        sync_time,
+                        if sync_ran { "ran" } else { "skipped" }
+                    );
+                }
+                if let Some(tsgo_time) = tsgo_total_time {
+                    eprintln!("tsgo total: {:?}", tsgo_time);
+                }
+                if let Some(stats) = &tsgo_stats {
+                    eprintln!(
+                        "tsgo write cache: tsx {}/{} stubs {}/{} shim {}/{} tsconfig {}/{}",
+                        stats.cache.tsx_written,
+                        stats.cache.tsx_written + stats.cache.tsx_skipped,
+                        stats.cache.stub_written,
+                        stats.cache.stub_written + stats.cache.stub_skipped,
+                        stats.cache.shim_written,
+                        stats.cache.shim_written + stats.cache.shim_skipped,
+                        stats.cache.tsconfig_written,
+                        stats.cache.tsconfig_written + stats.cache.tsconfig_skipped
+                    );
+                    eprintln!(
+                        "tsgo source tree: entries {} files {} dirs {} svelte_skipped {} existing_skipped {} linked {} copied {}",
+                        stats.cache.source_entries,
+                        stats.cache.source_files,
+                        stats.cache.source_dirs,
+                        stats.cache.source_svelte_skipped,
+                        stats.cache.source_existing_skipped,
+                        stats.cache.source_linked,
+                        stats.cache.source_copied
+                    );
+                    eprintln!(
+                        "tsgo timings: write {:?} source {:?} tsconfig {:?} tsgo {:?} parse {:?}",
+                        stats.timings.write_time,
+                        stats.timings.source_tree_time,
+                        stats.timings.tsconfig_time,
+                        stats.timings.tsgo_time,
+                        stats.timings.parse_time
+                    );
+                }
+                eprintln!("total: {:?}", total_start.elapsed());
             }
         }
     }
@@ -313,7 +435,8 @@ async fn run_tsgo_check(
     workspace: &Utf8Path,
     files: &TransformedFiles,
     args: &Args,
-) -> Result<Vec<TsgoDiagnostic>, OrchestratorError> {
+    emit_diagnostics: bool,
+) -> Result<TsgoCheckOutput, OrchestratorError> {
     // Find or install tsgo
     let tsgo_path = TsgoRunner::ensure_tsgo()
         .await
@@ -322,7 +445,7 @@ async fn run_tsgo_check(
     let runner = TsgoRunner::new(tsgo_path, workspace.to_owned(), args.tsconfig.clone());
 
     runner
-        .check(files)
+        .check(files, emit_diagnostics)
         .await
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))
 }
@@ -442,11 +565,127 @@ fn include_ts_severity(
     }
 }
 
+fn duration_ms(duration: std::time::Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn timings_json(
+    file_scan_time: Option<std::time::Duration>,
+    svelte_time: std::time::Duration,
+    file_count: usize,
+    transformed_count: usize,
+    sveltekit_sync_time: Option<std::time::Duration>,
+    sveltekit_sync_ran: Option<bool>,
+    tsgo_total_time: Option<std::time::Duration>,
+    tsgo_stats: Option<&TsgoCheckStats>,
+    total_time: std::time::Duration,
+) -> String {
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "file_scan_ms".to_string(),
+        file_scan_time
+            .map(duration_ms)
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    root.insert(
+        "svelte_ms".to_string(),
+        serde_json::Value::from(duration_ms(svelte_time)),
+    );
+    root.insert(
+        "file_count".to_string(),
+        serde_json::Value::from(file_count as u64),
+    );
+    root.insert(
+        "transformed_count".to_string(),
+        serde_json::Value::from(transformed_count as u64),
+    );
+    root.insert(
+        "sveltekit_sync_ms".to_string(),
+        sveltekit_sync_time
+            .map(duration_ms)
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    root.insert(
+        "sveltekit_sync_ran".to_string(),
+        sveltekit_sync_ran
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    root.insert(
+        "tsgo_total_ms".to_string(),
+        tsgo_total_time
+            .map(duration_ms)
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+    );
+
+    if let Some(stats) = tsgo_stats {
+        root.insert(
+            "tsgo_cache".to_string(),
+            serde_json::json!({
+                "tsx_written": stats.cache.tsx_written,
+                "tsx_skipped": stats.cache.tsx_skipped,
+                "stub_written": stats.cache.stub_written,
+                "stub_skipped": stats.cache.stub_skipped,
+                "kit_written": stats.cache.kit_written,
+                "kit_skipped": stats.cache.kit_skipped,
+                "patched_written": stats.cache.patched_written,
+                "patched_skipped": stats.cache.patched_skipped,
+                "shim_written": stats.cache.shim_written,
+                "shim_skipped": stats.cache.shim_skipped,
+                "tsconfig_written": stats.cache.tsconfig_written,
+                "tsconfig_skipped": stats.cache.tsconfig_skipped,
+                "source_entries": stats.cache.source_entries,
+                "source_files": stats.cache.source_files,
+                "source_dirs": stats.cache.source_dirs,
+                "source_svelte_skipped": stats.cache.source_svelte_skipped,
+                "source_existing_skipped": stats.cache.source_existing_skipped,
+                "source_linked": stats.cache.source_linked,
+                "source_copied": stats.cache.source_copied
+            }),
+        );
+        root.insert(
+            "tsgo_timings_ms".to_string(),
+            serde_json::json!({
+                "write": duration_ms(stats.timings.write_time),
+                "source_tree": duration_ms(stats.timings.source_tree_time),
+                "tsconfig": duration_ms(stats.timings.tsconfig_time),
+                "tsgo": duration_ms(stats.timings.tsgo_time),
+                "parse": duration_ms(stats.timings.parse_time)
+            }),
+        );
+    } else {
+        root.insert("tsgo_cache".to_string(), serde_json::Value::Null);
+        root.insert("tsgo_timings_ms".to_string(), serde_json::Value::Null);
+    }
+
+    root.insert(
+        "total_ms".to_string(),
+        serde_json::Value::from(duration_ms(total_time)),
+    );
+
+    serde_json::to_string_pretty(&serde_json::Value::Object(root))
+        .unwrap_or_else(|_| "{}".to_string())
+}
+
+fn read_env_bool(name: &str) -> Option<bool> {
+    let value = std::env::var(name).ok()?;
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 /// Runs in watch mode.
 async fn run_watch_mode(
     args: &Args,
     workspace: &Utf8Path,
     initial_files: Vec<Utf8PathBuf>,
+    file_scan_time: Option<std::time::Duration>,
 ) -> Result<CheckSummary, OrchestratorError> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::time::Duration;
@@ -454,7 +693,7 @@ async fn run_watch_mode(
     println!("Starting watch mode...\n");
 
     // Initial check
-    let _summary = run_single_check(args, workspace, initial_files.clone()).await?;
+    let _summary = run_single_check(args, workspace, initial_files.clone(), file_scan_time).await?;
 
     // Set up file watcher with tokio channel
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
@@ -491,7 +730,7 @@ async fn run_watch_mode(
             println!("File changed, re-checking...\n");
 
             // Re-run check
-            let _ = run_single_check(args, workspace, initial_files.clone()).await;
+            let _ = run_single_check(args, workspace, initial_files.clone(), file_scan_time).await;
         }
     }
 

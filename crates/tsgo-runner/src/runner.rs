@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use source_map::SourceMap;
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 use tokio::process::Command;
 use walkdir::WalkDir;
@@ -60,6 +60,52 @@ pub struct TsgoRunner {
     project_root: Utf8PathBuf,
     /// Optional tsconfig path override.
     tsconfig_path: Option<Utf8PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TsgoCacheStats {
+    pub tsx_written: usize,
+    pub tsx_skipped: usize,
+    pub stub_written: usize,
+    pub stub_skipped: usize,
+    pub kit_written: usize,
+    pub kit_skipped: usize,
+    pub patched_written: usize,
+    pub patched_skipped: usize,
+    pub shim_written: usize,
+    pub shim_skipped: usize,
+    pub tsconfig_written: usize,
+    pub tsconfig_skipped: usize,
+    pub source_entries: usize,
+    pub source_dirs: usize,
+    pub source_files: usize,
+    pub source_svelte_skipped: usize,
+    pub source_existing_skipped: usize,
+    pub source_linked: usize,
+    pub source_copied: usize,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TsgoTimingStats {
+    pub write_time: Duration,
+    pub source_tree_time: Duration,
+    pub tsconfig_time: Duration,
+    pub tsgo_time: Duration,
+    pub parse_time: Duration,
+    pub total_time: Duration,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TsgoCheckStats {
+    pub cache: TsgoCacheStats,
+    pub timings: TsgoTimingStats,
+    pub diagnostics: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TsgoCheckOutput {
+    pub diagnostics: Vec<TsgoDiagnostic>,
+    pub stats: TsgoCheckStats,
 }
 
 impl TsgoRunner {
@@ -222,14 +268,19 @@ impl TsgoRunner {
             }
         }
 
-        let input_dirs = [
-            project_root.join("src/routes"),
-            project_root.join("src/params"),
-        ];
-        for dir in input_dirs {
-            if dir.exists() && dir_has_newer_mtime(&dir, baseline) {
-                return true;
-            }
+        let hooks_dir = project_root.join("src");
+        if hooks_dir.exists() && src_hooks_changed(&hooks_dir, baseline) {
+            return true;
+        }
+
+        let params_dir = project_root.join("src/params");
+        if params_dir.exists() && dir_has_newer_mtime(&params_dir, baseline) {
+            return true;
+        }
+
+        let routes_dir = project_root.join("src/routes");
+        if routes_dir.exists() && routes_changed(&routes_dir, baseline) {
+            return true;
         }
 
         false
@@ -319,6 +370,7 @@ impl TsgoRunner {
         &self,
         temp_root: &Utf8Path,
         tsconfig_path: &Utf8Path,
+        stats: &mut TsgoCacheStats,
         overrides: Option<&Map<String, Value>>,
     ) -> Result<Utf8PathBuf, TsgoError> {
         let temp_tsconfig = if let Ok(rel) = tsconfig_path.strip_prefix(&self.project_root) {
@@ -362,7 +414,13 @@ impl TsgoRunner {
                 );
                 let content = serde_json::to_string_pretty(&Value::Object(root))
                     .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                write_if_changed(&overlay_path, content.as_bytes(), "write tsconfig overlay")?;
+                let wrote =
+                    write_if_changed(&overlay_path, content.as_bytes(), "write tsconfig overlay")?;
+                if wrote {
+                    stats.tsconfig_written += 1;
+                } else {
+                    stats.tsconfig_skipped += 1;
+                }
                 return Ok(overlay_path);
             }
         }
@@ -378,12 +436,14 @@ impl TsgoRunner {
         project_src: &Utf8Path,
         temp_src: &Utf8Path,
         apply_tsgo_fixes: bool,
+        stats: &mut TsgoCacheStats,
     ) -> Result<(), TsgoError> {
         if !project_src.exists() {
             return Ok(());
         }
 
         for entry in WalkDir::new(project_src).into_iter().filter_map(|e| e.ok()) {
+            stats.source_entries += 1;
             let path = match Utf8Path::from_path(entry.path()) {
                 Some(p) => p,
                 None => continue,
@@ -398,13 +458,17 @@ impl TsgoRunner {
 
             // Create directories
             if entry.file_type().is_dir() {
+                stats.source_dirs += 1;
                 std::fs::create_dir_all(&target)
                     .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
                 continue;
             }
 
+            stats.source_files += 1;
+
             // Skip .svelte files - we write transformed .ts versions
             if path.extension() == Some("svelte") {
+                stats.source_svelte_skipped += 1;
                 continue;
             }
 
@@ -418,12 +482,19 @@ impl TsgoRunner {
                         transformed = patched;
                     }
                 }
-                write_if_changed(&target, transformed.as_bytes(), "write kit transform")?;
+                let wrote =
+                    write_if_changed(&target, transformed.as_bytes(), "write kit transform")?;
+                if wrote {
+                    stats.kit_written += 1;
+                } else {
+                    stats.kit_skipped += 1;
+                }
                 continue;
             }
 
             // Skip if target already exists (transformed file takes precedence)
             if target.exists() {
+                stats.source_existing_skipped += 1;
                 continue;
             }
 
@@ -431,7 +502,13 @@ impl TsgoRunner {
                 if let Ok(content) = std::fs::read_to_string(path) {
                     if content.contains("Promise.all") {
                         if let Some(patched) = patch_promise_all_empty_arrays(&content) {
-                            write_if_changed(&target, patched.as_bytes(), "write patched ts")?;
+                            let wrote =
+                                write_if_changed(&target, patched.as_bytes(), "write patched ts")?;
+                            if wrote {
+                                stats.patched_written += 1;
+                            } else {
+                                stats.patched_skipped += 1;
+                            }
                             continue;
                         }
                     }
@@ -440,12 +517,15 @@ impl TsgoRunner {
 
             // Prefer hard links to keep paths under the temp root. Fall back to copying.
             if let Err(err) = std::fs::hard_link(path, &target) {
+                stats.source_copied += 1;
                 std::fs::copy(path, &target).map_err(|e| {
                     TsgoError::TempFileFailed(format!(
                         "link/copy {}: hard link error {}, copy error {}",
                         relative, err, e
                     ))
                 })?;
+            } else {
+                stats.source_linked += 1;
             }
         }
 
@@ -453,7 +533,13 @@ impl TsgoRunner {
     }
 
     /// Runs type-checking on the transformed files.
-    pub async fn check(&self, files: &TransformedFiles) -> Result<Vec<TsgoDiagnostic>, TsgoError> {
+    pub async fn check(
+        &self,
+        files: &TransformedFiles,
+        emit_diagnostics: bool,
+    ) -> Result<TsgoCheckOutput, TsgoError> {
+        let total_start = Instant::now();
+        let mut stats = TsgoCheckStats::default();
         let strict_function_types =
             read_env_bool("SVELTE_CHECK_RS_TSGO_STRICT_FUNCTION_TYPES").unwrap_or(false);
         let apply_tsgo_fixes = !strict_function_types;
@@ -484,6 +570,7 @@ impl TsgoRunner {
             .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
         let temp_path = &cache_path;
 
+        let write_start = Instant::now();
         // Write transformed files
         let mut tsx_files = Vec::new();
         for (virtual_path, file) in &files.files {
@@ -492,17 +579,28 @@ impl TsgoRunner {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
             }
-            write_if_changed(&full_path, file.tsx_content.as_bytes(), "write tsx")?;
+            let wrote = write_if_changed(&full_path, file.tsx_content.as_bytes(), "write tsx")?;
+            if wrote {
+                stats.cache.tsx_written += 1;
+            } else {
+                stats.cache.tsx_skipped += 1;
+            }
             if let Some(file_name) = full_path.file_name() {
                 let stub_path = full_path.with_extension("d.ts");
                 let stub_content = format!(
                     "export * from \"./{}\";\nexport {{ default }} from \"./{}\";\n",
                     file_name, file_name
                 );
-                write_if_changed(&stub_path, stub_content.as_bytes(), "write stub")?;
+                let wrote = write_if_changed(&stub_path, stub_content.as_bytes(), "write stub")?;
+                if wrote {
+                    stats.cache.stub_written += 1;
+                } else {
+                    stats.cache.stub_skipped += 1;
+                }
             }
             tsx_files.push(full_path.to_string());
         }
+        stats.timings.write_time = write_start.elapsed();
 
         // Symlink key directories/files from project to temp directory for module resolution
         // Note: Don't symlink 'src' since we write transformed files there
@@ -544,34 +642,53 @@ impl TsgoRunner {
         // This preserves directory structure so relative imports like `./schema` work
         // and SvelteKit route files (+page.ts, etc.) can access ./$types
         let temp_src = temp_path.join("src");
+        let source_start = Instant::now();
         Self::symlink_source_tree(
             &self.project_root,
             &project_src,
             &temp_src,
             apply_tsgo_fixes,
+            &mut stats.cache,
         )?;
+        stats.timings.source_tree_time = source_start.elapsed();
 
         // Add a local shim for tsgo-only helpers used in patched sources.
         // Placing this under src keeps it within typical tsconfig include globs.
         let shim_path = temp_src.join("__svelte_check_rs_shims.d.ts");
         let shim_content =
             "declare function __svelte_empty_array<T>(value: () => T): Awaited<T>;\n";
-        write_if_changed(&shim_path, shim_content.as_bytes(), "write shim")?;
+        let wrote = write_if_changed(&shim_path, shim_content.as_bytes(), "write shim")?;
+        if wrote {
+            stats.cache.shim_written += 1;
+        } else {
+            stats.cache.shim_skipped += 1;
+        }
 
         // Use the existing tsconfig via symlink overlay
         let project_tsconfig = self.resolve_tsconfig_path()?;
-        let temp_tsconfig =
-            self.prepare_tsconfig_overlay(temp_path, &project_tsconfig, Some(&tsconfig_overrides))?;
+        let tsconfig_start = Instant::now();
+        let temp_tsconfig = self.prepare_tsconfig_overlay(
+            temp_path,
+            &project_tsconfig,
+            &mut stats.cache,
+            Some(&tsconfig_overrides),
+        )?;
+        stats.timings.tsconfig_time = tsconfig_start.elapsed();
 
         // Run tsgo on the temp directory
-        let output = Command::new(&self.tsgo_path)
-            .arg("--project")
-            .arg(&temp_tsconfig)
+        let tsgo_start = Instant::now();
+        let mut command = Command::new(&self.tsgo_path);
+        command.arg("--project").arg(&temp_tsconfig);
+        if emit_diagnostics {
+            command.arg("--diagnostics").arg("--extendedDiagnostics");
+        }
+        let output = command
             .current_dir(temp_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await?;
+        stats.timings.tsgo_time = tsgo_start.elapsed();
 
         // Parse output
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -586,9 +703,16 @@ impl TsgoRunner {
         }
 
         // Parse diagnostics from output
+        let parse_start = Instant::now();
         let diagnostics = parse_tsgo_output(&stdout, files)?;
+        stats.timings.parse_time = parse_start.elapsed();
 
-        Ok(diagnostics)
+        if emit_diagnostics {
+            stats.diagnostics = extract_tsgo_diagnostics(&stdout);
+        }
+        stats.timings.total_time = total_start.elapsed();
+
+        Ok(TsgoCheckOutput { diagnostics, stats })
     }
 }
 
@@ -601,12 +725,12 @@ fn read_env_bool(name: &str) -> Option<bool> {
     }
 }
 
-fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<(), TsgoError> {
+fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<bool, TsgoError> {
     if let Ok(metadata) = std::fs::metadata(path) {
         if metadata.len() == contents.len() as u64 {
             if let Ok(existing) = std::fs::read(path) {
                 if existing == contents {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
         }
@@ -614,7 +738,27 @@ fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<(
 
     std::fs::write(path, contents)
         .map_err(|e| TsgoError::TempFileFailed(format!("{context}: {e}")))?;
-    Ok(())
+    Ok(true)
+}
+
+fn extract_tsgo_diagnostics(stdout: &str) -> Option<String> {
+    let mut collected = Vec::new();
+    let mut found = false;
+    for line in stdout.lines() {
+        if !found {
+            if line.starts_with("Files:") {
+                found = true;
+            } else {
+                continue;
+            }
+        }
+        collected.push(line);
+    }
+    if found {
+        Some(collected.join("\n"))
+    } else {
+        None
+    }
 }
 
 fn is_newer_than(path: &Utf8Path, baseline: SystemTime) -> bool {
@@ -626,6 +770,64 @@ fn is_newer_than(path: &Utf8Path, baseline: SystemTime) -> bool {
         Ok(modified) => modified > baseline,
         Err(_) => true,
     }
+}
+
+fn src_hooks_changed(src_dir: &Utf8Path, baseline: SystemTime) -> bool {
+    let entries = match std::fs::read_dir(src_dir.as_std_path()) {
+        Ok(entries) => entries,
+        Err(_) => return true,
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return true,
+        };
+        let path_buf = entry.path();
+        let path = match Utf8Path::from_path(&path_buf) {
+            Some(path) => path,
+            None => continue,
+        };
+        if let Some(file_name) = path.file_name() {
+            if file_name.starts_with("hooks.") && is_newer_than(path, baseline) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn routes_changed(routes_dir: &Utf8Path, baseline: SystemTime) -> bool {
+    for entry in WalkDir::new(routes_dir).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return true,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = match Utf8Path::from_path(entry.path()) {
+            Some(path) => path,
+            None => continue,
+        };
+        let file_name = match path.file_name() {
+            Some(file_name) => file_name,
+            None => continue,
+        };
+        if is_route_sync_file(file_name) && is_newer_than(path, baseline) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_route_sync_file(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "+page.ts" | "+page.server.ts" | "+layout.ts" | "+layout.server.ts" | "+server.ts"
+    )
 }
 
 fn dir_has_newer_mtime(dir: &Utf8Path, baseline: SystemTime) -> bool {

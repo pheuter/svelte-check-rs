@@ -18,7 +18,8 @@
 //!     );
 //!
 //!     let files = TransformedFiles::new();
-//!     let diagnostics = runner.check(&files).await.unwrap();
+//!     let result = runner.check(&files, false).await.unwrap();
+//!     let diagnostics = result.diagnostics;
 //!
 //!     for diag in diagnostics {
 //!         println!("{}: {}", diag.file, diag.message);
@@ -31,4 +32,7 @@ mod parser;
 mod runner;
 
 pub use parser::{DiagnosticSeverity, TsgoDiagnostic, TsgoOutput};
-pub use runner::{TransformedFile, TransformedFiles, TsgoError, TsgoRunner};
+pub use runner::{
+    TransformedFile, TransformedFiles, TsgoCacheStats, TsgoCheckOutput, TsgoCheckStats, TsgoError,
+    TsgoRunner, TsgoTimingStats,
+};

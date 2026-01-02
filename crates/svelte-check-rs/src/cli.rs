@@ -51,6 +51,18 @@ pub struct Args {
     /// Output transformed TSX to stdout (for debugging)
     #[arg(long = "emit-tsx")]
     pub emit_tsx: bool,
+
+    /// Print tsgo compiler diagnostics (performance stats)
+    #[arg(long = "tsgo-diagnostics")]
+    pub tsgo_diagnostics: bool,
+
+    /// Print timing breakdowns
+    #[arg(long)]
+    pub timings: bool,
+
+    /// Timing output format
+    #[arg(long, value_enum, default_value = "text")]
+    pub timings_format: TimingFormat,
 }
 
 /// Output format options.
@@ -75,6 +87,16 @@ pub enum Threshold {
     /// Show errors and warnings (default)
     #[default]
     Warning,
+}
+
+/// Timing output format.
+#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
+pub enum TimingFormat {
+    /// Human-readable output
+    #[default]
+    Text,
+    /// JSON output (machine-readable)
+    Json,
 }
 
 impl Args {
