@@ -547,3 +547,37 @@ fn test_layout_with_children() {
 {@render children()}"#,
     );
 }
+
+#[test]
+fn test_snippet_with_store_typeof() {
+    transform_snapshot(
+        "snippet_store_typeof",
+        r#"<script lang="ts">
+    import { formStore } from './stores';
+    const formData = formStore;
+</script>
+
+{#snippet mySnippet(value: typeof $formData.prop)}
+    <div>{value}</div>
+{/snippet}
+
+{@render mySnippet($formData.prop)}"#,
+    );
+}
+
+#[test]
+fn test_store_subscription_in_script_function() {
+    transform_snapshot(
+        "store_in_script_function",
+        r#"<script lang="ts">
+    import { formStore } from './stores';
+    const { form: formData } = formStore;
+
+    function updateEndTime() {
+        $formData.endTime = $formData.startTime ? 'test' : null;
+    }
+</script>
+
+<button onclick={() => updateEndTime()}>Update</button>"#,
+    );
+}

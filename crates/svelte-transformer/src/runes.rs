@@ -95,19 +95,178 @@ enum ScanContext {
 /// We transform `$storeName` to `__svelte_store_get(storeName)` so TypeScript sees the
 /// dereferenced value type, not the store type.
 ///
+/// Special case: `typeof $store` becomes `__StoreValue<typeof store>` because
+/// TypeScript's typeof operator doesn't work with function calls.
+///
 /// This only applies to store subscriptions (identifier after $), not to:
 /// - Runes like `$state()`, `$derived()` (have parentheses)
 /// - Special variables like `$$props`, `$$slots`
+/// - Strings like `'$lib/assets/favicon.svg'`
 fn transform_store_subscriptions(expr: &str) -> String {
     let mut result = String::with_capacity(expr.len());
     let mut chars = expr.chars().peekable();
+    // Track typeof context: whitespace accumulated after "typeof"
+    let mut typeof_state: Option<String> = None;
+    // Track when we've just emitted __StoreValue<typeof ...> and need indexed property access
+    let mut in_storevalue_access = false;
+    // Track string context: None = not in string, Some(quote) = in string with that quote
+    let mut in_string: Option<char> = None;
+    // Track if previous char was a backslash (for escape sequences)
+    let mut prev_was_escape = false;
+    // Track template literal expression depth for nested ${...} handling
+    let mut template_brace_depth: Vec<usize> = Vec::new();
+    // Track comment context
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
 
     while let Some(ch) = chars.next() {
+        // Handle line comment context - pass through until newline
+        if in_line_comment {
+            result.push(ch);
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+
+        // Handle block comment context - pass through until */
+        if in_block_comment {
+            result.push(ch);
+            if ch == '*' && chars.peek() == Some(&'/') {
+                result.push(chars.next().unwrap()); // consume '/'
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        // Handle string context (regular strings, not template literals)
+        if let Some(quote) = in_string {
+            if quote != '`' {
+                // Regular string - just pass through
+                result.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == quote {
+                    in_string = None;
+                }
+                continue;
+            } else {
+                // Template literal - need to handle ${...} expressions
+                if prev_was_escape {
+                    result.push(ch);
+                    prev_was_escape = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    result.push(ch);
+                    prev_was_escape = true;
+                    continue;
+                }
+                if ch == '`' {
+                    result.push(ch);
+                    in_string = None;
+                    continue;
+                }
+                if ch == '$' && chars.peek() == Some(&'{') {
+                    // Start of template expression - emit ${ and track depth
+                    result.push(ch);
+                    result.push(chars.next().unwrap()); // consume '{'
+                    template_brace_depth.push(0);
+                    in_string = None; // Exit string context to process expression
+                    continue;
+                }
+                result.push(ch);
+                continue;
+            }
+        }
+
+        // Handle template expression brace depth
+        if !template_brace_depth.is_empty() {
+            if ch == '{' {
+                if let Some(depth) = template_brace_depth.last_mut() {
+                    *depth += 1;
+                }
+            } else if ch == '}' {
+                if let Some(depth) = template_brace_depth.last_mut() {
+                    if *depth == 0 {
+                        // End of template expression, back to template literal
+                        template_brace_depth.pop();
+                        result.push(ch);
+                        in_string = Some('`');
+                        continue;
+                    } else {
+                        *depth -= 1;
+                    }
+                }
+            }
+        }
+
+        // Check for comment start (outside of strings)
+        if ch == '/' {
+            if chars.peek() == Some(&'/') {
+                // Line comment - pass through until newline
+                result.push(ch);
+                result.push(chars.next().unwrap()); // consume second '/'
+                in_line_comment = true;
+                continue;
+            } else if chars.peek() == Some(&'*') {
+                // Block comment - pass through until */
+                result.push(ch);
+                result.push(chars.next().unwrap()); // consume '*'
+                in_block_comment = true;
+                continue;
+            }
+        }
+
+        // Check for string start (outside of strings)
+        if ch == '\'' || ch == '"' || ch == '`' {
+            result.push(ch);
+            in_string = Some(ch);
+            continue;
+        }
+
+        // When in storevalue access mode, convert .prop to ["prop"]
+        if in_storevalue_access {
+            if ch == '.' {
+                // Check if followed by identifier
+                if chars
+                    .peek()
+                    .is_some_and(|&c| c.is_ascii_alphabetic() || c == '_')
+                {
+                    // Collect the property name
+                    let mut prop = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            prop.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    // Emit as indexed access
+                    result.push_str("[\"");
+                    result.push_str(&prop);
+                    result.push_str("\"]");
+                    // Stay in storevalue_access mode for chained access
+                    continue;
+                }
+            }
+            // Not a property access, exit the mode
+            in_storevalue_access = false;
+        }
+
         if ch == '$' {
             // Check if this is a store subscription
             if let Some(&next) = chars.peek() {
                 // Skip $$ patterns ($$props, $$slots, etc.)
                 if next == '$' {
+                    // Restore typeof if we were tracking it
+                    if let Some(ws) = typeof_state.take() {
+                        result.push_str("typeof");
+                        result.push_str(&ws);
+                    }
                     result.push(ch);
                     continue;
                 }
@@ -127,7 +286,8 @@ fn transform_store_subscriptions(expr: &str) -> String {
 
                     // Peek ahead to see what follows
                     let rest: String = chars.clone().collect();
-                    let next_non_ws = rest.chars().find(|c| !c.is_whitespace());
+                    let trimmed_rest = rest.trim_start();
+                    let next_non_ws = trimmed_rest.chars().next();
 
                     // If followed by ( or <, it's a rune - keep the $identifier
                     // If followed by :, it's an object property key (e.g., { $or: ... })
@@ -135,8 +295,49 @@ fn transform_store_subscriptions(expr: &str) -> String {
                         || next_non_ws == Some('<')
                         || next_non_ws == Some(':')
                     {
+                        // Restore typeof if we were tracking it
+                        if let Some(ws) = typeof_state.take() {
+                            result.push_str("typeof");
+                            result.push_str(&ws);
+                        }
                         result.push(ch);
                         result.push_str(&identifier);
+                    } else if next_non_ws == Some('=')
+                        && !trimmed_rest.starts_with("==")
+                        && !trimmed_rest.starts_with("=>")
+                    {
+                        // Store assignment: $store = value
+                        // This is a Svelte store setter. For type-checking, we transform to:
+                        // __svelte_store_get(store) which returns the value type.
+                        // The assignment will fail type-checking if value is incompatible.
+                        // We use an unsafe cast to allow the assignment:
+                        // $store = value -> (__svelte_store_get(store) as typeof value) = value
+                        // Actually, simpler: we'll emit the store reference and trust that
+                        // the Svelte type definitions handle $store syntax.
+                        // But they don't, so let's use a workaround:
+                        // Transform to: (store as any).$ = value (creates a dummy prop)
+                        // This allows the assignment to type-check while preserving intent.
+                        // Actually even simpler for type-checking purposes:
+                        // Just emit the raw store access - TypeScript will complain about
+                        // unknown property but won't error on assignment LHS.
+                        if let Some(ws) = typeof_state.take() {
+                            result.push_str("typeof");
+                            result.push_str(&ws);
+                        }
+                        // Emit as property access: (store as any).$
+                        result.push('(');
+                        result.push_str(&identifier);
+                        result.push_str(" as any).$");
+                    } else if typeof_state.is_some() {
+                        // In typeof context, use type helper instead of function call
+                        // typeof $store.prop -> __StoreValue<typeof store>["prop"]
+                        // Don't restore typeof - we're replacing it
+                        typeof_state = None;
+                        result.push_str("__StoreValue<typeof ");
+                        result.push_str(&identifier);
+                        result.push('>');
+                        // Enter storevalue access mode for property access conversion
+                        in_storevalue_access = true;
                     } else {
                         // It's a store subscription - wrap with helper function
                         result.push_str("__svelte_store_get(");
@@ -144,14 +345,53 @@ fn transform_store_subscriptions(expr: &str) -> String {
                         result.push(')');
                     }
                 } else {
+                    // Restore typeof if we were tracking it
+                    if let Some(ws) = typeof_state.take() {
+                        result.push_str("typeof");
+                        result.push_str(&ws);
+                    }
                     result.push(ch);
                 }
             } else {
+                // Restore typeof if we were tracking it
+                if let Some(ws) = typeof_state.take() {
+                    result.push_str("typeof");
+                    result.push_str(&ws);
+                }
                 result.push(ch);
             }
         } else {
-            result.push(ch);
+            // Not a $ - check if we're tracking typeof
+            if let Some(ref mut ws) = typeof_state {
+                if ch.is_whitespace() {
+                    // Accumulate whitespace after typeof
+                    ws.push(ch);
+                } else {
+                    // Non-whitespace, non-$ after typeof - restore typeof and continue
+                    result.push_str("typeof");
+                    result.push_str(ws);
+                    result.push(ch);
+                    typeof_state = None;
+                }
+            } else {
+                result.push(ch);
+                // Check if we just completed the word "typeof"
+                if result.ends_with("typeof") {
+                    // Peek at next char to ensure it's whitespace (typeof is followed by space)
+                    if chars.peek().is_some_and(|&c| c.is_whitespace()) {
+                        // Remove the "typeof" we just added - we'll track it separately
+                        result.truncate(result.len() - 6);
+                        typeof_state = Some(String::new());
+                    }
+                }
+            }
         }
+    }
+
+    // Handle case where expression ends with "typeof " (restore it)
+    if let Some(ws) = typeof_state {
+        result.push_str("typeof");
+        result.push_str(&ws);
     }
 
     result
@@ -186,7 +426,13 @@ pub fn transform_runes_with_options(
     default_props_type: Option<&str>,
 ) -> RuneTransformResult {
     let scanner = RuneScanner::new(script, base_offset, default_props_type);
-    scanner.scan_and_transform()
+    let mut result = scanner.scan_and_transform();
+
+    // Transform store subscriptions in the output that weren't already transformed
+    // (rune contents are transformed during scanning, but non-rune code is not)
+    result.output = transform_store_subscriptions(&result.output);
+
+    result
 }
 
 /// A scanner that finds and transforms runes while respecting string/comment contexts.
@@ -290,21 +536,9 @@ impl<'a> RuneScanner<'a> {
                 if let Some(rune_match) = self.try_match_rune(pos) {
                     self.apply_rune_transform(rune_match);
                 } else {
-                    // Check if this is a store subscription like $formData
-                    // In Svelte, $storeName auto-subscribes to the store
-                    // Transform to __svelte_store_get(storeName) for proper TypeScript typing
-                    if let Some(identifier) = self.get_store_identifier(pos) {
-                        // Skip the identifier characters ($ is already consumed)
-                        for _ in 0..identifier.len() {
-                            self.chars.next();
-                        }
-                        // Emit the helper wrapper
-                        self.push_str("__svelte_store_get(");
-                        self.push_str(&identifier);
-                        self.push_char(')');
-                    } else {
-                        self.push_char(ch);
-                    }
+                    // Just emit the $ - store subscriptions will be transformed later
+                    // by transform_store_subscriptions() which handles typeof contexts
+                    self.push_char(ch);
                 }
             }
             '{' => {
@@ -451,9 +685,50 @@ impl<'a> RuneScanner<'a> {
             ("$host()", RuneKind::Host),
         ];
 
-        // Special case: check for $props with TypeScript generics: $props<Type>()
+        // Special cases for runes with TypeScript generics: $rune<Type>() or $rune<Type>(init)
+        // Check $state<Type>() - transforms to the content or undefined
+        if remaining.starts_with("$state<") {
+            if let Some((full_end, content, content_span)) =
+                self.find_rune_with_generic(start_pos, "$state<")
+            {
+                return Some(RuneMatch {
+                    kind: RuneKind::State,
+                    full_span: Span::new(
+                        self.base_offset + start_pos as u32,
+                        self.base_offset + full_end as u32,
+                    ),
+                    content,
+                    content_span,
+                    pattern_len: 7, // "$state<"
+                    full_text: Some(self.source[start_pos..full_end].to_string()),
+                });
+            }
+        }
+
+        // Check $derived<Type>() - transforms to the content
+        if remaining.starts_with("$derived<") {
+            if let Some((full_end, content, content_span)) =
+                self.find_rune_with_generic(start_pos, "$derived<")
+            {
+                return Some(RuneMatch {
+                    kind: RuneKind::Derived,
+                    full_span: Span::new(
+                        self.base_offset + start_pos as u32,
+                        self.base_offset + full_end as u32,
+                    ),
+                    content,
+                    content_span,
+                    pattern_len: 9, // "$derived<"
+                    full_text: Some(self.source[start_pos..full_end].to_string()),
+                });
+            }
+        }
+
+        // Check $props<Type>() - special handling for props
         if remaining.starts_with("$props<") {
-            if let Some(full_end) = self.find_props_with_generic(start_pos) {
+            if let Some((full_end, _content, _content_span)) =
+                self.find_rune_with_generic(start_pos, "$props<")
+            {
                 let full_text = self.source[start_pos..full_end].to_string();
                 return Some(RuneMatch {
                     kind: RuneKind::Props,
@@ -515,24 +790,30 @@ impl<'a> RuneScanner<'a> {
         None
     }
 
-    /// Find the end of a $props<Type>() expression with TypeScript generics.
-    fn find_props_with_generic(&self, start_pos: usize) -> Option<usize> {
+    /// Find a rune with TypeScript generics like $state<Type>() or $state<Type>(init).
+    /// Returns (full_end_position, content, content_span) if found.
+    fn find_rune_with_generic(
+        &self,
+        start_pos: usize,
+        prefix: &str,
+    ) -> Option<(usize, Option<String>, Option<Span>)> {
         let s = &self.source[start_pos..];
 
-        // Must start with "$props<"
-        if !s.starts_with("$props<") {
+        if !s.starts_with(prefix) {
             return None;
         }
 
+        let prefix_len = prefix.len();
+
         // Find matching > for the generic type parameter
-        let after_props = &s[7..]; // Skip "$props<"
+        let after_prefix = &s[prefix_len..];
         let mut depth = 1;
         let mut in_string = None;
         let mut prev_was_escape = false;
         let mut generic_end = None;
         let mut prev_char = None;
 
-        for (i, ch) in after_props.char_indices() {
+        for (i, ch) in after_prefix.char_indices() {
             if prev_was_escape {
                 prev_was_escape = false;
                 prev_char = Some(ch);
@@ -570,12 +851,33 @@ impl<'a> RuneScanner<'a> {
 
         let generic_end = generic_end?;
 
-        // After the >, we need "()"
-        let after_generic = &after_props[generic_end + 1..];
-        if after_generic.starts_with("()") {
-            // Full pattern: $props< ... >()
-            // End position: start_pos + 7 ($props<) + generic_end + 1 (>) + 2 (())
-            Some(start_pos + 7 + generic_end + 1 + 2)
+        // After the >, we need "(" followed by optional content and ")"
+        let after_generic = &after_prefix[generic_end + 1..];
+        if !after_generic.starts_with('(') {
+            return None;
+        }
+
+        // Find matching closing paren
+        let paren_content_start = generic_end + 2; // +1 for >, +1 for (
+        let after_open_paren = &after_prefix[paren_content_start..];
+
+        if let Some((content, content_end_offset)) = self.find_matching_paren(after_open_paren) {
+            let full_end = start_pos + prefix_len + paren_content_start + content_end_offset + 1;
+            let content_str = if content.is_empty() {
+                None
+            } else {
+                Some(content.to_string())
+            };
+            let content_span = if content.is_empty() {
+                None
+            } else {
+                let content_start = start_pos + prefix_len + paren_content_start;
+                Some(Span::new(
+                    self.base_offset + content_start as u32,
+                    self.base_offset + (content_start + content.len()) as u32,
+                ))
+            };
+            Some((full_end, content_str, content_span))
         } else {
             None
         }
@@ -616,52 +918,6 @@ impl<'a> RuneScanner<'a> {
         }
 
         None
-    }
-
-    /// Get the store identifier if the $ at the given position is a store subscription.
-    ///
-    /// Returns `Some(identifier)` if this is a store subscription like `$formData`,
-    /// or `None` if it's a rune or not a valid store reference.
-    fn get_store_identifier(&self, pos: usize) -> Option<String> {
-        let remaining = &self.source[pos..];
-
-        // Must start with $ followed by valid identifier start
-        if !remaining.starts_with('$') {
-            return None;
-        }
-
-        let after_dollar = &remaining[1..];
-        if after_dollar.is_empty() {
-            return None;
-        }
-
-        let first_char = after_dollar.chars().next().unwrap();
-
-        // Valid identifier start: letter or underscore
-        if !first_char.is_ascii_alphabetic() && first_char != '_' {
-            return None;
-        }
-
-        // Find end of identifier and collect it
-        let identifier: String = after_dollar
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-
-        let id_len = identifier.len();
-
-        // Check what follows the identifier - should NOT be `(` (that would be a rune)
-        let after_id = &after_dollar[id_len..];
-        let next_non_ws = after_id.chars().find(|c| !c.is_whitespace());
-
-        // If followed by `(`, it's a rune pattern (already handled), not a store
-        // If followed by `<` then `(`, could be a generic rune like $props<Type>()
-        // If followed by `:`, it's an object property key (e.g., { $or: ... })
-        if next_non_ws == Some('(') || next_non_ws == Some('<') || next_non_ws == Some(':') {
-            return None;
-        }
-
-        Some(identifier)
     }
 
     /// Apply the transformation for a matched rune.
@@ -1131,5 +1387,90 @@ mod tests {
         let result = transform_runes(r#"let x = "foo\"$state(0)\"bar";"#, 0);
         assert_eq!(result.output, r#"let x = "foo\"$state(0)\"bar";"#);
         assert!(result.runes.is_empty());
+    }
+
+    #[test]
+    fn test_store_subscription_in_function() {
+        let result = transform_runes(
+            r#"function setBillRateMethod() {
+    // If the custom bill rate is selected, set its method based on the shift method.
+    if (isCustomBillRate)
+      $formData.billRate.method = 'hourly';
+  }"#,
+            0,
+        );
+        assert!(
+            result.output.contains("__svelte_store_get(formData)"),
+            "Expected __svelte_store_get(formData) but got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_store_after_derived() {
+        // This tests the case where we have:
+        // 1. A $derived() expression (which gets transformed)
+        // 2. Followed by a regular function with $store access
+        let result = transform_runes(
+            r#"let x = $derived($formData.value);
+
+function test() {
+  $formData.other = 'value';
+}"#,
+            0,
+        );
+        // Both should be transformed
+        assert!(
+            !result.output.contains("$formData"),
+            "Found untransformed $formData in:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_store_subscription_assignment() {
+        // Test store assignment in a function
+        let result = transform_runes(
+            r#"const { form: formData, enhance, errors } = form;
+
+function updateEndTime() {
+  $formData.endTime = $formData.startTime ? 'test' : null;
+}"#,
+            0,
+        );
+        // All $formData references should be transformed
+        assert!(
+            !result.output.contains("$formData"),
+            "Found untransformed $formData in:\n{}",
+            result.output
+        );
+        // Should contain the transformed version
+        assert!(
+            result.output.contains("__svelte_store_get(formData)"),
+            "Expected __svelte_store_get(formData) but got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_store_subscription_with_comment() {
+        // Test store assignment after a comment (matches the real file pattern)
+        let result = transform_runes(
+            r#"function setBillRateMethod() {
+    // If the custom bill rate is selected, set its method based on the shift method.
+    if (isCustomBillRate)
+      $formData.billRate.method =
+        $formData.method === 'hourly' ? 'hourly'
+        : $formData.method === 'liveIn' ? 'daily'
+        : 'flat';
+  }"#,
+            0,
+        );
+        // All $formData references should be transformed
+        assert!(
+            !result.output.contains("$formData"),
+            "Found untransformed $formData in:\n{}",
+            result.output
+        );
     }
 }

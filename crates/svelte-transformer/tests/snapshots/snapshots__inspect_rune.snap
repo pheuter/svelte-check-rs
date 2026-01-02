@@ -30,6 +30,9 @@ declare function __svelte_check_props<C extends Component<any>>(
 // Helper to get store value type from store subscription ($store syntax)
 declare function __svelte_store_get<T>(store: { subscribe(fn: (value: T) => void): any }): T;
 
+// Helper type to extract store value for typeof expressions
+type __StoreValue<S> = S extends { subscribe(fn: (value: infer T) => void): any } ? T : never;
+
 // === INSTANCE SCRIPT ===
 
     let count = 0;

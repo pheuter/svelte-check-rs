@@ -13,19 +13,61 @@ use svelte_parser::*;
 /// We transform `$storeName` to `__svelte_store_get(storeName)` so TypeScript sees the
 /// dereferenced value type, not the store type.
 ///
+/// Special case: `typeof $store` becomes `__StoreValue<typeof store>` because
+/// TypeScript's typeof operator doesn't work with function calls.
+///
 /// This only applies to store subscriptions (identifier after $), not to:
 /// - Runes like `$state()`, `$derived()` (have parentheses)
 /// - Special variables like `$$props`, `$$slots`
 fn transform_store_subscriptions(expr: &str) -> String {
     let mut result = String::with_capacity(expr.len());
     let mut chars = expr.chars().peekable();
+    // Track typeof context: whitespace accumulated after "typeof"
+    let mut typeof_state: Option<String> = None;
+    // Track when we've just emitted __StoreValue<typeof ...> and need indexed property access
+    let mut in_storevalue_access = false;
 
     while let Some(ch) = chars.next() {
+        // When in storevalue access mode, convert .prop to ["prop"]
+        if in_storevalue_access {
+            if ch == '.' {
+                // Check if followed by identifier
+                if chars
+                    .peek()
+                    .is_some_and(|&c| c.is_ascii_alphabetic() || c == '_')
+                {
+                    // Collect the property name
+                    let mut prop = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            prop.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    // Emit as indexed access
+                    result.push_str("[\"");
+                    result.push_str(&prop);
+                    result.push_str("\"]");
+                    // Stay in storevalue_access mode for chained access
+                    continue;
+                }
+            }
+            // Not a property access, exit the mode
+            in_storevalue_access = false;
+        }
+
         if ch == '$' {
             // Check if this is a store subscription
             if let Some(&next) = chars.peek() {
                 // Skip $$ patterns ($$props, $$slots, etc.)
                 if next == '$' {
+                    // Restore typeof if we were tracking it
+                    if let Some(ws) = typeof_state.take() {
+                        result.push_str("typeof");
+                        result.push_str(&ws);
+                    }
                     result.push(ch);
                     continue;
                 }
@@ -53,8 +95,23 @@ fn transform_store_subscriptions(expr: &str) -> String {
                         || next_non_ws == Some('<')
                         || next_non_ws == Some(':')
                     {
+                        // Restore typeof if we were tracking it
+                        if let Some(ws) = typeof_state.take() {
+                            result.push_str("typeof");
+                            result.push_str(&ws);
+                        }
                         result.push(ch);
                         result.push_str(&identifier);
+                    } else if typeof_state.is_some() {
+                        // In typeof context, use type helper instead of function call
+                        // typeof $store.prop -> __StoreValue<typeof store>["prop"]
+                        // Don't restore typeof - we're replacing it
+                        typeof_state = None;
+                        result.push_str("__StoreValue<typeof ");
+                        result.push_str(&identifier);
+                        result.push('>');
+                        // Enter storevalue access mode for property access conversion
+                        in_storevalue_access = true;
                     } else {
                         // It's a store subscription - wrap with helper function
                         result.push_str("__svelte_store_get(");
@@ -62,14 +119,53 @@ fn transform_store_subscriptions(expr: &str) -> String {
                         result.push(')');
                     }
                 } else {
+                    // Restore typeof if we were tracking it
+                    if let Some(ws) = typeof_state.take() {
+                        result.push_str("typeof");
+                        result.push_str(&ws);
+                    }
                     result.push(ch);
                 }
             } else {
+                // Restore typeof if we were tracking it
+                if let Some(ws) = typeof_state.take() {
+                    result.push_str("typeof");
+                    result.push_str(&ws);
+                }
                 result.push(ch);
             }
         } else {
-            result.push(ch);
+            // Not a $ - check if we're tracking typeof
+            if let Some(ref mut ws) = typeof_state {
+                if ch.is_whitespace() {
+                    // Accumulate whitespace after typeof
+                    ws.push(ch);
+                } else {
+                    // Non-whitespace, non-$ after typeof - restore typeof and continue
+                    result.push_str("typeof");
+                    result.push_str(ws);
+                    result.push(ch);
+                    typeof_state = None;
+                }
+            } else {
+                result.push(ch);
+                // Check if we just completed the word "typeof"
+                if result.ends_with("typeof") {
+                    // Peek at next char to ensure it's whitespace (typeof is followed by space)
+                    if chars.peek().is_some_and(|&c| c.is_whitespace()) {
+                        // Remove the "typeof" we just added - we'll track it separately
+                        result.truncate(result.len() - 6);
+                        typeof_state = Some(String::new());
+                    }
+                }
+            }
         }
+    }
+
+    // Handle case where expression ends with "typeof " (restore it)
+    if let Some(ws) = typeof_state {
+        result.push_str("typeof");
+        result.push_str(&ws);
     }
 
     result
@@ -548,7 +644,9 @@ impl TemplateContext {
                 }
                 self.indent += 1;
                 // Generate snippet as arrow function: name: (params) => { body }
-                self.emit(&format!("{}: ({}) => {{", block.name, block.parameters));
+                // Transform store subscriptions in parameter types
+                let transformed_params = transform_store_subscriptions(&block.parameters);
+                self.emit(&format!("{}: ({}) => {{", block.name, transformed_params));
                 self.indent += 1;
                 self.generate_fragment(&block.body);
                 self.indent -= 1;
@@ -748,7 +846,12 @@ impl TemplateContext {
     fn generate_snippet_block(&mut self, block: &SnippetBlock) {
         // Snippets are local functions, use original names so @render tags can call them
         // JavaScript's block scoping handles uniqueness when snippets appear in different scopes
-        self.emit(&format!("function {}({}) {{", block.name, block.parameters));
+        // Transform store subscriptions in parameter types (e.g., typeof $formData.prop)
+        let transformed_params = transform_store_subscriptions(&block.parameters);
+        self.emit(&format!(
+            "function {}({}) {{",
+            block.name, transformed_params
+        ));
         self.indent += 1;
         self.generate_fragment(&block.body);
         self.indent -= 1;
