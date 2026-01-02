@@ -720,3 +720,137 @@ fn test_deeply_nested_components() {
     verify_line_mapping(source, "C(null as any", 10);
     verify_line_mapping(source, "D(null as any", 11);
 }
+
+// ============================================================================
+// PROP NAME LINE NUMBER TESTS
+// ============================================================================
+// These tests verify that component prop names (not just values) are correctly
+// mapped back to their original source positions. This is important because
+// TypeScript often reports errors at the property name position, not the value.
+
+#[test]
+fn test_prop_name_with_expression_value() {
+    let source = r#"<script>
+    import Input from './Input.svelte';
+    let val = "";
+</script>
+
+<Input
+    placeholder={val}
+/>"#;
+
+    // The prop name "placeholder" should map to line 7
+    verify_line_mapping(source, "placeholder:", 7);
+}
+
+#[test]
+fn test_prop_name_with_text_value() {
+    let source = r#"<script>
+    import Input from './Input.svelte';
+</script>
+
+<Input
+    placeholder="Enter text"
+/>"#;
+
+    // The prop name "placeholder" should map to line 6
+    verify_line_mapping(source, "placeholder:", 6);
+}
+
+#[test]
+fn test_prop_name_with_boolean_value() {
+    let source = r#"<script>
+    import Button from './Button.svelte';
+</script>
+
+<Button
+    disabled
+/>"#;
+
+    // The prop name "disabled" should map to line 6
+    verify_line_mapping(source, "disabled:", 6);
+}
+
+#[test]
+fn test_bind_directive_name() {
+    let source = r#"<script>
+    import Input from './Input.svelte';
+    let text = "";
+</script>
+
+<Input
+    bind:myValue={text}
+/>"#;
+
+    // The bind prop name "myValue" should map to line 7 (where "myValue" appears after "bind:")
+    // Using "myValue" to avoid matching helper function patterns
+    verify_line_mapping(source, "myValue:", 7);
+}
+
+#[test]
+fn test_multiple_prop_names() {
+    let source = r#"<script>
+    import Form from './Form.svelte';
+    let data = {};
+    let onSubmit = () => {};
+</script>
+
+<Form
+    formData={data}
+    handler={onSubmit}
+    disabled={false}
+    title="My Form"
+/>"#;
+
+    // Each prop name should map to its correct line
+    verify_line_mapping(source, "formData:", 8);
+    verify_line_mapping(source, "handler:", 9);
+    verify_line_mapping(source, "disabled:", 10);
+    verify_line_mapping(source, "title:", 11);
+}
+
+#[test]
+fn test_prop_name_in_large_file() {
+    // Simulate a file with many lines before the component to ensure
+    // line numbers are correctly calculated even at higher line numbers
+    let mut source = String::from("<script lang=\"ts\">\n");
+    for i in 0..80 {
+        source.push_str(&format!("  import {{ item{} }} from './lib{}';\n", i, i));
+    }
+    source.push_str("  import Combobox from './Combobox.svelte';\n");
+    source.push_str("</script>\n\n");
+
+    // Add many lines of template content
+    for i in 0..380 {
+        source.push_str(&format!("  <div>Field {}</div>\n", i));
+    }
+
+    // Add the component with props on a high line number
+    // Using unique prop names to avoid matching helper function patterns
+    source.push_str(
+        r#"<Combobox
+    myMode="multiple"
+    myOptions={someOptions}
+    bind:selectedItem={selectedValue}
+/>"#,
+    );
+
+    // Find the actual line numbers
+    let options_line = source
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("myOptions={"))
+        .map(|(i, _)| (i + 1) as u32)
+        .unwrap();
+
+    let bind_line = source
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("bind:selectedItem"))
+        .map(|(i, _)| (i + 1) as u32)
+        .unwrap();
+
+    // Verify prop name mappings at high line numbers
+    verify_line_mapping(&source, "myOptions:", options_line);
+    verify_line_mapping(&source, "selectedItem:", bind_line);
+}

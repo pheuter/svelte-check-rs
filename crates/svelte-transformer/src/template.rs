@@ -595,6 +595,17 @@ impl TemplateContext {
         });
     }
 
+    /// Emits a property name with source mapping.
+    ///
+    /// This records a mapping from the generated prop name to the original attribute name,
+    /// which is important for TypeScript errors that point to property names.
+    fn emit_prop_name_with_mapping(&mut self, name: &str, name_span: Span) {
+        let formatted = format_prop_name(name);
+        self.record_mapping_at_current_pos(&formatted, name_span);
+        self.output.push_str(&formatted);
+        self.output.push_str(": ");
+    }
+
     fn generate_fragment(&mut self, fragment: &Fragment) {
         for node in &fragment.nodes {
             self.generate_node(node);
@@ -892,6 +903,12 @@ impl TemplateContext {
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {
+                    // Compute name span from attribute span
+                    let name_span = Span::new(
+                        a.span.start,
+                        a.span.start + ByteOffset::from(a.name.len() as u32),
+                    );
+
                     match &a.value {
                         AttributeValue::Expression(expr) => {
                             let transformed = self.track_inline_expression(
@@ -899,20 +916,25 @@ impl TemplateContext {
                                 expr.expression_span,
                                 ExpressionContext::Attribute,
                             );
-                            // Emit with mapping for the expression value
+                            // Emit with mapping for both name and expression value
                             let indent_str = self.indent_str();
                             self.output.push_str(&indent_str);
-                            self.output
-                                .push_str(&format!("{}: ", format_prop_name(&a.name)));
+                            self.emit_prop_name_with_mapping(&a.name, name_span);
                             self.record_mapping_at_current_pos(&transformed, expr.expression_span);
                             self.output.push_str(&transformed);
                             self.output.push_str(",\n");
                         }
                         AttributeValue::Text(t) => {
-                            self.emit(&format!("{}: \"{}\",", format_prop_name(&a.name), t.value));
+                            let indent_str = self.indent_str();
+                            self.output.push_str(&indent_str);
+                            self.emit_prop_name_with_mapping(&a.name, name_span);
+                            self.output.push_str(&format!("\"{}\",\n", t.value));
                         }
                         AttributeValue::True => {
-                            self.emit(&format!("{}: true,", format_prop_name(&a.name)));
+                            let indent_str = self.indent_str();
+                            self.output.push_str(&indent_str);
+                            self.emit_prop_name_with_mapping(&a.name, name_span);
+                            self.output.push_str("true,\n");
                         }
                         AttributeValue::Concat(parts) => {
                             // Build a template literal for concatenated values
@@ -946,7 +968,10 @@ impl TemplateContext {
                                 }
                             }
                             template.push('`');
-                            self.emit(&format!("{}: {},", format_prop_name(&a.name), template));
+                            let indent_str = self.indent_str();
+                            self.output.push_str(&indent_str);
+                            self.emit_prop_name_with_mapping(&a.name, name_span);
+                            self.output.push_str(&format!("{},\n", template));
                         }
                     }
                 }
@@ -974,7 +999,19 @@ impl TemplateContext {
                     self.output.push_str(",\n");
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::Bind && d.name != "this" => {
-                    self.emit(&format!("{}: undefined as any,", format_prop_name(&d.name)));
+                    // For bind:name, the name starts after "bind:" (5 chars)
+                    let name_offset = match d.kind {
+                        DirectiveKind::Bind => 5, // "bind:"
+                        _ => 0,
+                    };
+                    let name_span = Span::new(
+                        d.span.start + ByteOffset::from(name_offset),
+                        d.span.start + ByteOffset::from(name_offset + d.name.len() as u32),
+                    );
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.emit_prop_name_with_mapping(&d.name, name_span);
+                    self.output.push_str("undefined as any,\n");
                 }
                 Attribute::Directive(_) => {
                     // Directives handled in second pass
