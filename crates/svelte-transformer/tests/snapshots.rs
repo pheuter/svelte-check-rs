@@ -581,3 +581,299 @@ fn test_store_subscription_in_script_function() {
 <button onclick={() => updateEndTime()}>Update</button>"#,
     );
 }
+
+// ============================================================================
+// COMPLEX GENERIC COMPONENT TESTS
+// ============================================================================
+
+#[test]
+fn test_generic_component_simple() {
+    transform_snapshot_with_filename(
+        "generic_simple",
+        "Select.svelte",
+        r#"<script lang="ts" generics="T extends { id: string; label: string }">
+    let { options, selected = $bindable() } = $props<{
+        options: T[];
+        selected?: T;
+    }>();
+</script>
+
+{#each options as option}
+    <button onclick={() => selected = option}>
+        {option.label}
+    </button>
+{/each}"#,
+    );
+}
+
+#[test]
+fn test_generic_component_multiple_params() {
+    transform_snapshot_with_filename(
+        "generic_multiple",
+        "Combobox.svelte",
+        r#"<script
+  lang="ts"
+  generics="T extends {label: string; value: string}, TMode extends 'single' | 'multiple'"
+>
+    import CheckIcon from '@lucide/svelte/icons/check';
+    import type { Snippet } from 'svelte';
+
+    type ValueType<TMode extends 'single' | 'multiple'> = TMode extends 'single' ? string : string[];
+
+    type Props = {
+        mode: TMode;
+        value?: ValueType<TMode>;
+        options: T[];
+        item?: Snippet<[T]>;
+    };
+
+    let {
+        mode,
+        value = $bindable((mode === 'multiple' ? [] : '') as ValueType<TMode>),
+        options,
+        item = itemDefault,
+    }: Props = $props();
+
+    const selectedOptions = $derived.by(() => {
+        if (mode === 'multiple') {
+            return options.filter((opt) => (value as string[]).includes(opt.value));
+        } else {
+            const found = options.find((f) => f.value === value);
+            return found ? [found] : [];
+        }
+    });
+</script>
+
+<div>
+    {#each selectedOptions as option}
+        <span>{@render item(option)}</span>
+        <CheckIcon class="size-4" />
+    {/each}
+</div>
+
+{#snippet itemDefault(option: T)}
+    {option.label}
+{/snippet}"#,
+    );
+}
+
+#[test]
+fn test_nested_components_deep() {
+    transform_snapshot(
+        "nested_components_deep",
+        r#"<script lang="ts">
+    import Outer from './Outer.svelte';
+    import Middle from './Middle.svelte';
+    import Inner from './Inner.svelte';
+
+    let data = $state({ value: 42 });
+</script>
+
+<Outer prop={data}>
+    <Middle value={data.value}>
+        <Inner>
+            <span>{data.value}</span>
+        </Inner>
+    </Middle>
+</Outer>"#,
+    );
+}
+
+#[test]
+fn test_component_with_snippets_as_props() {
+    transform_snapshot(
+        "component_snippets_props",
+        r#"<script lang="ts">
+    import DataTable from './DataTable.svelte';
+
+    type Row = { id: number; name: string; email: string };
+    let rows: Row[] = $state([]);
+</script>
+
+<DataTable {rows}>
+    {#snippet header()}
+        <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Email</th>
+        </tr>
+    {/snippet}
+
+    {#snippet row(item: Row)}
+        <tr>
+            <td>{item.id}</td>
+            <td>{item.name}</td>
+            <td>{item.email}</td>
+        </tr>
+    {/snippet}
+
+    {#snippet empty()}
+        <tr><td colspan="3">No data</td></tr>
+    {/snippet}
+</DataTable>"#,
+    );
+}
+
+#[test]
+fn test_component_namespace_pattern() {
+    transform_snapshot(
+        "component_namespace",
+        r#"<script lang="ts">
+    import * as Dialog from '$lib/components/ui/dialog';
+    import * as Popover from '$lib/components/ui/popover';
+
+    let open = $state(false);
+</script>
+
+<Dialog.Root bind:open>
+    <Dialog.Trigger>Open Dialog</Dialog.Trigger>
+    <Dialog.Content>
+        <Dialog.Header>
+            <Dialog.Title>Title</Dialog.Title>
+            <Dialog.Description>Description</Dialog.Description>
+        </Dialog.Header>
+        <Popover.Root>
+            <Popover.Trigger>Nested Popover</Popover.Trigger>
+            <Popover.Content>
+                <p>Popover content</p>
+            </Popover.Content>
+        </Popover.Root>
+    </Dialog.Content>
+</Dialog.Root>"#,
+    );
+}
+
+#[test]
+fn test_complex_event_handlers() {
+    transform_snapshot(
+        "complex_events",
+        r#"<script lang="ts">
+    let items = $state<string[]>([]);
+
+    function handleKeydown(event: KeyboardEvent) {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    }
+</script>
+
+<div
+    role="button"
+    tabindex="0"
+    onclick={(event) => {
+        event.stopPropagation();
+        items = [...items, 'new'];
+    }}
+    onkeydown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            event.stopPropagation();
+            items = [...items, 'new'];
+        } else {
+            event.stopPropagation();
+        }
+    }}
+>
+    Click or press Enter
+</div>"#,
+    );
+}
+
+#[test]
+fn test_spread_and_rest_props() {
+    transform_snapshot(
+        "spread_rest_props",
+        r#"<script lang="ts">
+    import Button from './Button.svelte';
+
+    let { class: className, variant = 'default', ...rest } = $props<{
+        class?: string;
+        variant?: 'default' | 'outline' | 'ghost';
+    } & Record<string, unknown>>();
+</script>
+
+<Button class={className} {variant} {...rest}>
+    <slot />
+</Button>"#,
+    );
+}
+
+#[test]
+fn test_conditional_component_rendering() {
+    transform_snapshot(
+        "conditional_components",
+        r#"<script lang="ts">
+    import LoadingSpinner from './LoadingSpinner.svelte';
+    import ErrorMessage from './ErrorMessage.svelte';
+    import DataDisplay from './DataDisplay.svelte';
+
+    type State =
+        | { status: 'loading' }
+        | { status: 'error'; error: Error }
+        | { status: 'success'; data: string[] };
+
+    let state: State = $state({ status: 'loading' });
+</script>
+
+{#if state.status === 'loading'}
+    <LoadingSpinner />
+{:else if state.status === 'error'}
+    <ErrorMessage message={state.error.message} />
+{:else}
+    <DataDisplay items={state.data} />
+{/if}"#,
+    );
+}
+
+#[test]
+fn test_each_with_component_and_key() {
+    transform_snapshot(
+        "each_component_key",
+        r#"<script lang="ts">
+    import ListItem from './ListItem.svelte';
+
+    type Item = { id: string; title: string; completed: boolean };
+    let items: Item[] = $state([]);
+
+    function toggle(id: string) {
+        items = items.map(item =>
+            item.id === id ? { ...item, completed: !item.completed } : item
+        );
+    }
+</script>
+
+<ul>
+    {#each items as item, index (item.id)}
+        <ListItem
+            {item}
+            {index}
+            onToggle={() => toggle(item.id)}
+        />
+    {/each}
+</ul>"#,
+    );
+}
+
+#[test]
+fn test_await_with_components() {
+    transform_snapshot(
+        "await_components",
+        r#"<script lang="ts">
+    import Skeleton from './Skeleton.svelte';
+    import UserCard from './UserCard.svelte';
+    import ErrorAlert from './ErrorAlert.svelte';
+
+    type User = { id: number; name: string; avatar: string };
+    let userPromise: Promise<User> = $state(fetch('/api/user').then(r => r.json()));
+</script>
+
+{#await userPromise}
+    <Skeleton variant="card" />
+{:then user}
+    <UserCard {user} />
+{:catch error}
+    <ErrorAlert {error} />
+{/await}"#,
+    );
+}

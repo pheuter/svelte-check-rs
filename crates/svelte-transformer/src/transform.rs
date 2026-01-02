@@ -2,7 +2,9 @@
 
 use crate::props::{extract_props_info, generate_props_type};
 use crate::runes::transform_runes_with_options;
-use crate::template::{generate_template_check_with_spans, transform_store_subscriptions};
+use crate::template::{
+    generate_template_check_with_spans, transform_store_subscriptions, TemplateCheckResult,
+};
 use crate::types::{component_name_from_path, ComponentExports};
 use smol_str::SmolStr;
 use source_map::{SourceMap, SourceMapBuilder};
@@ -642,6 +644,47 @@ fn read_import_statement(script: &str, start: usize) -> usize {
     i
 }
 
+/// Emits template code with proper source mappings for expressions.
+///
+/// This function iterates through the template code, emitting unmapped sections
+/// with `add_generated()` and mapped sections (expressions) with `add_transformed()`.
+fn emit_template_with_mappings(builder: &mut SourceMapBuilder, result: &TemplateCheckResult) {
+    if result.mappings.is_empty() {
+        // No mappings, just emit as generated
+        builder.add_generated(&result.code);
+        return;
+    }
+
+    // Sort mappings by generated start position
+    let mut mappings = result.mappings.clone();
+    mappings.sort_by_key(|m| m.generated_start);
+
+    let code = &result.code;
+    let mut pos = 0;
+
+    for mapping in &mappings {
+        // Emit any unmapped code before this mapping
+        if mapping.generated_start > pos {
+            let unmapped = &code[pos..mapping.generated_start];
+            builder.add_generated(unmapped);
+        }
+
+        // Emit the mapped expression
+        if mapping.generated_end <= code.len() {
+            let expr = &code[mapping.generated_start..mapping.generated_end];
+            builder.add_transformed(mapping.original_span, expr);
+        }
+
+        pos = mapping.generated_end;
+    }
+
+    // Emit any remaining code after the last mapping
+    if pos < code.len() {
+        let remaining = &code[pos..];
+        builder.add_generated(remaining);
+    }
+}
+
 /// Transforms a Svelte document to TSX.
 pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformResult {
     let mut output = String::new();
@@ -918,7 +961,7 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
 
             if !template_result.code.is_empty() {
                 output.push_str(&template_result.code);
-                builder.add_generated(&template_result.code);
+                emit_template_with_mappings(&mut builder, &template_result);
             }
             template_emitted = true;
 
@@ -958,11 +1001,8 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
         // object literals, and control flow structures
         output.push_str(&template_result.code);
 
-        // For now, just advance the offset without per-expression mapping.
-        // The structured template code includes control flow (if/for) which makes
-        // precise expression mapping more complex. We rely on tsgo to report
-        // line/column which can be roughly matched back to source.
-        builder.add_generated(&template_result.code);
+        // Emit template code with proper source mappings for expressions
+        emit_template_with_mappings(&mut builder, &template_result);
     }
 
     // Generate component export

@@ -5,7 +5,7 @@
 //! for control flow blocks and tracks spans for source mapping.
 
 use smol_str::SmolStr;
-use source_map::Span;
+use source_map::{ByteOffset, Span};
 use std::collections::HashSet;
 use svelte_parser::*;
 
@@ -373,6 +373,17 @@ pub enum ExpressionContext {
     DebugTag,
 }
 
+/// A mapping from generated position to original span.
+#[derive(Debug, Clone)]
+pub struct GeneratedMapping {
+    /// Start offset in the generated code (relative to template block start).
+    pub generated_start: usize,
+    /// End offset in the generated code.
+    pub generated_end: usize,
+    /// The original span in the source file.
+    pub original_span: Span,
+}
+
 /// Result of template TSX generation.
 #[derive(Debug)]
 pub struct TemplateCheckResult {
@@ -380,6 +391,8 @@ pub struct TemplateCheckResult {
     pub code: String,
     /// Expressions with their spans for source mapping.
     pub expressions: Vec<TemplateExpression>,
+    /// Mappings from generated positions to original spans.
+    pub mappings: Vec<GeneratedMapping>,
 }
 
 /// Generates a TSX type-checking block for the template.
@@ -400,6 +413,7 @@ pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckR
         return TemplateCheckResult {
             code: String::new(),
             expressions: Vec::new(),
+            mappings: Vec::new(),
         };
     }
 
@@ -407,22 +421,38 @@ pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckR
     code.push_str("\n// === TEMPLATE TYPE-CHECK BLOCK ===\n");
     code.push_str("// This is never executed, just type-checked\n");
     code.push_str("async function __svelte_template_check__() {\n");
+
+    // Track the offset where ctx.output will start in the final code
+    let mut preamble_len = code.len();
+
     if !ctx.store_names.is_empty() {
         let mut stores: Vec<_> = ctx.store_names.iter().collect();
         stores.sort();
         for store in stores {
-            code.push_str(&format!(
-                "  let ${} = __svelte_store_get({});\n",
-                store, store
-            ));
+            let store_decl = format!("  let ${} = __svelte_store_get({});\n", store, store);
+            code.push_str(&store_decl);
         }
+        preamble_len = code.len();
     }
+
     code.push_str(&ctx.output);
     code.push_str("}\n");
+
+    // Adjust mapping offsets to account for the preamble
+    let mappings = ctx
+        .mappings
+        .into_iter()
+        .map(|m| GeneratedMapping {
+            generated_start: m.generated_start + preamble_len,
+            generated_end: m.generated_end + preamble_len,
+            original_span: m.original_span,
+        })
+        .collect();
 
     TemplateCheckResult {
         code,
         expressions: ctx.expressions,
+        mappings,
     }
 }
 
@@ -456,6 +486,8 @@ fn format_prop_name(name: &str) -> String {
 struct TemplateContext {
     output: String,
     expressions: Vec<TemplateExpression>,
+    /// Mappings from generated positions to original spans.
+    mappings: Vec<GeneratedMapping>,
     indent: usize,
     /// Counter for generating unique variable names.
     counter: usize,
@@ -468,6 +500,7 @@ impl TemplateContext {
         Self {
             output: String::new(),
             expressions: Vec::new(),
+            mappings: Vec::new(),
             indent: 1,
             counter: 0,
             store_names: HashSet::new(),
@@ -503,14 +536,63 @@ impl TemplateContext {
             span,
             context,
         });
+
+        // Track where the expression starts in the generated output
+        let indent_str = self.indent_str();
+        let generated_start = self.output.len() + indent_str.len();
+
         // Wrap object literals in parentheses to prevent TypeScript from
         // interpreting them as blocks (e.g., `{foo: bar}` would be a label)
         let trimmed = transformed.trim_start();
-        if trimmed.starts_with('{') && !trimmed.starts_with("{{") {
-            self.emit(&format!("({});", transformed));
+        let (prefix, suffix) = if trimmed.starts_with('{') && !trimmed.starts_with("{{") {
+            ("(", ");")
         } else {
-            self.emit(&format!("{};", transformed));
-        }
+            ("", ";")
+        };
+
+        // Calculate the actual expression position (after any prefix)
+        let expr_start = generated_start + prefix.len();
+        let expr_end = expr_start + transformed.len();
+
+        // Record the mapping
+        self.mappings.push(GeneratedMapping {
+            generated_start: expr_start,
+            generated_end: expr_end,
+            original_span: span,
+        });
+
+        self.emit(&format!("{}{}{}", prefix, transformed, suffix));
+    }
+
+    /// Records a mapping for an expression that will be emitted inline (not as a standalone statement).
+    /// Returns the transformed expression.
+    fn track_inline_expression(
+        &mut self,
+        expr: &str,
+        span: Span,
+        context: ExpressionContext,
+    ) -> String {
+        let transformed = self.transform_expr(expr);
+
+        self.expressions.push(TemplateExpression {
+            expression: transformed.clone(),
+            span,
+            context,
+        });
+
+        transformed
+    }
+
+    /// Records a mapping at the current output position for the given expression text and span.
+    fn record_mapping_at_current_pos(&mut self, expr_text: &str, original_span: Span) {
+        let generated_start = self.output.len();
+        let generated_end = generated_start + expr_text.len();
+
+        self.mappings.push(GeneratedMapping {
+            generated_start,
+            generated_end,
+            original_span,
+        });
     }
 
     fn generate_fragment(&mut self, fragment: &Fragment) {
@@ -533,7 +615,7 @@ impl TemplateContext {
                 self.generate_fragment_nodes(&el.children);
             }
             TemplateNode::Component(comp) => {
-                self.generate_component(&comp.name, &comp.attributes, &comp.children);
+                self.generate_component(&comp.name, comp.span, &comp.attributes, &comp.children);
             }
             TemplateNode::SvelteElement(el) => {
                 // Special svelte:* elements
@@ -774,7 +856,13 @@ impl TemplateContext {
         }
     }
 
-    fn generate_component(&mut self, name: &str, attrs: &[Attribute], children: &[TemplateNode]) {
+    fn generate_component(
+        &mut self,
+        name: &str,
+        component_span: Span,
+        attrs: &[Attribute],
+        children: &[TemplateNode],
+    ) {
         // Collect props for the component
         // First pass: collect all prop-like attributes (Normal, Shorthand, Spread)
         // into a props object, then close it before handling directives
@@ -784,8 +872,20 @@ impl TemplateContext {
             .iter()
             .partition(|node| matches!(node, TemplateNode::SnippetBlock(_)));
 
-        // Start component call with props object inline to preserve contextual typing
-        self.emit(&format!("{}(null as any, {{", name));
+        // Calculate approximate name span from component span
+        // Component span starts at '<', so name starts at span.start (after '<' is parsed)
+        // We use the component span's start as an approximation for the name position
+        let name_span = Span::new(
+            component_span.start,
+            component_span.start + ByteOffset::from(name.len() as u32),
+        );
+
+        // Track the component name position for source mapping
+        // Emit indent first, then record the mapping at the current position
+        let indent_str = self.indent_str();
+        self.output.push_str(&indent_str);
+        self.record_mapping_at_current_pos(name, name_span);
+        self.output.push_str(&format!("{}(null as any, {{\n", name));
         self.indent += 1;
 
         // First pass: build the props object with Normal, Shorthand, Spread, and bind directives
@@ -794,13 +894,19 @@ impl TemplateContext {
                 Attribute::Normal(a) => {
                     match &a.value {
                         AttributeValue::Expression(expr) => {
-                            let transformed = self.transform_expr(&expr.expression);
-                            self.expressions.push(TemplateExpression {
-                                expression: transformed.clone(),
-                                span: expr.expression_span,
-                                context: ExpressionContext::Attribute,
-                            });
-                            self.emit(&format!("{}: {},", format_prop_name(&a.name), transformed));
+                            let transformed = self.track_inline_expression(
+                                &expr.expression,
+                                expr.expression_span,
+                                ExpressionContext::Attribute,
+                            );
+                            // Emit with mapping for the expression value
+                            let indent_str = self.indent_str();
+                            self.output.push_str(&indent_str);
+                            self.output
+                                .push_str(&format!("{}: ", format_prop_name(&a.name)));
+                            self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                            self.output.push_str(&transformed);
+                            self.output.push_str(",\n");
                         }
                         AttributeValue::Text(t) => {
                             self.emit(&format!("{}: \"{}\",", format_prop_name(&a.name), t.value));
@@ -820,12 +926,11 @@ impl TemplateContext {
                                         template.push_str(&escaped);
                                     }
                                     AttributeValuePart::Expression(expr) => {
-                                        let transformed = self.transform_expr(&expr.expression);
-                                        self.expressions.push(TemplateExpression {
-                                            expression: transformed.clone(),
-                                            span: expr.expression_span,
-                                            context: ExpressionContext::Attribute,
-                                        });
+                                        let transformed = self.track_inline_expression(
+                                            &expr.expression,
+                                            expr.expression_span,
+                                            ExpressionContext::Attribute,
+                                        );
                                         // Normalize multiline expressions to single line
                                         // to avoid issues with template literals.
                                         // Remove leading/trailing whitespace on each line and join.
@@ -846,23 +951,27 @@ impl TemplateContext {
                     }
                 }
                 Attribute::Spread(s) => {
-                    // Include spreads in the props object
-                    let transformed = self.transform_expr(&s.expression);
-                    self.expressions.push(TemplateExpression {
-                        expression: transformed.clone(),
-                        span: s.expression_span,
-                        context: ExpressionContext::Spread,
-                    });
-                    self.emit(&format!("...{},", transformed));
+                    // Include spreads in the props object with mapping
+                    let transformed = self.track_inline_expression(
+                        &s.expression,
+                        s.expression_span,
+                        ExpressionContext::Spread,
+                    );
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.output.push_str("...");
+                    self.record_mapping_at_current_pos(&transformed, s.expression_span);
+                    self.output.push_str(&transformed);
+                    self.output.push_str(",\n");
                 }
                 Attribute::Shorthand(s) => {
-                    let transformed = self.transform_expr(&s.name);
-                    self.expressions.push(TemplateExpression {
-                        expression: transformed.clone(),
-                        span: s.span,
-                        context: ExpressionContext::Attribute,
-                    });
-                    self.emit(&format!("{},", transformed));
+                    let transformed =
+                        self.track_inline_expression(&s.name, s.span, ExpressionContext::Attribute);
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.record_mapping_at_current_pos(&transformed, s.span);
+                    self.output.push_str(&transformed);
+                    self.output.push_str(",\n");
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::Bind && d.name != "this" => {
                     self.emit(&format!("{}: undefined as any,", format_prop_name(&d.name)));
@@ -929,13 +1038,19 @@ impl TemplateContext {
 
     fn generate_if_block(&mut self, block: &IfBlock) {
         // Use real if statements to preserve type narrowing
-        let transformed = self.transform_expr(&block.condition);
-        self.expressions.push(TemplateExpression {
-            expression: transformed.clone(),
-            span: block.condition_span,
-            context: ExpressionContext::IfCondition,
-        });
-        self.emit(&format!("if ({}) {{", transformed));
+        let transformed = self.track_inline_expression(
+            &block.condition,
+            block.condition_span,
+            ExpressionContext::IfCondition,
+        );
+
+        // Emit with mapping for the condition expression
+        let indent_str = self.indent_str();
+        self.output.push_str(&indent_str);
+        self.output.push_str("if (");
+        self.record_mapping_at_current_pos(&transformed, block.condition_span);
+        self.output.push_str(&transformed);
+        self.output.push_str(") {\n");
         self.indent += 1;
         self.generate_fragment(&block.consequent);
         self.indent -= 1;
@@ -962,13 +1077,17 @@ impl TemplateContext {
     }
 
     fn generate_if_block_continuation(&mut self, block: &IfBlock) {
-        let transformed = self.transform_expr(&block.condition);
-        self.expressions.push(TemplateExpression {
-            expression: transformed.clone(),
-            span: block.condition_span,
-            context: ExpressionContext::IfCondition,
-        });
-        self.output.push_str(&format!("if ({}) {{\n", transformed));
+        let transformed = self.track_inline_expression(
+            &block.condition,
+            block.condition_span,
+            ExpressionContext::IfCondition,
+        );
+
+        // Emit with mapping for the condition expression
+        self.output.push_str("if (");
+        self.record_mapping_at_current_pos(&transformed, block.condition_span);
+        self.output.push_str(&transformed);
+        self.output.push_str(") {\n");
         self.indent += 1;
         self.generate_fragment(&block.consequent);
         self.indent -= 1;
@@ -996,16 +1115,20 @@ impl TemplateContext {
     fn generate_each_block(&mut self, block: &EachBlock) {
         let id = self.next_id();
 
-        // Emit the iterable expression
-        let transformed = self.transform_expr(&block.expression);
-        self.expressions.push(TemplateExpression {
-            expression: transformed.clone(),
-            span: block.expression_span,
-            context: ExpressionContext::EachIterable,
-        });
+        // Emit the iterable expression with mapping
+        let transformed = self.track_inline_expression(
+            &block.expression,
+            block.expression_span,
+            ExpressionContext::EachIterable,
+        );
 
         // Generate a for loop that introduces the loop variable
-        self.emit(&format!("const __each_{} = {};", id, transformed));
+        let indent_str = self.indent_str();
+        self.output.push_str(&indent_str);
+        self.output.push_str(&format!("const __each_{} = ", id));
+        self.record_mapping_at_current_pos(&transformed, block.expression_span);
+        self.output.push_str(&transformed);
+        self.output.push_str(";\n");
 
         // Determine the loop variable pattern
         let item_pattern = &block.context;
@@ -1044,14 +1167,19 @@ impl TemplateContext {
     fn generate_await_block(&mut self, block: &AwaitBlock) {
         let id = self.next_id();
 
-        let transformed = self.transform_expr(&block.expression);
-        self.expressions.push(TemplateExpression {
-            expression: transformed.clone(),
-            span: block.expression_span,
-            context: ExpressionContext::AwaitPromise,
-        });
+        let transformed = self.track_inline_expression(
+            &block.expression,
+            block.expression_span,
+            ExpressionContext::AwaitPromise,
+        );
 
-        self.emit(&format!("const __await_{} = {};", id, transformed));
+        // Emit with mapping
+        let indent_str = self.indent_str();
+        self.output.push_str(&indent_str);
+        self.output.push_str(&format!("const __await_{} = ", id));
+        self.record_mapping_at_current_pos(&transformed, block.expression_span);
+        self.output.push_str(&transformed);
+        self.output.push_str(";\n");
 
         // Pending block
         if let Some(pending) = &block.pending {
