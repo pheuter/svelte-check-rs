@@ -753,7 +753,9 @@ impl<'src> Parser<'src> {
             TokenKind::LBraceHash => self.parse_block(),
             TokenKind::LBraceAt => self.parse_special_tag(),
             TokenKind::LBrace => self.parse_expression_tag(),
-            TokenKind::Text | TokenKind::Ident | TokenKind::Number => self.parse_text(),
+            TokenKind::Text | TokenKind::Ident | TokenKind::Number | TokenKind::Error => {
+                self.parse_text()
+            }
             // Newline returns None without advancing - caller handles it
             TokenKind::Newline => None,
             _ => None,
@@ -1974,6 +1976,7 @@ impl<'src> Parser<'src> {
             TokenKind::Text
                 | TokenKind::Ident
                 | TokenKind::Number
+                | TokenKind::Error
                 | TokenKind::Newline
                 | TokenKind::Dot
         ) {
@@ -2018,6 +2021,27 @@ mod tests {
         if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
             assert_eq!(el.name.as_str(), "div");
             assert_eq!(el.children.len(), 1);
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    #[test]
+    fn test_parse_unicode_text() {
+        let result = Parser::new("<div>—</div>", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty());
+        assert_eq!(result.document.fragment.nodes.len(), 1);
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert_eq!(el.name.as_str(), "div");
+            assert_eq!(el.children.len(), 1);
+
+            if let TemplateNode::Text(text) = &el.children[0] {
+                assert_eq!(text.data, "—");
+                assert!(!text.is_whitespace);
+            } else {
+                panic!("Expected Text");
+            }
         } else {
             panic!("Expected Element");
         }

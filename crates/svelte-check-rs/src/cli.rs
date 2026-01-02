@@ -51,10 +51,6 @@ pub struct Args {
     /// Output transformed TSX to stdout (for debugging)
     #[arg(long = "emit-tsx")]
     pub emit_tsx: bool,
-
-    /// Only process a single file (for debugging)
-    #[arg(long)]
-    pub file: Option<Utf8PathBuf>,
 }
 
 /// Output format options.

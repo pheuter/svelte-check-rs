@@ -18,6 +18,9 @@ shellexpand.workspace = true
 tempfile.workspace = true
 dirs.workspace = true
 walkdir.workspace = true
+swc_common.workspace = true
+swc_ecma_parser.workspace = true
+swc_ecma_ast.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

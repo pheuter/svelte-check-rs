@@ -152,8 +152,18 @@ impl Formatter {
         file_path: &Utf8Path,
         source: &str,
     ) -> String {
+        let formatted = Self::format_json_diagnostics(diagnostics, file_path, source);
+        serde_json::to_string_pretty(&formatted).unwrap_or_default()
+    }
+
+    /// Formats diagnostics into JSON-ready structs.
+    pub fn format_json_diagnostics(
+        diagnostics: &[Diagnostic],
+        file_path: &Utf8Path,
+        source: &str,
+    ) -> Vec<FormattedDiagnostic> {
         let line_index = LineIndex::new(source);
-        let formatted: Vec<FormattedDiagnostic> = diagnostics
+        diagnostics
             .iter()
             .map(|diag| {
                 let start = line_index
@@ -185,9 +195,7 @@ impl Formatter {
                     source: "svelte".to_string(),
                 }
             })
-            .collect();
-
-        serde_json::to_string_pretty(&formatted).unwrap_or_default()
+            .collect()
     }
 
     /// Formats as machine-readable output.

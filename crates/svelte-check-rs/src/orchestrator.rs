@@ -2,7 +2,7 @@
 
 use crate::cli::Args;
 use crate::config::{SvelteConfig, TsConfig};
-use crate::output::{CheckSummary, Formatter};
+use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
@@ -61,7 +61,12 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     }
 
     // Add default ignores
-    for pattern in ["**/node_modules/**", "**/dist/**", "**/.svelte-kit/**"] {
+    for pattern in [
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/.svelte-kit/**",
+        "**/.svelte-check-rs/**",
+    ] {
         if let Ok(glob) = Glob::new(pattern) {
             ignore_builder.add(glob);
         }
@@ -102,6 +107,7 @@ async fn run_single_check(
     files: Vec<Utf8PathBuf>,
 ) -> Result<CheckSummary, OrchestratorError> {
     let formatter = Formatter::new(args.output);
+    let output_json = matches!(args.output, crate::cli::OutputFormat::Json);
     let error_count = AtomicUsize::new(0);
     let warning_count = AtomicUsize::new(0);
 
@@ -116,8 +122,13 @@ async fn run_single_check(
     // Shared container for transformed files (thread-safe)
     let transformed_files = Mutex::new(TransformedFiles::new());
 
+    struct FileOutput {
+        text: Option<String>,
+        json: Vec<FormattedDiagnostic>,
+    }
+
     // Process files in parallel: parse, run Svelte diagnostics, and transform
-    let outputs: Vec<String> = files
+    let outputs: Vec<FileOutput> = files
         .par_iter()
         .filter_map(|file_path| {
             let source = match fs::read_to_string(file_path) {
@@ -150,6 +161,8 @@ async fn run_single_check(
             let svelte_diags = check_svelte(&parse_result.document, file_diag_options);
             all_diagnostics.extend(svelte_diags);
 
+            all_diagnostics.retain(|diag| include_svelte_severity(diag.severity, args.threshold));
+
             // Transform for TypeScript checking (if JS diagnostics enabled)
             if args.include_js() {
                 let transform_options = TransformOptions {
@@ -159,22 +172,18 @@ async fn run_single_check(
 
                 let transform_result = transform(&parse_result.document, transform_options);
 
-                // If emit_tsx is enabled and this file matches the --file filter, print TSX
+                // If emit_tsx is enabled, print TSX for each transformed file.
                 if args.emit_tsx {
-                    if let Some(ref filter_file) = args.file {
-                        let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
-                        if relative_path.as_str() == filter_file.as_str() {
-                            eprintln!(
-                                "=== TSX for {} ===\n{}",
-                                relative_path, transform_result.tsx_code
-                            );
-                        }
-                    }
+                    let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                    eprintln!(
+                        "=== TSX for {} ===\n{}",
+                        relative_path, transform_result.tsx_code
+                    );
                 }
 
-                // Create the virtual path (original.svelte -> original.svelte.tsx)
+                // Create the virtual path (original.svelte -> original.svelte.ts)
                 let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
-                let virtual_path = Utf8PathBuf::from(format!("{}.tsx", relative_path));
+                let virtual_path = Utf8PathBuf::from(format!("{}.ts", relative_path));
 
                 let transformed_file = TransformedFile {
                     original_path: file_path.clone(),
@@ -206,14 +215,35 @@ async fn run_single_check(
                 None
             } else {
                 let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
-                Some(formatter.format(&all_diagnostics, relative_path, &source))
+                Some(FileOutput {
+                    text: if output_json {
+                        None
+                    } else {
+                        Some(formatter.format(&all_diagnostics, relative_path, &source))
+                    },
+                    json: if output_json {
+                        Formatter::format_json_diagnostics(&all_diagnostics, relative_path, &source)
+                    } else {
+                        Vec::new()
+                    },
+                })
             }
         })
         .collect();
 
+    let mut json_output = Vec::new();
+
     // Print Svelte diagnostics
-    for output in outputs {
-        print!("{}", output);
+    if output_json {
+        for output in outputs {
+            json_output.extend(output.json);
+        }
+    } else {
+        for output in outputs {
+            if let Some(text) = output.text {
+                print!("{}", text);
+            }
+        }
     }
 
     // Run TypeScript type-checking if JS diagnostics are enabled
@@ -221,8 +251,11 @@ async fn run_single_check(
         let transformed = transformed_files.into_inner().unwrap_or_default();
 
         if !transformed.files.is_empty() {
-            match run_tsgo_check(workspace, &transformed).await {
-                Ok(ts_diagnostics) => {
+            match run_tsgo_check(workspace, &transformed, args).await {
+                Ok(mut ts_diagnostics) => {
+                    ts_diagnostics
+                        .retain(|diag| include_ts_severity(diag.severity, args.threshold));
+
                     // Count and print TypeScript diagnostics
                     for diag in &ts_diagnostics {
                         match diag.severity {
@@ -237,8 +270,13 @@ async fn run_single_check(
                     }
 
                     // Format and print TypeScript diagnostics
-                    let ts_output = format_ts_diagnostics(&ts_diagnostics, workspace, args.output);
-                    print!("{}", ts_output);
+                    if output_json {
+                        json_output.extend(format_ts_diagnostics_json(&ts_diagnostics, workspace));
+                    } else {
+                        let ts_output =
+                            format_ts_diagnostics(&ts_diagnostics, workspace, args.output);
+                        print!("{}", ts_output);
+                    }
                 }
                 Err(e) => {
                     eprintln!("TypeScript checking failed: {}", e);
@@ -257,6 +295,9 @@ async fn run_single_check(
     // Print summary
     if !matches!(args.output, crate::cli::OutputFormat::Json) {
         println!("{}", summary.format());
+    } else {
+        let json = serde_json::to_string_pretty(&json_output).unwrap_or_else(|_| "[]".to_string());
+        println!("{}", json);
     }
 
     Ok(summary)
@@ -266,13 +307,14 @@ async fn run_single_check(
 async fn run_tsgo_check(
     workspace: &Utf8Path,
     files: &TransformedFiles,
+    args: &Args,
 ) -> Result<Vec<TsgoDiagnostic>, OrchestratorError> {
     // Find or install tsgo
     let tsgo_path = TsgoRunner::ensure_tsgo()
         .await
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))?;
 
-    let runner = TsgoRunner::new(tsgo_path, workspace.to_owned());
+    let runner = TsgoRunner::new(tsgo_path, workspace.to_owned(), args.tsconfig.clone());
 
     runner
         .check(files)
@@ -333,6 +375,66 @@ fn format_ts_diagnostics(
     }
 
     output
+}
+
+/// Formats TypeScript diagnostics into JSON-ready structs.
+fn format_ts_diagnostics_json(
+    diagnostics: &[TsgoDiagnostic],
+    workspace: &Utf8Path,
+) -> Vec<FormattedDiagnostic> {
+    diagnostics
+        .iter()
+        .map(|diag| {
+            let relative_file = diag
+                .file
+                .strip_prefix(workspace)
+                .unwrap_or(&diag.file)
+                .to_string();
+
+            let severity = match diag.severity {
+                tsgo_runner::DiagnosticSeverity::Error => "Error",
+                tsgo_runner::DiagnosticSeverity::Warning => "Warning",
+                tsgo_runner::DiagnosticSeverity::Suggestion => "Hint",
+            };
+
+            FormattedDiagnostic {
+                diagnostic_type: severity.to_string(),
+                filename: relative_file,
+                start: Position {
+                    line: diag.start.line,
+                    column: diag.start.column,
+                    offset: diag.start.offset,
+                },
+                end: Position {
+                    line: diag.end.line,
+                    column: diag.end.column,
+                    offset: diag.end.offset,
+                },
+                message: diag.message.clone(),
+                code: diag.code.clone(),
+                source: "ts".to_string(),
+            }
+        })
+        .collect()
+}
+
+fn include_svelte_severity(severity: Severity, threshold: crate::cli::Threshold) -> bool {
+    match threshold {
+        crate::cli::Threshold::Error => matches!(severity, Severity::Error),
+        crate::cli::Threshold::Warning => true,
+    }
+}
+
+fn include_ts_severity(
+    severity: tsgo_runner::DiagnosticSeverity,
+    threshold: crate::cli::Threshold,
+) -> bool {
+    match threshold {
+        crate::cli::Threshold::Error => {
+            matches!(severity, tsgo_runner::DiagnosticSeverity::Error)
+        }
+        crate::cli::Threshold::Warning => true,
+    }
 }
 
 /// Runs in watch mode.

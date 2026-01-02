@@ -135,8 +135,8 @@ fn map_to_original(
     files: &TransformedFiles,
 ) -> (String, u32, u32) {
     // Try to find the transformed file
-    // The file_path may include temp directory prefixes (e.g., /tmp/.../src/App.svelte.tsx)
-    // We need to match against our virtual paths which are relative (e.g., src/App.svelte.tsx)
+    // The file_path may include temp directory prefixes (e.g., /tmp/.../src/App.svelte.ts)
+    // We need to match against our virtual paths which are relative (e.g., src/App.svelte.ts)
 
     // First try direct lookup
     let virtual_path = camino::Utf8Path::new(file_path);
@@ -144,8 +144,8 @@ fn map_to_original(
         return do_source_mapping(file, line, column);
     }
 
-    // Try to match by suffix - the temp path might be /tmp/.../src/routes/file.svelte.tsx
-    // and we're looking for src/routes/file.svelte.tsx
+    // Try to match by suffix - the temp path might be /tmp/.../src/routes/file.svelte.ts
+    // and we're looking for src/routes/file.svelte.ts
     for (key, file) in &files.files {
         // Check if the tsgo output path ends with our virtual path
         if file_path.ends_with(key.as_str()) {
@@ -210,11 +210,11 @@ mod tests {
     #[test]
     fn test_parse_diagnostic_line() {
         let line =
-            "src/App.svelte.tsx(10,5): error TS2322: Type 'string' is not assignable to type 'number'";
+            "src/App.svelte.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'";
         let files = TransformedFiles::new();
 
         let diag = parse_diagnostic_line(line, &files).unwrap();
-        assert_eq!(diag.file.as_str(), "src/App.svelte.tsx");
+        assert_eq!(diag.file.as_str(), "src/App.svelte.ts");
         assert_eq!(diag.start.line, 10);
         assert_eq!(diag.start.column, 5);
         assert_eq!(diag.code, "TS2322");

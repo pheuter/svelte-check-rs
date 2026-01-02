@@ -4,7 +4,9 @@
 //! This module generates proper TypeScript that preserves type narrowing
 //! for control flow blocks and tracks spans for source mapping.
 
+use smol_str::SmolStr;
 use source_map::Span;
+use std::collections::HashSet;
 use svelte_parser::*;
 
 /// Transform store subscriptions in an expression.
@@ -19,7 +21,7 @@ use svelte_parser::*;
 /// This only applies to store subscriptions (identifier after $), not to:
 /// - Runes like `$state()`, `$derived()` (have parentheses)
 /// - Special variables like `$$props`, `$$slots`
-fn transform_store_subscriptions(expr: &str) -> String {
+pub(crate) fn transform_store_subscriptions(expr: &str) -> String {
     let mut result = String::with_capacity(expr.len());
     let mut chars = expr.chars().peekable();
     // Track typeof context: whitespace accumulated after "typeof"
@@ -171,6 +173,162 @@ fn transform_store_subscriptions(expr: &str) -> String {
     result
 }
 
+/// Collect store subscriptions in a template expression without rewriting them.
+///
+/// This preserves `$store` syntax (so control flow narrowing works),
+/// and records referenced store names for alias declarations.
+fn transform_store_subscriptions_in_template(
+    expr: &str,
+    store_names: &mut HashSet<SmolStr>,
+) -> String {
+    let mut result = String::with_capacity(expr.len());
+    let mut chars = expr.chars().peekable();
+
+    let mut in_string: Option<char> = None;
+    let mut prev_was_escape = false;
+    let mut template_brace_depth: Vec<usize> = Vec::new();
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            result.push(ch);
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+
+        if in_block_comment {
+            result.push(ch);
+            if ch == '*' && chars.peek() == Some(&'/') {
+                result.push(chars.next().unwrap());
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if let Some(quote) = in_string {
+            if quote != '`' {
+                result.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == quote {
+                    in_string = None;
+                }
+                continue;
+            } else {
+                if prev_was_escape {
+                    result.push(ch);
+                    prev_was_escape = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    result.push(ch);
+                    prev_was_escape = true;
+                    continue;
+                }
+                if ch == '`' {
+                    result.push(ch);
+                    in_string = None;
+                    continue;
+                }
+                if ch == '$' && chars.peek() == Some(&'{') {
+                    result.push(ch);
+                    result.push(chars.next().unwrap());
+                    template_brace_depth.push(0);
+                    in_string = None;
+                    continue;
+                }
+                result.push(ch);
+                continue;
+            }
+        }
+
+        if !template_brace_depth.is_empty() {
+            if ch == '{' {
+                if let Some(depth) = template_brace_depth.last_mut() {
+                    *depth += 1;
+                }
+            } else if ch == '}' {
+                if let Some(depth) = template_brace_depth.last_mut() {
+                    if *depth == 0 {
+                        template_brace_depth.pop();
+                        result.push(ch);
+                        in_string = Some('`');
+                        continue;
+                    } else {
+                        *depth -= 1;
+                    }
+                }
+            }
+        }
+
+        if ch == '/' {
+            if chars.peek() == Some(&'/') {
+                result.push(ch);
+                result.push(chars.next().unwrap());
+                in_line_comment = true;
+                continue;
+            } else if chars.peek() == Some(&'*') {
+                result.push(ch);
+                result.push(chars.next().unwrap());
+                in_block_comment = true;
+                continue;
+            }
+        }
+
+        if ch == '\'' || ch == '"' || ch == '`' {
+            in_string = Some(ch);
+            result.push(ch);
+            continue;
+        }
+
+        if ch == '$' {
+            if let Some(&next) = chars.peek() {
+                if next == '$' {
+                    result.push(ch);
+                    continue;
+                }
+                if next.is_ascii_alphabetic() || next == '_' {
+                    let mut identifier = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            identifier.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let rest: String = chars.clone().collect();
+                    let trimmed_rest = rest.trim_start();
+                    let next_non_ws = trimmed_rest.chars().next();
+
+                    if next_non_ws == Some('(')
+                        || next_non_ws == Some('<')
+                        || next_non_ws == Some(':')
+                    {
+                        result.push(ch);
+                        result.push_str(&identifier);
+                    } else {
+                        store_names.insert(SmolStr::new(&identifier));
+                        result.push(ch);
+                        result.push_str(&identifier);
+                    }
+                    continue;
+                }
+            }
+        }
+
+        result.push(ch);
+    }
+
+    result
+}
+
 /// An expression collected from the template with its original span.
 #[derive(Debug, Clone)]
 pub struct TemplateExpression {
@@ -248,7 +406,17 @@ pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckR
     let mut code = String::new();
     code.push_str("\n// === TEMPLATE TYPE-CHECK BLOCK ===\n");
     code.push_str("// This is never executed, just type-checked\n");
-    code.push_str("function __svelte_template_check__() {\n");
+    code.push_str("async function __svelte_template_check__() {\n");
+    if !ctx.store_names.is_empty() {
+        let mut stores: Vec<_> = ctx.store_names.iter().collect();
+        stores.sort();
+        for store in stores {
+            code.push_str(&format!(
+                "  let ${} = __svelte_store_get({});\n",
+                store, store
+            ));
+        }
+    }
     code.push_str(&ctx.output);
     code.push_str("}\n");
 
@@ -291,6 +459,8 @@ struct TemplateContext {
     indent: usize,
     /// Counter for generating unique variable names.
     counter: usize,
+    /// Store names referenced via $store syntax inside the template.
+    store_names: HashSet<SmolStr>,
 }
 
 impl TemplateContext {
@@ -300,6 +470,7 @@ impl TemplateContext {
             expressions: Vec::new(),
             indent: 1,
             counter: 0,
+            store_names: HashSet::new(),
         }
     }
 
@@ -319,9 +490,13 @@ impl TemplateContext {
         self.output.push('\n');
     }
 
+    fn transform_expr(&mut self, expr: &str) -> String {
+        transform_store_subscriptions_in_template(expr, &mut self.store_names)
+    }
+
     fn emit_expression(&mut self, expr: &str, span: Span, context: ExpressionContext) {
-        // Transform store subscriptions: $storeName -> storeName
-        let transformed = transform_store_subscriptions(expr);
+        // Keep $store syntax but record store usage for alias declarations.
+        let transformed = self.transform_expr(expr);
 
         self.expressions.push(TemplateExpression {
             expression: transformed.clone(),
@@ -393,12 +568,12 @@ impl TemplateContext {
             }
             TemplateNode::ConstTag(tag) => {
                 // @const creates a local binding - emit as-is (with store transformation)
-                let transformed = transform_store_subscriptions(&tag.declaration);
+                let transformed = self.transform_expr(&tag.declaration);
                 self.emit(&format!("const {};", transformed));
             }
             TemplateNode::DebugTag(tag) => {
                 for ident in &tag.identifiers {
-                    let transformed = transform_store_subscriptions(ident);
+                    let transformed = self.transform_expr(ident);
                     self.expressions.push(TemplateExpression {
                         expression: transformed.clone(),
                         span: tag.span,
@@ -443,7 +618,27 @@ impl TemplateContext {
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {
-                    self.generate_attribute_value(&a.value);
+                    if let Some(event_name) = event_attribute_name(&a.name) {
+                        if let AttributeValue::Expression(expr) = &a.value {
+                            let context = ExpressionContext::EventHandler;
+                            let event_type = get_event_type(element_name, event_name);
+                            let id = self.next_id();
+                            let transformed = self.transform_expr(&expr.expression);
+                            self.expressions.push(TemplateExpression {
+                                expression: transformed.clone(),
+                                span: expr.expression_span,
+                                context,
+                            });
+                            self.emit(&format!(
+                                "const __event_{}: ((e: {}) => void) | null | undefined = {};",
+                                id, event_type, transformed
+                            ));
+                        } else {
+                            self.generate_attribute_value(&a.value);
+                        }
+                    } else {
+                        self.generate_attribute_value(&a.value);
+                    }
                 }
                 Attribute::Spread(s) => {
                     self.emit_expression(
@@ -501,7 +696,7 @@ impl TemplateContext {
             if directive.kind == DirectiveKind::On {
                 let event_type = get_event_type(element_name, &directive.name);
                 let id = self.next_id();
-                let transformed = transform_store_subscriptions(&expr.expression);
+                let transformed = self.transform_expr(&expr.expression);
                 self.expressions.push(TemplateExpression {
                     expression: transformed.clone(),
                     span: expr.expression_span,
@@ -509,15 +704,73 @@ impl TemplateContext {
                 });
                 // Generate typed event handler check
                 self.emit(&format!(
-                    "const __event_{}: (e: {}) => void = {};",
+                    "const __event_{}: ((e: {}) => void) | null | undefined = {};",
                     id, event_type, transformed
                 ));
+            } else if directive.kind == DirectiveKind::Use {
+                let id = self.next_id();
+                let action_target = action_target_type(element_name);
+                let transformed = self.transform_expr(&expr.expression);
+                self.expressions.push(TemplateExpression {
+                    expression: transformed.clone(),
+                    span: expr.expression_span,
+                    context,
+                });
+                // Call the action with a typed element to contextually type the parameter.
+                self.emit(&format!(
+                    "const __action_result_{} = {}(null as unknown as {}, {});",
+                    id, directive.name, action_target, transformed
+                ));
+                self.emit(&format!("void __action_result_{};", id));
             } else if directive.kind == DirectiveKind::Bind {
-                // For bindings, check the variable
-                self.emit_expression(&expr.expression, expr.expression_span, context);
+                if directive.name == "this" {
+                    let transformed = self.transform_expr(&expr.expression);
+                    self.expressions.push(TemplateExpression {
+                        expression: transformed.clone(),
+                        span: expr.expression_span,
+                        context,
+                    });
+                    let id = self.next_id();
+                    let bind_type = bind_this_type(element_name);
+                    self.emit(&format!(
+                        "const __bind_this_{} = null as unknown as {};",
+                        id, bind_type
+                    ));
+                    self.emit(&format!("{} = __bind_this_{};", transformed, id));
+                } else if let Some((getter, setter)) = split_top_level_comma(&expr.expression) {
+                    let getter = self.transform_expr(&getter);
+                    let setter = self.transform_expr(&setter);
+                    self.expressions.push(TemplateExpression {
+                        expression: getter.clone(),
+                        span: expr.expression_span,
+                        context,
+                    });
+                    self.expressions.push(TemplateExpression {
+                        expression: setter.clone(),
+                        span: expr.expression_span,
+                        context,
+                    });
+                    let id = self.next_id();
+                    self.emit(&format!(
+                        "const __bind_pair_{}: [() => any, (value: any) => void] = [{}, {}];",
+                        id, getter, setter
+                    ));
+                } else {
+                    // For bindings, check the variable
+                    self.emit_expression(&expr.expression, expr.expression_span, context);
+                }
             } else {
                 self.emit_expression(&expr.expression, expr.expression_span, context);
             }
+        } else if directive.kind == DirectiveKind::Use {
+            let id = self.next_id();
+            let action_target = action_target_type(element_name);
+            // Call the action with only the element when no parameter is provided.
+            self.emit(&format!(
+                "const __action_result_{} = {}(null as unknown as {});",
+                id, directive.name, action_target
+            ));
+            self.emit(&format!("void __action_result_{};", id));
         }
     }
 
@@ -525,26 +778,23 @@ impl TemplateContext {
         // Collect props for the component
         // First pass: collect all prop-like attributes (Normal, Shorthand, Spread)
         // into a props object, then close it before handling directives
-        let id = self.next_id();
-        let mut has_props = false;
 
         // Separate snippets from other children - snippets become inline props
         let (snippets, other_children): (Vec<_>, Vec<_>) = children
             .iter()
             .partition(|node| matches!(node, TemplateNode::SnippetBlock(_)));
 
-        // First pass: build the props object with Normal, Shorthand, and Spread attributes
+        // Start component call with props object inline to preserve contextual typing
+        self.emit(&format!("{}(null as any, {{", name));
+        self.indent += 1;
+
+        // First pass: build the props object with Normal, Shorthand, Spread, and bind directives
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {
-                    if !has_props {
-                        self.emit(&format!("const __props_{} = {{", id));
-                        has_props = true;
-                    }
-                    self.indent += 1;
                     match &a.value {
                         AttributeValue::Expression(expr) => {
-                            let transformed = transform_store_subscriptions(&expr.expression);
+                            let transformed = self.transform_expr(&expr.expression);
                             self.expressions.push(TemplateExpression {
                                 expression: transformed.clone(),
                                 span: expr.expression_span,
@@ -570,8 +820,7 @@ impl TemplateContext {
                                         template.push_str(&escaped);
                                     }
                                     AttributeValuePart::Expression(expr) => {
-                                        let transformed =
-                                            transform_store_subscriptions(&expr.expression);
+                                        let transformed = self.transform_expr(&expr.expression);
                                         self.expressions.push(TemplateExpression {
                                             expression: transformed.clone(),
                                             span: expr.expression_span,
@@ -595,38 +844,28 @@ impl TemplateContext {
                             self.emit(&format!("{}: {},", format_prop_name(&a.name), template));
                         }
                     }
-                    self.indent -= 1;
                 }
                 Attribute::Spread(s) => {
                     // Include spreads in the props object
-                    if !has_props {
-                        self.emit(&format!("const __props_{} = {{", id));
-                        has_props = true;
-                    }
-                    self.indent += 1;
-                    let transformed = transform_store_subscriptions(&s.expression);
+                    let transformed = self.transform_expr(&s.expression);
                     self.expressions.push(TemplateExpression {
                         expression: transformed.clone(),
                         span: s.expression_span,
                         context: ExpressionContext::Spread,
                     });
                     self.emit(&format!("...{},", transformed));
-                    self.indent -= 1;
                 }
                 Attribute::Shorthand(s) => {
-                    if !has_props {
-                        self.emit(&format!("const __props_{} = {{", id));
-                        has_props = true;
-                    }
-                    self.indent += 1;
-                    let transformed = transform_store_subscriptions(&s.name);
+                    let transformed = self.transform_expr(&s.name);
                     self.expressions.push(TemplateExpression {
                         expression: transformed.clone(),
                         span: s.span,
                         context: ExpressionContext::Attribute,
                     });
                     self.emit(&format!("{},", transformed));
-                    self.indent -= 1;
+                }
+                Attribute::Directive(d) if d.kind == DirectiveKind::Bind && d.name != "this" => {
+                    self.emit(&format!("{}: undefined as any,", format_prop_name(&d.name)));
                 }
                 Attribute::Directive(_) => {
                     // Directives handled in second pass
@@ -638,30 +877,42 @@ impl TemplateContext {
         // This enables TypeScript to infer parameter types from the component's expected snippet type
         for snippet_node in &snippets {
             if let TemplateNode::SnippetBlock(block) = snippet_node {
-                if !has_props {
-                    self.emit(&format!("const __props_{} = {{", id));
-                    has_props = true;
-                }
-                self.indent += 1;
                 // Generate snippet as arrow function: name: (params) => { body }
                 // Transform store subscriptions in parameter types
-                let transformed_params = transform_store_subscriptions(&block.parameters);
-                self.emit(&format!("{}: ({}) => {{", block.name, transformed_params));
-                self.indent += 1;
-                self.generate_fragment(&block.body);
-                self.indent -= 1;
-                self.emit("},");
-                self.indent -= 1;
+                let transformed_params = self.transform_expr(&block.parameters);
+                let trimmed_params = transformed_params.trim();
+                if trimmed_params.is_empty() {
+                    self.emit(&format!("{}: () => {{", block.name));
+                    self.indent += 1;
+                    self.generate_fragment(&block.body);
+                    self.emit("return __svelte_snippet_return;");
+                    self.indent -= 1;
+                    self.emit("},");
+                } else {
+                    let snippet_param = format!("__snippet_params_{}", self.next_id());
+                    self.emit(&format!("{}: ({}) => {{", block.name, snippet_param));
+                    self.indent += 1;
+                    self.emit(&format!("const {} = {};", trimmed_params, snippet_param));
+                    self.generate_fragment(&block.body);
+                    self.emit("return __svelte_snippet_return;");
+                    self.indent -= 1;
+                    self.emit("},");
+                }
             }
         }
 
-        // Close the props object if we started one
-        if has_props {
-            // Use type assertion to enable proper type inference for callbacks
-            // The 'as' assertion allows TypeScript to infer parameter types in arrow functions
-            // while not requiring all props to be present
-            self.emit(&format!("}} as ComponentProps<typeof {}>;", name));
+        // Add default children as a snippet prop when present
+        if !other_children.is_empty() {
+            self.emit("children: () => {");
+            self.indent += 1;
+            self.emit("return __svelte_snippet_return;");
+            self.indent -= 1;
+            self.emit("},");
         }
+
+        // Close the props object and component call
+        self.indent -= 1;
+        self.emit("});");
 
         // Second pass: handle directives separately (bindings, events, etc.)
         for attr in attrs {
@@ -670,7 +921,7 @@ impl TemplateContext {
             }
         }
 
-        // Process non-snippet children
+        // Process non-snippet children in the parent scope to preserve narrowing.
         for child in &other_children {
             self.generate_node(child);
         }
@@ -678,7 +929,7 @@ impl TemplateContext {
 
     fn generate_if_block(&mut self, block: &IfBlock) {
         // Use real if statements to preserve type narrowing
-        let transformed = transform_store_subscriptions(&block.condition);
+        let transformed = self.transform_expr(&block.condition);
         self.expressions.push(TemplateExpression {
             expression: transformed.clone(),
             span: block.condition_span,
@@ -711,7 +962,7 @@ impl TemplateContext {
     }
 
     fn generate_if_block_continuation(&mut self, block: &IfBlock) {
-        let transformed = transform_store_subscriptions(&block.condition);
+        let transformed = self.transform_expr(&block.condition);
         self.expressions.push(TemplateExpression {
             expression: transformed.clone(),
             span: block.condition_span,
@@ -746,7 +997,7 @@ impl TemplateContext {
         let id = self.next_id();
 
         // Emit the iterable expression
-        let transformed = transform_store_subscriptions(&block.expression);
+        let transformed = self.transform_expr(&block.expression);
         self.expressions.push(TemplateExpression {
             expression: transformed.clone(),
             span: block.expression_span,
@@ -793,7 +1044,7 @@ impl TemplateContext {
     fn generate_await_block(&mut self, block: &AwaitBlock) {
         let id = self.next_id();
 
-        let transformed = transform_store_subscriptions(&block.expression);
+        let transformed = self.transform_expr(&block.expression);
         self.expressions.push(TemplateExpression {
             expression: transformed.clone(),
             span: block.expression_span,
@@ -816,6 +1067,8 @@ impl TemplateContext {
         if let Some(then) = &block.then {
             self.emit("{");
             self.indent += 1;
+            self.emit(&format!("const __then_{} = async () => {{", id));
+            self.indent += 1;
             if let Some(ref value) = then.value {
                 self.emit(&format!(
                     "const {}: Awaited<typeof __await_{}> = await __await_{};",
@@ -823,6 +1076,9 @@ impl TemplateContext {
                 ));
             }
             self.generate_fragment(&then.body);
+            self.indent -= 1;
+            self.emit("};");
+            self.emit(&format!("void __then_{}();", id));
             self.indent -= 1;
             self.emit("}");
         }
@@ -847,21 +1103,70 @@ impl TemplateContext {
         // Snippets are local functions, use original names so @render tags can call them
         // JavaScript's block scoping handles uniqueness when snippets appear in different scopes
         // Transform store subscriptions in parameter types (e.g., typeof $formData.prop)
-        let transformed_params = transform_store_subscriptions(&block.parameters);
-        self.emit(&format!(
-            "function {}({}) {{",
-            block.name, transformed_params
-        ));
+        let transformed_params = self.transform_expr(&block.parameters);
+        let trimmed_params = transformed_params.trim();
+        if trimmed_params.is_empty() {
+            self.emit(&format!("function {}() {{", block.name));
+        } else if trimmed_params.starts_with('{') || trimmed_params.starts_with('[') {
+            let param_name = format!("__snippet_params_{}", self.next_id());
+            self.emit(&format!("function {}({}: any) {{", block.name, param_name));
+            self.indent += 1;
+            self.emit(&format!("const {} = {};", trimmed_params, param_name));
+            self.indent -= 1;
+        } else {
+            self.emit(&format!(
+                "function {}({}) {{",
+                block.name, transformed_params
+            ));
+        }
         self.indent += 1;
         self.generate_fragment(&block.body);
+        self.emit("return __svelte_snippet_return;");
         self.indent -= 1;
         self.emit("}");
     }
 }
 
 /// Get the TypeScript event type for a given element and event name.
-fn get_event_type(element: &str, event: &str) -> &'static str {
-    match (element, event) {
+fn is_component_tag(element: &str) -> bool {
+    element
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
+        || element.contains('.')
+}
+
+fn event_target_type(element: &str) -> Option<&'static str> {
+    match element {
+        "input" => Some("HTMLInputElement"),
+        "textarea" => Some("HTMLTextAreaElement"),
+        "select" => Some("HTMLSelectElement"),
+        "option" => Some("HTMLOptionElement"),
+        "button" => Some("HTMLButtonElement"),
+        "form" => Some("HTMLFormElement"),
+        "a" => Some("HTMLAnchorElement"),
+        "img" => Some("HTMLImageElement"),
+        "video" => Some("HTMLVideoElement"),
+        "audio" => Some("HTMLAudioElement"),
+        "canvas" => Some("HTMLCanvasElement"),
+        "svg" => Some("SVGElement"),
+        "svelte:window" => Some("Window"),
+        "svelte:document" => Some("Document"),
+        "svelte:body" => Some("HTMLElement"),
+        "svelte:element" => Some("HTMLElement"),
+        _ => {
+            if is_component_tag(element) {
+                None
+            } else {
+                Some("HTMLElement")
+            }
+        }
+    }
+}
+
+/// Get the TypeScript event type for a given element and event name.
+fn get_event_type(element: &str, event: &str) -> String {
+    let base = match (element, event) {
         // Mouse events
         (_, "click" | "dblclick" | "contextmenu") => "MouseEvent",
         (
@@ -923,7 +1228,152 @@ fn get_event_type(element: &str, event: &str) -> &'static str {
 
         // Default
         _ => "Event",
+    };
+
+    if let Some(target) = event_target_type(element) {
+        format!("__SvelteEvent<{}, {}>", target, base)
+    } else {
+        base.to_string()
     }
+}
+
+fn event_attribute_name(attr_name: &str) -> Option<&str> {
+    if !attr_name.starts_with("on") || attr_name.len() <= 2 {
+        return None;
+    }
+    let event = &attr_name[2..];
+    if event.is_empty() {
+        None
+    } else {
+        Some(event)
+    }
+}
+
+fn split_top_level_comma(expr: &str) -> Option<(String, String)> {
+    let mut depth = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut prev_was_escape = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut chars = expr.char_indices().peekable();
+
+    while let Some((i, ch)) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+
+        if in_block_comment {
+            if ch == '*' && matches!(chars.peek(), Some((_, '/'))) {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if let Some(quote) = in_string {
+            if quote != '`' {
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == quote {
+                    in_string = None;
+                }
+            } else if prev_was_escape {
+                prev_was_escape = false;
+            } else if ch == '\\' {
+                prev_was_escape = true;
+            } else if ch == '`' {
+                in_string = None;
+            }
+            continue;
+        }
+
+        if ch == '/' {
+            if matches!(chars.peek(), Some((_, '/'))) {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            } else if matches!(chars.peek(), Some((_, '*'))) {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
+        }
+
+        if matches!(ch, '\'' | '"' | '`') {
+            in_string = Some(ch);
+            continue;
+        }
+
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth = depth.saturating_sub(1);
+            }
+            ',' if depth == 0 => {
+                let left = expr[..i].trim();
+                let right = expr[i + 1..].trim();
+                if left.is_empty() || right.is_empty() {
+                    return None;
+                }
+                return Some((left.to_string(), right.to_string()));
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn bind_this_type(element_name: &str) -> String {
+    match element_name {
+        "svelte:window" => "Window".to_string(),
+        "svelte:document" => "Document".to_string(),
+        "svelte:body" => "HTMLBodyElement".to_string(),
+        "svelte:head" => "HTMLHeadElement".to_string(),
+        "svelte:element" => "HTMLElement".to_string(),
+        "svelte:component" | "svelte:self" => "any".to_string(),
+        _ => {
+            if is_component_name(element_name) {
+                "any".to_string()
+            } else if element_name.contains('-') {
+                "HTMLElement".to_string()
+            } else {
+                format!("ElementTagNameMap[\"{}\"]", element_name)
+            }
+        }
+    }
+}
+
+fn action_target_type(element_name: &str) -> String {
+    match element_name {
+        "svelte:window" => "Window".to_string(),
+        "svelte:document" => "Document".to_string(),
+        "svelte:body" => "HTMLBodyElement".to_string(),
+        "svelte:head" => "HTMLHeadElement".to_string(),
+        "svelte:element" => "HTMLElement".to_string(),
+        "svelte:component" | "svelte:self" => "HTMLElement".to_string(),
+        _ => {
+            if is_component_name(element_name) || element_name.contains('-') {
+                "HTMLElement".to_string()
+            } else {
+                format!("ElementTagNameMap[\"{}\"]", element_name)
+            }
+        }
+    }
+}
+
+fn is_component_name(name: &str) -> bool {
+    name.contains('.')
+        || name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -482,9 +482,30 @@ fn extract_generic_type_param(declaration: &str) -> Option<String> {
 
 /// Generate a TypeScript type string for the props.
 pub fn generate_props_type(info: &PropsInfo) -> String {
-    // If we have an explicit type annotation, use it
+    // If we have an explicit type annotation, use it (but honor defaults/bindables as optional)
     if let Some(ref type_ann) = info.type_annotation {
-        return type_ann.clone();
+        let optional_props: Vec<String> = info
+            .properties
+            .iter()
+            .filter(|prop| prop.default_value.is_some() || prop.is_bindable)
+            .map(|prop| format!("{:?}", prop.name))
+            .collect();
+
+        if optional_props.is_empty() {
+            return type_ann.clone();
+        }
+
+        // Avoid exploding complex prop types that can trigger TS2590.
+        // If the annotation is large or has many optional keys, keep it as-is.
+        if is_complex_type_reference(type_ann) {
+            return type_ann.clone();
+        }
+        if optional_props.len() > 5 || type_ann.len() > 120 {
+            return type_ann.clone();
+        }
+
+        let keys = optional_props.join(" | ");
+        return format!("__SvelteOptionalProps<{t}, {k}>", t = type_ann, k = keys);
     }
 
     // If not destructured, we can't infer the type
@@ -494,10 +515,12 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
 
     // Generate type from properties
     let mut type_parts = Vec::new();
+    let mut has_rest = false;
 
     for prop in &info.properties {
         if prop.is_rest {
             // Rest properties contribute to the type
+            has_rest = true;
             continue;
         }
 
@@ -512,11 +535,36 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
         type_parts.push(format!("{}{}: {}", prop.name, optional, prop_type));
     }
 
-    if type_parts.is_empty() {
+    let base = if type_parts.is_empty() {
         "{}".to_string()
     } else {
         format!("{{ {} }}", type_parts.join("; "))
+    };
+
+    if has_rest {
+        if base == "{}" {
+            "Record<string, unknown>".to_string()
+        } else {
+            format!("{} & Record<string, unknown>", base)
+        }
+    } else {
+        base
     }
+}
+
+fn is_complex_type_reference(type_ann: &str) -> bool {
+    let trimmed = type_ann.trim();
+    if trimmed.starts_with('{') {
+        return false;
+    }
+
+    trimmed.contains('.')
+        || trimmed.contains('<')
+        || trimmed.contains('>')
+        || trimmed.contains('|')
+        || trimmed.contains('&')
+        || trimmed.contains('(')
+        || trimmed.contains(')')
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@
 
 use smol_str::SmolStr;
 use source_map::Span;
+use std::collections::HashSet;
 
 /// Information about a rune found in the script.
 #[derive(Debug, Clone)]
@@ -58,6 +59,10 @@ pub struct RuneTransformResult {
     pub runes: Vec<RuneInfo>,
     /// Mappings from original spans to generated spans.
     pub mappings: Vec<RuneMapping>,
+    /// Store names referenced via $store syntax in the script.
+    pub store_names: HashSet<SmolStr>,
+    /// Whether `$props.<name>()` accessors are used in the script.
+    pub uses_props_accessor: bool,
 }
 
 /// A mapping from an original span to a generated span.
@@ -89,61 +94,44 @@ enum ScanContext {
     RegexLiteral,
 }
 
-/// Transform store subscriptions in an expression.
+struct StoreScanResult {
+    store_names: HashSet<SmolStr>,
+    uses_props_accessor: bool,
+}
+
+/// Collect store subscriptions in script output without rewriting them.
 ///
-/// In Svelte, `$storeName` is shorthand for subscribing to a store and getting its value.
-/// We transform `$storeName` to `__svelte_store_get(storeName)` so TypeScript sees the
-/// dereferenced value type, not the store type.
-///
-/// Special case: `typeof $store` becomes `__StoreValue<typeof store>` because
-/// TypeScript's typeof operator doesn't work with function calls.
-///
-/// This only applies to store subscriptions (identifier after $), not to:
-/// - Runes like `$state()`, `$derived()` (have parentheses)
-/// - Special variables like `$$props`, `$$slots`
-/// - Strings like `'$lib/assets/favicon.svg'`
-fn transform_store_subscriptions(expr: &str) -> String {
-    let mut result = String::with_capacity(expr.len());
+/// This preserves `$store` identifiers so TypeScript can narrow on them,
+/// while we emit `$store` aliases in the script prologue.
+fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
+    let mut store_names = HashSet::new();
+    let mut uses_props_accessor = false;
     let mut chars = expr.chars().peekable();
-    // Track typeof context: whitespace accumulated after "typeof"
-    let mut typeof_state: Option<String> = None;
-    // Track when we've just emitted __StoreValue<typeof ...> and need indexed property access
-    let mut in_storevalue_access = false;
-    // Track string context: None = not in string, Some(quote) = in string with that quote
+
     let mut in_string: Option<char> = None;
-    // Track if previous char was a backslash (for escape sequences)
     let mut prev_was_escape = false;
-    // Track template literal expression depth for nested ${...} handling
     let mut template_brace_depth: Vec<usize> = Vec::new();
-    // Track comment context
     let mut in_line_comment = false;
     let mut in_block_comment = false;
 
     while let Some(ch) = chars.next() {
-        // Handle line comment context - pass through until newline
         if in_line_comment {
-            result.push(ch);
             if ch == '\n' {
                 in_line_comment = false;
             }
             continue;
         }
 
-        // Handle block comment context - pass through until */
         if in_block_comment {
-            result.push(ch);
             if ch == '*' && chars.peek() == Some(&'/') {
-                result.push(chars.next().unwrap()); // consume '/'
+                chars.next();
                 in_block_comment = false;
             }
             continue;
         }
 
-        // Handle string context (regular strings, not template literals)
         if let Some(quote) = in_string {
             if quote != '`' {
-                // Regular string - just pass through
-                result.push(ch);
                 if prev_was_escape {
                     prev_was_escape = false;
                 } else if ch == '\\' {
@@ -153,36 +141,28 @@ fn transform_store_subscriptions(expr: &str) -> String {
                 }
                 continue;
             } else {
-                // Template literal - need to handle ${...} expressions
                 if prev_was_escape {
-                    result.push(ch);
                     prev_was_escape = false;
                     continue;
                 }
                 if ch == '\\' {
-                    result.push(ch);
                     prev_was_escape = true;
                     continue;
                 }
                 if ch == '`' {
-                    result.push(ch);
                     in_string = None;
                     continue;
                 }
                 if ch == '$' && chars.peek() == Some(&'{') {
-                    // Start of template expression - emit ${ and track depth
-                    result.push(ch);
-                    result.push(chars.next().unwrap()); // consume '{'
+                    chars.next();
                     template_brace_depth.push(0);
-                    in_string = None; // Exit string context to process expression
+                    in_string = None;
                     continue;
                 }
-                result.push(ch);
                 continue;
             }
         }
 
-        // Handle template expression brace depth
         if !template_brace_depth.is_empty() {
             if ch == '{' {
                 if let Some(depth) = template_brace_depth.last_mut() {
@@ -191,9 +171,7 @@ fn transform_store_subscriptions(expr: &str) -> String {
             } else if ch == '}' {
                 if let Some(depth) = template_brace_depth.last_mut() {
                     if *depth == 0 {
-                        // End of template expression, back to template literal
                         template_brace_depth.pop();
-                        result.push(ch);
                         in_string = Some('`');
                         continue;
                     } else {
@@ -203,77 +181,30 @@ fn transform_store_subscriptions(expr: &str) -> String {
             }
         }
 
-        // Check for comment start (outside of strings)
         if ch == '/' {
             if chars.peek() == Some(&'/') {
-                // Line comment - pass through until newline
-                result.push(ch);
-                result.push(chars.next().unwrap()); // consume second '/'
+                chars.next();
                 in_line_comment = true;
                 continue;
             } else if chars.peek() == Some(&'*') {
-                // Block comment - pass through until */
-                result.push(ch);
-                result.push(chars.next().unwrap()); // consume '*'
+                chars.next();
                 in_block_comment = true;
                 continue;
             }
         }
 
-        // Check for string start (outside of strings)
         if ch == '\'' || ch == '"' || ch == '`' {
-            result.push(ch);
             in_string = Some(ch);
             continue;
         }
 
-        // When in storevalue access mode, convert .prop to ["prop"]
-        if in_storevalue_access {
-            if ch == '.' {
-                // Check if followed by identifier
-                if chars
-                    .peek()
-                    .is_some_and(|&c| c.is_ascii_alphabetic() || c == '_')
-                {
-                    // Collect the property name
-                    let mut prop = String::new();
-                    while let Some(&c) = chars.peek() {
-                        if c.is_ascii_alphanumeric() || c == '_' {
-                            prop.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    // Emit as indexed access
-                    result.push_str("[\"");
-                    result.push_str(&prop);
-                    result.push_str("\"]");
-                    // Stay in storevalue_access mode for chained access
-                    continue;
-                }
-            }
-            // Not a property access, exit the mode
-            in_storevalue_access = false;
-        }
-
         if ch == '$' {
-            // Check if this is a store subscription
             if let Some(&next) = chars.peek() {
-                // Skip $$ patterns ($$props, $$slots, etc.)
                 if next == '$' {
-                    // Restore typeof if we were tracking it
-                    if let Some(ws) = typeof_state.take() {
-                        result.push_str("typeof");
-                        result.push_str(&ws);
-                    }
-                    result.push(ch);
+                    chars.next();
                     continue;
                 }
-
-                // Check if followed by valid identifier start
                 if next.is_ascii_alphabetic() || next == '_' {
-                    // Collect the identifier
                     let mut identifier = String::new();
                     while let Some(&c) = chars.peek() {
                         if c.is_ascii_alphanumeric() || c == '_' {
@@ -284,117 +215,33 @@ fn transform_store_subscriptions(expr: &str) -> String {
                         }
                     }
 
-                    // Peek ahead to see what follows
                     let rest: String = chars.clone().collect();
                     let trimmed_rest = rest.trim_start();
                     let next_non_ws = trimmed_rest.chars().next();
 
-                    // If followed by ( or <, it's a rune - keep the $identifier
-                    // If followed by :, it's an object property key (e.g., { $or: ... })
-                    if next_non_ws == Some('(')
-                        || next_non_ws == Some('<')
-                        || next_non_ws == Some(':')
-                    {
-                        // Restore typeof if we were tracking it
-                        if let Some(ws) = typeof_state.take() {
-                            result.push_str("typeof");
-                            result.push_str(&ws);
+                    if identifier == "props" {
+                        if matches!(next_non_ws, Some('.') | Some('?') | Some('[')) {
+                            uses_props_accessor = true;
                         }
-                        result.push(ch);
-                        result.push_str(&identifier);
-                    } else if next_non_ws == Some('=')
-                        && !trimmed_rest.starts_with("==")
-                        && !trimmed_rest.starts_with("=>")
+                        continue;
+                    }
+
+                    if next_non_ws != Some('(')
+                        && next_non_ws != Some('<')
+                        && next_non_ws != Some(':')
                     {
-                        // Store assignment: $store = value
-                        // This is a Svelte store setter. For type-checking, we transform to:
-                        // __svelte_store_get(store) which returns the value type.
-                        // The assignment will fail type-checking if value is incompatible.
-                        // We use an unsafe cast to allow the assignment:
-                        // $store = value -> (__svelte_store_get(store) as typeof value) = value
-                        // Actually, simpler: we'll emit the store reference and trust that
-                        // the Svelte type definitions handle $store syntax.
-                        // But they don't, so let's use a workaround:
-                        // Transform to: (store as any).$ = value (creates a dummy prop)
-                        // This allows the assignment to type-check while preserving intent.
-                        // Actually even simpler for type-checking purposes:
-                        // Just emit the raw store access - TypeScript will complain about
-                        // unknown property but won't error on assignment LHS.
-                        if let Some(ws) = typeof_state.take() {
-                            result.push_str("typeof");
-                            result.push_str(&ws);
-                        }
-                        // Emit as property access: (store as any).$
-                        result.push('(');
-                        result.push_str(&identifier);
-                        result.push_str(" as any).$");
-                    } else if typeof_state.is_some() {
-                        // In typeof context, use type helper instead of function call
-                        // typeof $store.prop -> __StoreValue<typeof store>["prop"]
-                        // Don't restore typeof - we're replacing it
-                        typeof_state = None;
-                        result.push_str("__StoreValue<typeof ");
-                        result.push_str(&identifier);
-                        result.push('>');
-                        // Enter storevalue access mode for property access conversion
-                        in_storevalue_access = true;
-                    } else {
-                        // It's a store subscription - wrap with helper function
-                        result.push_str("__svelte_store_get(");
-                        result.push_str(&identifier);
-                        result.push(')');
+                        store_names.insert(SmolStr::new(&identifier));
                     }
-                } else {
-                    // Restore typeof if we were tracking it
-                    if let Some(ws) = typeof_state.take() {
-                        result.push_str("typeof");
-                        result.push_str(&ws);
-                    }
-                    result.push(ch);
-                }
-            } else {
-                // Restore typeof if we were tracking it
-                if let Some(ws) = typeof_state.take() {
-                    result.push_str("typeof");
-                    result.push_str(&ws);
-                }
-                result.push(ch);
-            }
-        } else {
-            // Not a $ - check if we're tracking typeof
-            if let Some(ref mut ws) = typeof_state {
-                if ch.is_whitespace() {
-                    // Accumulate whitespace after typeof
-                    ws.push(ch);
-                } else {
-                    // Non-whitespace, non-$ after typeof - restore typeof and continue
-                    result.push_str("typeof");
-                    result.push_str(ws);
-                    result.push(ch);
-                    typeof_state = None;
-                }
-            } else {
-                result.push(ch);
-                // Check if we just completed the word "typeof"
-                if result.ends_with("typeof") {
-                    // Peek at next char to ensure it's whitespace (typeof is followed by space)
-                    if chars.peek().is_some_and(|&c| c.is_whitespace()) {
-                        // Remove the "typeof" we just added - we'll track it separately
-                        result.truncate(result.len() - 6);
-                        typeof_state = Some(String::new());
-                    }
+                    continue;
                 }
             }
         }
     }
 
-    // Handle case where expression ends with "typeof " (restore it)
-    if let Some(ws) = typeof_state {
-        result.push_str("typeof");
-        result.push_str(&ws);
+    StoreScanResult {
+        store_names,
+        uses_props_accessor,
     }
-
-    result
 }
 
 /// Transforms rune expressions in script content.
@@ -405,9 +252,9 @@ fn transform_store_subscriptions(expr: &str) -> String {
 /// - `$state.snapshot(x)` → `(x)`
 /// - `$derived(expr)` → `(expr)`
 /// - `$derived.by(fn)` → `(fn)()`
-/// - `$effect(() => {...})` → `((() => {...}))()`
-/// - `$effect.pre(() => {...})` → `((() => {...}))()`
-/// - `$effect.root(fn)` → `(fn)()`
+/// - `$effect(() => {...})` → `__svelte_effect(() => {...})`
+/// - `$effect.pre(() => {...})` → `__svelte_effect_pre(() => {...})`
+/// - `$effect.root(fn)` → `__svelte_effect_root(fn)`
 /// - `$bindable(default?)` → `default` or nothing
 /// - `$inspect(...)` → `void 0`
 /// - `$host()` → `this`
@@ -428,9 +275,10 @@ pub fn transform_runes_with_options(
     let scanner = RuneScanner::new(script, base_offset, default_props_type);
     let mut result = scanner.scan_and_transform();
 
-    // Transform store subscriptions in the output that weren't already transformed
-    // (rune contents are transformed during scanning, but non-rune code is not)
-    result.output = transform_store_subscriptions(&result.output);
+    // Collect store subscriptions so we can declare aliases in the script prologue.
+    let store_scan = scan_store_subscriptions(&result.output);
+    result.store_names = store_scan.store_names;
+    result.uses_props_accessor = store_scan.uses_props_accessor;
 
     result
 }
@@ -488,6 +336,8 @@ impl<'a> RuneScanner<'a> {
             output: self.output,
             runes: self.runes,
             mappings: self.mappings,
+            store_names: HashSet::new(),
+            uses_props_accessor: false,
         }
     }
 
@@ -536,8 +386,8 @@ impl<'a> RuneScanner<'a> {
                 if let Some(rune_match) = self.try_match_rune(pos) {
                     self.apply_rune_transform(rune_match);
                 } else {
-                    // Just emit the $ - store subscriptions will be transformed later
-                    // by transform_store_subscriptions() which handles typeof contexts
+                    // Just emit the $ - store subscriptions are collected later
+                    // so we can declare aliases in the script prologue.
                     self.push_char(ch);
                 }
             }
@@ -688,7 +538,7 @@ impl<'a> RuneScanner<'a> {
         // Special cases for runes with TypeScript generics: $rune<Type>() or $rune<Type>(init)
         // Check $state<Type>() - transforms to the content or undefined
         if remaining.starts_with("$state<") {
-            if let Some((full_end, content, content_span)) =
+            if let Some((full_end, content, content_span, generic)) =
                 self.find_rune_with_generic(start_pos, "$state<")
             {
                 return Some(RuneMatch {
@@ -700,14 +550,14 @@ impl<'a> RuneScanner<'a> {
                     content,
                     content_span,
                     pattern_len: 7, // "$state<"
-                    full_text: Some(self.source[start_pos..full_end].to_string()),
+                    generic: Some(generic),
                 });
             }
         }
 
         // Check $derived<Type>() - transforms to the content
         if remaining.starts_with("$derived<") {
-            if let Some((full_end, content, content_span)) =
+            if let Some((full_end, content, content_span, generic)) =
                 self.find_rune_with_generic(start_pos, "$derived<")
             {
                 return Some(RuneMatch {
@@ -719,17 +569,16 @@ impl<'a> RuneScanner<'a> {
                     content,
                     content_span,
                     pattern_len: 9, // "$derived<"
-                    full_text: Some(self.source[start_pos..full_end].to_string()),
+                    generic: Some(generic),
                 });
             }
         }
 
         // Check $props<Type>() - special handling for props
         if remaining.starts_with("$props<") {
-            if let Some((full_end, _content, _content_span)) =
+            if let Some((full_end, _content, _content_span, generic)) =
                 self.find_rune_with_generic(start_pos, "$props<")
             {
-                let full_text = self.source[start_pos..full_end].to_string();
                 return Some(RuneMatch {
                     kind: RuneKind::Props,
                     full_span: Span::new(
@@ -739,7 +588,7 @@ impl<'a> RuneScanner<'a> {
                     content: None,
                     content_span: None,
                     pattern_len: 7, // "$props<"
-                    full_text: Some(full_text),
+                    generic: Some(generic),
                 });
             }
         }
@@ -757,7 +606,7 @@ impl<'a> RuneScanner<'a> {
                         content: None,
                         content_span: None,
                         pattern_len: pattern.len(),
-                        full_text: None,
+                        generic: None,
                     });
                 }
 
@@ -781,7 +630,7 @@ impl<'a> RuneScanner<'a> {
                             self.base_offset + (content_start + content.len()) as u32,
                         )),
                         pattern_len: pattern.len(),
-                        full_text: None,
+                        generic: None,
                     });
                 }
             }
@@ -796,7 +645,7 @@ impl<'a> RuneScanner<'a> {
         &self,
         start_pos: usize,
         prefix: &str,
-    ) -> Option<(usize, Option<String>, Option<Span>)> {
+    ) -> Option<(usize, Option<String>, Option<Span>, String)> {
         let s = &self.source[start_pos..];
 
         if !s.starts_with(prefix) {
@@ -850,6 +699,7 @@ impl<'a> RuneScanner<'a> {
         }
 
         let generic_end = generic_end?;
+        let generic = after_prefix[..generic_end].to_string();
 
         // After the >, we need "(" followed by optional content and ")"
         let after_generic = &after_prefix[generic_end + 1..];
@@ -877,7 +727,7 @@ impl<'a> RuneScanner<'a> {
                     self.base_offset + (content_start + content.len()) as u32,
                 ))
             };
-            Some((full_end, content_str, content_span))
+            Some((full_end, content_str, content_span, generic))
         } else {
             None
         }
@@ -888,32 +738,72 @@ impl<'a> RuneScanner<'a> {
         let mut depth = 1;
         let mut in_string = None; // None, Some('\''), Some('"'), Some('`')
         let mut prev_was_escape = false;
+        let mut in_line_comment = false;
+        let mut in_block_comment = false;
 
-        for (i, ch) in s.char_indices() {
+        let mut chars = s.char_indices().peekable();
+        while let Some((i, ch)) = chars.next() {
+            if in_line_comment {
+                if ch == '\n' {
+                    in_line_comment = false;
+                }
+                continue;
+            }
+
+            if in_block_comment {
+                if ch == '*' {
+                    if let Some((_, '/')) = chars.peek().copied() {
+                        chars.next();
+                        in_block_comment = false;
+                    }
+                }
+                continue;
+            }
+
             if prev_was_escape {
                 prev_was_escape = false;
                 continue;
             }
 
-            match in_string {
-                Some(quote) => {
-                    if ch == '\\' {
-                        prev_was_escape = true;
-                    } else if ch == quote {
-                        in_string = None;
-                    }
+            if let Some(quote) = in_string {
+                if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == quote {
+                    in_string = None;
                 }
-                None => match ch {
-                    '\'' | '"' | '`' => in_string = Some(ch),
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some((&s[..i], i));
+                continue;
+            }
+
+            match ch {
+                '/' => {
+                    if let Some((_, next)) = chars.peek().copied() {
+                        match next {
+                            '/' => {
+                                chars.next();
+                                in_line_comment = true;
+                                continue;
+                            }
+                            '*' => {
+                                chars.next();
+                                in_block_comment = true;
+                                continue;
+                            }
+                            _ => {}
                         }
                     }
-                    _ => {}
-                },
+                }
+                '\'' | '"' | '`' => {
+                    in_string = Some(ch);
+                    continue;
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((&s[..i], i));
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -941,24 +831,44 @@ impl<'a> RuneScanner<'a> {
         match rune_match.kind {
             RuneKind::State | RuneKind::StateRaw => {
                 // $state(init) → init, or undefined if empty
+                let generic = rune_match.generic.as_deref();
                 if let Some(content) = &rune_match.content {
                     if content.trim().is_empty() {
-                        self.push_str("undefined");
+                        if let Some(generic) = generic {
+                            self.push_str("undefined as unknown as (");
+                            self.push_str(generic);
+                            self.push_str(" | undefined)");
+                        } else {
+                            self.push_str("undefined as any");
+                        }
                     } else {
-                        // Transform store subscriptions within the content
-                        let transformed = transform_store_subscriptions(content);
-                        self.push_str(&transformed);
+                        let transformed = content;
+                        if let Some(generic) = generic {
+                            let trimmed_len = transformed.trim_end().len();
+                            let (body, trailing) = transformed.split_at(trimmed_len);
+                            self.push_char('(');
+                            self.push_str(body);
+                            self.push_str(" as ");
+                            self.push_str(generic);
+                            self.push_str(trailing);
+                            self.push_char(')');
+                        } else {
+                            self.push_str(transformed);
+                        }
                     }
+                } else if let Some(generic) = generic {
+                    self.push_str("undefined as unknown as (");
+                    self.push_str(generic);
+                    self.push_str(" | undefined)");
                 } else {
-                    self.push_str("undefined");
+                    self.push_str("undefined as any");
                 }
             }
             RuneKind::StateSnapshot => {
                 // $state.snapshot(x) → (x)
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    let transformed = transform_store_subscriptions(content);
-                    self.push_str(&transformed);
+                    self.push_str(content);
                 }
                 self.push_char(')');
             }
@@ -966,49 +876,56 @@ impl<'a> RuneScanner<'a> {
                 // $derived(expr) → (expr)
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    let transformed = transform_store_subscriptions(content);
-                    self.push_str(&transformed);
+                    self.push_str(content);
                 }
                 self.push_char(')');
+                if let Some(generic) = rune_match.generic.as_deref() {
+                    self.push_str(" as ");
+                    self.push_str(generic);
+                }
             }
             RuneKind::DerivedBy => {
                 // $derived.by(fn) → (fn)()
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    let transformed = transform_store_subscriptions(content);
-                    self.push_str(&transformed);
+                    self.push_str(content);
                 }
                 self.push_str(")()");
             }
-            RuneKind::Effect | RuneKind::EffectPre => {
-                // $effect(fn) → ((fn))()
-                self.push_str("((");
+            RuneKind::Effect => {
+                // $effect(fn) → __svelte_effect(fn)
+                self.push_str("__svelte_effect(");
                 if let Some(content) = &rune_match.content {
-                    let transformed = transform_store_subscriptions(content);
-                    self.push_str(&transformed);
+                    self.push_str(content);
                 }
-                self.push_str("))()");
+                self.push_str(")");
+            }
+            RuneKind::EffectPre => {
+                // $effect.pre(fn) → __svelte_effect_pre(fn)
+                self.push_str("__svelte_effect_pre(");
+                if let Some(content) = &rune_match.content {
+                    self.push_str(content);
+                }
+                self.push_str(")");
             }
             RuneKind::EffectRoot => {
-                // $effect.root(fn) → (fn)()
-                self.push_char('(');
+                // $effect.root(fn) → __svelte_effect_root(fn)
+                self.push_str("__svelte_effect_root(");
                 if let Some(content) = &rune_match.content {
-                    let transformed = transform_store_subscriptions(content);
-                    self.push_str(&transformed);
+                    self.push_str(content);
                 }
-                self.push_str(")()");
+                self.push_str(")");
             }
             RuneKind::Bindable => {
                 // $bindable(default?) → default or undefined
                 if let Some(content) = &rune_match.content {
                     if !content.trim().is_empty() {
-                        let transformed = transform_store_subscriptions(content);
-                        self.push_str(&transformed);
+                        self.push_str(content);
                     } else {
-                        self.push_str("undefined");
+                        self.push_str("undefined as any");
                     }
                 } else {
-                    self.push_str("undefined");
+                    self.push_str("undefined as any");
                 }
             }
             RuneKind::Inspect => {
@@ -1021,46 +938,27 @@ impl<'a> RuneScanner<'a> {
             }
             RuneKind::Props => {
                 // Transform $props() to valid TypeScript
-                // $props<Type>() -> ({} as Type)
-                // let {...}: Type = $props() -> ({} as Type) - extract type from LHS annotation
-                // $props() in SvelteKit route -> ({} as PageData) or ({} as LayoutData)
-                // $props() -> ({} as Record<string, unknown>) - fallback
+                // $props<Type>() -> ({} as __SvelteLoosen<Type>)
+                // let {...}: Type = $props() -> ({} as __SvelteLoosen<Type>) - extract type from LHS annotation
+                // $props() in SvelteKit route -> ({} as __SvelteLoosen<PageData>) or __SvelteLoosen<LayoutData>
+                // $props() -> ({} as __SvelteLoosen<Record<string, unknown>>) - fallback
                 let fallback_type = self.default_props_type.unwrap_or("Record<string, unknown>");
 
-                if let Some(full_text) = &rune_match.full_text {
-                    // Extract the type from $props<Type>()
-                    // full_text is like "$props<{ name: string }>()"
-                    let type_start = "$props<".len();
-                    let type_end = full_text.len() - ">()".len();
-                    if type_end > type_start {
-                        let type_str = &full_text[type_start..type_end];
-                        self.push_str("({} as ");
-                        self.push_str(type_str);
-                        self.push_char(')');
-                    } else {
-                        // Try to extract type annotation from LHS (e.g., }: Type = $props())
-                        let type_from_lhs = self.extract_type_from_lhs();
-                        if let Some(type_str) = type_from_lhs {
-                            self.push_str("({} as ");
-                            self.push_str(&type_str);
-                            self.push_char(')');
-                        } else {
-                            self.push_str("({} as ");
-                            self.push_str(fallback_type);
-                            self.push_char(')');
-                        }
-                    }
+                if let Some(generic) = rune_match.generic.as_deref() {
+                    self.push_str("({} as __SvelteLoosen<");
+                    self.push_str(generic);
+                    self.push_str(">)");
                 } else {
                     // $props() without generics - try to extract type from LHS
                     let type_from_lhs = self.extract_type_from_lhs();
                     if let Some(type_str) = type_from_lhs {
-                        self.push_str("({} as ");
+                        self.push_str("({} as __SvelteLoosen<");
                         self.push_str(&type_str);
-                        self.push_char(')');
+                        self.push_str(">)");
                     } else {
-                        self.push_str("({} as ");
+                        self.push_str("({} as __SvelteLoosen<");
                         self.push_str(fallback_type);
-                        self.push_char(')');
+                        self.push_str(">)");
                     }
                 }
             }
@@ -1096,20 +994,89 @@ impl<'a> RuneScanner<'a> {
         // The output currently ends with everything up to $props()
         let output = &self.output;
 
-        // Find the last `= ` which is right before $props()
-        let equals_pos = output.rfind(" = ").or_else(|| output.rfind("= "))?;
+        // Find the last assignment `=` which is right before $props()
+        let bytes = output.as_bytes();
+        let mut equals_pos = None;
+        for i in (0..bytes.len()).rev() {
+            if bytes[i] != b'=' {
+                continue;
+            }
+
+            let prev = if i > 0 { bytes[i - 1] } else { 0 };
+            let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+
+            // Skip arrows and comparisons (=>, ==, ===, !=, <=, >=)
+            if next == b'=' || next == b'>' {
+                continue;
+            }
+            if prev == b'=' || prev == b'!' || prev == b'<' || prev == b'>' {
+                continue;
+            }
+
+            equals_pos = Some(i);
+            break;
+        }
+
+        let equals_pos = equals_pos?;
 
         // Now look backwards from the equals sign to find `: Type`
         // We need to find the closing `}` of destructuring, then the `: Type` after it
         let before_equals = &output[..equals_pos];
 
-        // Find the colon that starts the type annotation
-        // This is tricky because the type itself might contain colons (in object types)
-        // Look for `}: ` or `): ` which indicates end of pattern + type annotation
-        let type_start = before_equals
-            .rfind("}: ")
-            .or_else(|| before_equals.rfind("): "))?;
-        let type_str = &before_equals[type_start + 3..].trim();
+        // Find the colon that starts the type annotation.
+        // We only accept a `:` at top-level (not inside braces/paren/brackets).
+        let mut type_start = None;
+        let mut brace_depth = 0;
+        let mut paren_depth = 0;
+        let mut bracket_depth = 0;
+        for (idx, ch) in before_equals.char_indices().rev() {
+            match ch {
+                '}' => brace_depth += 1,
+                '{' => {
+                    if brace_depth > 0 {
+                        brace_depth -= 1;
+                    }
+                }
+                ')' => paren_depth += 1,
+                '(' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                    }
+                }
+                ']' => bracket_depth += 1,
+                '[' => {
+                    if bracket_depth > 0 {
+                        bracket_depth -= 1;
+                    }
+                }
+                ':' => {
+                    if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 {
+                        let mut j = idx;
+                        while j > 0 {
+                            let prev = before_equals.as_bytes()[j - 1];
+                            if !prev.is_ascii_whitespace() {
+                                let is_ident = (prev as char).is_ascii_alphanumeric()
+                                    || prev == b'_'
+                                    || prev == b'$';
+                                if prev == b'}' || prev == b')' || prev == b']' || is_ident {
+                                    type_start = Some(idx);
+                                }
+                                break;
+                            }
+                            j -= 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if type_start.is_some() {
+                break;
+            }
+        }
+
+        let type_start = type_start?;
+        let type_str = &before_equals[type_start + 1..].trim();
 
         if type_str.is_empty() {
             return None;
@@ -1117,7 +1084,11 @@ impl<'a> RuneScanner<'a> {
 
         // Validate that this looks like a type (not empty, starts reasonably)
         let first_char = type_str.chars().next()?;
-        if !first_char.is_alphabetic() && first_char != '{' && first_char != '(' {
+        if !first_char.is_alphabetic()
+            && first_char != '{'
+            && first_char != '('
+            && first_char != '['
+        {
             return None;
         }
 
@@ -1137,8 +1108,8 @@ struct RuneMatch {
     /// Length of the pattern (e.g., "$state(" is 7).
     #[allow(dead_code)]
     pattern_len: usize,
-    /// The full original text of the rune call (for preserving generics).
-    full_text: Option<String>,
+    /// The generic type argument, if provided (e.g. `$state<Type>()`).
+    generic: Option<String>,
 }
 
 #[cfg(test)]
@@ -1190,21 +1161,24 @@ mod tests {
     #[test]
     fn test_transform_effect() {
         let result = transform_runes("$effect(() => console.log(count));", 0);
-        assert_eq!(result.output, "((() => console.log(count)))();");
+        assert_eq!(result.output, "__svelte_effect(() => console.log(count));");
         assert_eq!(result.runes[0].kind, RuneKind::Effect);
     }
 
     #[test]
     fn test_transform_effect_pre() {
         let result = transform_runes("$effect.pre(() => setup());", 0);
-        assert_eq!(result.output, "((() => setup()))();");
+        assert_eq!(result.output, "__svelte_effect_pre(() => setup());");
         assert_eq!(result.runes[0].kind, RuneKind::EffectPre);
     }
 
     #[test]
     fn test_transform_effect_root() {
         let result = transform_runes("const cleanup = $effect.root(() => {});", 0);
-        assert_eq!(result.output, "const cleanup = (() => {})();");
+        assert_eq!(
+            result.output,
+            "const cleanup = __svelte_effect_root(() => {});"
+        );
         assert_eq!(result.runes[0].kind, RuneKind::EffectRoot);
     }
 
@@ -1227,7 +1201,7 @@ mod tests {
         let result = transform_runes("let { value = $bindable(0) } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { value = 0 } = ({} as Record<string, unknown>);"
+            "let { value = 0 } = ({} as __SvelteLoosen<Record<string, unknown>>);"
         );
         assert_eq!(result.runes.len(), 2);
         assert_eq!(result.runes[0].kind, RuneKind::Bindable);
@@ -1239,7 +1213,7 @@ mod tests {
         let result = transform_runes("let { value = $bindable() } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { value = undefined } = ({} as Record<string, unknown>);"
+            "let { value = undefined as any } = ({} as __SvelteLoosen<Record<string, unknown>>);"
         );
     }
 
@@ -1248,7 +1222,7 @@ mod tests {
         let result = transform_runes("let { a, b } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { a, b } = ({} as Record<string, unknown>);"
+            "let { a, b } = ({} as __SvelteLoosen<Record<string, unknown>>);"
         );
         assert_eq!(result.runes[0].kind, RuneKind::Props);
     }
@@ -1256,7 +1230,10 @@ mod tests {
     #[test]
     fn test_props_with_typescript_generics() {
         let result = transform_runes("let { name } = $props<{ name: string }>();", 0);
-        assert_eq!(result.output, "let { name } = ({} as { name: string });");
+        assert_eq!(
+            result.output,
+            "let { name } = ({} as __SvelteLoosen<{ name: string }>);"
+        );
         assert_eq!(result.runes.len(), 1);
         assert_eq!(result.runes[0].kind, RuneKind::Props);
     }
@@ -1269,7 +1246,7 @@ mod tests {
         );
         assert_eq!(
             result.output,
-            "let { data } = ({} as { data: Array<{ id: number }> });"
+            "let { data } = ({} as __SvelteLoosen<{ data: Array<{ id: number }> }>);"
         );
         assert_eq!(result.runes[0].kind, RuneKind::Props);
     }
@@ -1279,7 +1256,7 @@ mod tests {
         let result = transform_runes("let { onClick } = $props<{ onClick?: () => void }>();", 0);
         assert_eq!(
             result.output,
-            "let { onClick } = ({} as { onClick?: () => void });"
+            "let { onClick } = ({} as __SvelteLoosen<{ onClick?: () => void }>);"
         );
         assert_eq!(result.runes.len(), 1);
         assert_eq!(result.runes[0].kind, RuneKind::Props);
@@ -1296,10 +1273,10 @@ mod tests {
         );
         assert_eq!(
             result.output,
-            r#"let { name, onchange } = ({} as {
+            r#"let { name, onchange } = ({} as __SvelteLoosen<{
     name: string;
     onchange?: (n: number) => void;
-});"#
+}>);"#
         );
     }
 
@@ -1400,10 +1377,11 @@ mod tests {
             0,
         );
         assert!(
-            result.output.contains("__svelte_store_get(formData)"),
-            "Expected __svelte_store_get(formData) but got:\n{}",
+            result.output.contains("$formData"),
+            "Expected $formData to remain but got:\n{}",
             result.output
         );
+        assert!(result.store_names.contains("formData"));
     }
 
     #[test]
@@ -1419,12 +1397,12 @@ function test() {
 }"#,
             0,
         );
-        // Both should be transformed
         assert!(
-            !result.output.contains("$formData"),
-            "Found untransformed $formData in:\n{}",
+            result.output.contains("$formData"),
+            "Expected $formData to remain but got:\n{}",
             result.output
         );
+        assert!(result.store_names.contains("formData"));
     }
 
     #[test]
@@ -1438,18 +1416,12 @@ function updateEndTime() {
 }"#,
             0,
         );
-        // All $formData references should be transformed
         assert!(
-            !result.output.contains("$formData"),
-            "Found untransformed $formData in:\n{}",
+            result.output.contains("$formData"),
+            "Expected $formData to remain but got:\n{}",
             result.output
         );
-        // Should contain the transformed version
-        assert!(
-            result.output.contains("__svelte_store_get(formData)"),
-            "Expected __svelte_store_get(formData) but got:\n{}",
-            result.output
-        );
+        assert!(result.store_names.contains("formData"));
     }
 
     #[test]
@@ -1466,11 +1438,11 @@ function updateEndTime() {
   }"#,
             0,
         );
-        // All $formData references should be transformed
         assert!(
-            !result.output.contains("$formData"),
-            "Found untransformed $formData in:\n{}",
+            result.output.contains("$formData"),
+            "Expected $formData to remain but got:\n{}",
             result.output
         );
+        assert!(result.store_names.contains("formData"));
     }
 }

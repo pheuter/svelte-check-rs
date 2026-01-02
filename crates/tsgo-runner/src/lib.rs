@@ -14,6 +14,7 @@
 //!     let runner = TsgoRunner::new(
 //!         Utf8PathBuf::from("/usr/local/bin/tsgo"),
 //!         Utf8PathBuf::from("/path/to/project"),
+//!         None,
 //!     );
 //!
 //!     let files = TransformedFiles::new();
@@ -25,6 +26,7 @@
 //! }
 //! ```
 
+mod kit;
 mod parser;
 mod runner;
 
