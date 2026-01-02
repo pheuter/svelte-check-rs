@@ -332,7 +332,6 @@ impl TsgoRunner {
 
     /// Runs type-checking on the transformed files.
     pub async fn check(&self, files: &TransformedFiles) -> Result<Vec<TsgoDiagnostic>, TsgoError> {
-        let keep_temp = std::env::var_os("SVELTE_CHECK_RS_KEEP_TEMP").is_some();
         let strict_function_types =
             read_env_bool("SVELTE_CHECK_RS_TSGO_STRICT_FUNCTION_TYPES").unwrap_or(false);
         let apply_tsgo_fixes = !strict_function_types;
@@ -342,22 +341,26 @@ impl TsgoRunner {
             Value::Bool(strict_function_types),
         );
 
+        // Enable incremental builds for faster subsequent runs
+        tsconfig_overrides.insert("incremental".to_string(), Value::Bool(true));
+        let tsbuildinfo_path = self.project_root.join(".svelte-check-rs/tsgo.tsbuildinfo");
+        tsconfig_overrides.insert(
+            "tsBuildInfoFile".to_string(),
+            Value::String(tsbuildinfo_path.to_string()),
+        );
+
         // Verify tsgo exists
         if !self.tsgo_path.exists() {
             return Err(TsgoError::NotFound(self.tsgo_path.clone()));
         }
 
-        // Create temp directory for transformed files inside the project root
-        // so module resolution can traverse up to workspace-level node_modules.
-        let temp_root = self.project_root.join(".svelte-check-rs");
-        std::fs::create_dir_all(&temp_root)
+        // Use a stable cache directory for transformed files inside the project root.
+        // This enables tsgo incremental builds (file paths stay the same between runs)
+        // and avoids the overhead of creating/deleting temp directories.
+        let cache_path = self.project_root.join(".svelte-check-rs/cache");
+        std::fs::create_dir_all(&cache_path)
             .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-        let temp_dir = tempfile::Builder::new()
-            .prefix("tmp-")
-            .tempdir_in(&temp_root)
-            .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-        let temp_path = Utf8Path::from_path(temp_dir.path())
-            .ok_or_else(|| TsgoError::TempFileFailed("invalid temp path".to_string()))?;
+        let temp_path = &cache_path;
 
         // Write transformed files
         let mut tsx_files = Vec::new();
@@ -466,14 +469,6 @@ impl TsgoRunner {
 
         // Parse diagnostics from output
         let diagnostics = parse_tsgo_output(&stdout, files)?;
-
-        if keep_temp {
-            let kept_path = temp_dir.keep();
-            eprintln!(
-                "svelte-check-rs: keeping temp dir at {}",
-                kept_path.display()
-            );
-        }
 
         Ok(diagnostics)
     }

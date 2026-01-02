@@ -2,6 +2,8 @@
 
 Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**). See `ARCHITECTURE.md` for detailed design.
 
+**Rust**: Edition 2021, MSRV 1.75
+
 ## Commands
 
 ```bash
@@ -12,7 +14,7 @@ cargo test --test snapshots    # Run snapshot tests only
 cargo test --test corpus_test  # Run corpus/fixture tests only
 cargo clippy --all-targets -- -D warnings  # Lint (warnings as errors)
 cargo fmt                      # Format (always run before committing)
-cargo run -p svelte-check-rs -- --workspace ./path/to/project
+cargo run -p svelte-check-rs -- --workspace ./path/to/project [--emit-tsx]
 ```
 
 **Snapshots**: Located in `crates/*/tests/snapshots/`. To accept new snapshots:
