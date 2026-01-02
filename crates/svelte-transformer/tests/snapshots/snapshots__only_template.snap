@@ -43,15 +43,11 @@ type __StoreValue<S> = S extends { subscribe(fn: (value: infer T) => void): any 
 // Helper to mark specific props as optional without expanding complex unions.
 type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
-// Loosen props to allow extra nested fields while preserving declared shapes.
-type __SvelteLoosenField<T> =
-  T extends (...args: any) => any ? T :
-  T extends readonly any[] ? T :
-  T extends object ? T & Record<string, any> : T;
+// Loosen props to allow extra top-level fields while preserving declared shapes.
 type __SvelteLoosen<T> =
   T extends (...args: any) => any ? T :
   T extends readonly any[] ? T :
-  T extends object ? { [K in keyof T]: __SvelteLoosenField<T[K]> } & Record<string, any> : T;
+  T extends object ? T & Record<string, any> : T;
 
 // Helper for $props.<name>() accessors.
 type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;

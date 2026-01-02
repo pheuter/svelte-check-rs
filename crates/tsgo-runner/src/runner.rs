@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use source_map::SourceMap;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::time::SystemTime;
 use thiserror::Error;
 use tokio::process::Command;
 use walkdir::WalkDir;
@@ -129,6 +130,11 @@ impl TsgoRunner {
             return Ok(false);
         }
 
+        // Avoid re-running sync when no route/config inputs changed.
+        if !Self::sveltekit_sync_needed(project_root) {
+            return Ok(false);
+        }
+
         // Find svelte-kit binary in node_modules
         let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
 
@@ -194,6 +200,39 @@ impl TsgoRunner {
         Err(TsgoError::SvelteKitSyncFailed(
             "svelte-kit binary not found in node_modules (searched parent directories)".into(),
         ))
+    }
+
+    fn sveltekit_sync_needed(project_root: &Utf8Path) -> bool {
+        let kit_tsconfig = project_root.join(".svelte-kit/tsconfig.json");
+        let baseline = match std::fs::metadata(&kit_tsconfig).and_then(|m| m.modified()) {
+            Ok(time) => time,
+            Err(_) => return true,
+        };
+
+        let config_candidates = [
+            "svelte.config.js",
+            "svelte.config.cjs",
+            "svelte.config.mjs",
+            "svelte.config.ts",
+        ];
+        for name in config_candidates {
+            let path = project_root.join(name);
+            if is_newer_than(&path, baseline) {
+                return true;
+            }
+        }
+
+        let input_dirs = [
+            project_root.join("src/routes"),
+            project_root.join("src/params"),
+        ];
+        for dir in input_dirs {
+            if dir.exists() && dir_has_newer_mtime(&dir, baseline) {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Finds tsgo or installs it if not found.
@@ -323,8 +362,7 @@ impl TsgoRunner {
                 );
                 let content = serde_json::to_string_pretty(&Value::Object(root))
                     .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                std::fs::write(&overlay_path, content)
-                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                write_if_changed(&overlay_path, content.as_bytes(), "write tsconfig overlay")?;
                 return Ok(overlay_path);
             }
         }
@@ -380,8 +418,7 @@ impl TsgoRunner {
                         transformed = patched;
                     }
                 }
-                std::fs::write(&target, transformed)
-                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                write_if_changed(&target, transformed.as_bytes(), "write kit transform")?;
                 continue;
             }
 
@@ -394,8 +431,7 @@ impl TsgoRunner {
                 if let Ok(content) = std::fs::read_to_string(path) {
                     if content.contains("Promise.all") {
                         if let Some(patched) = patch_promise_all_empty_arrays(&content) {
-                            std::fs::write(&target, patched)
-                                .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                            write_if_changed(&target, patched.as_bytes(), "write patched ts")?;
                             continue;
                         }
                     }
@@ -456,16 +492,14 @@ impl TsgoRunner {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
             }
-            std::fs::write(&full_path, &file.tsx_content)
-                .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+            write_if_changed(&full_path, file.tsx_content.as_bytes(), "write tsx")?;
             if let Some(file_name) = full_path.file_name() {
                 let stub_path = full_path.with_extension("d.ts");
                 let stub_content = format!(
                     "export * from \"./{}\";\nexport {{ default }} from \"./{}\";\n",
                     file_name, file_name
                 );
-                std::fs::write(&stub_path, stub_content)
-                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                write_if_changed(&stub_path, stub_content.as_bytes(), "write stub")?;
             }
             tsx_files.push(full_path.to_string());
         }
@@ -520,11 +554,9 @@ impl TsgoRunner {
         // Add a local shim for tsgo-only helpers used in patched sources.
         // Placing this under src keeps it within typical tsconfig include globs.
         let shim_path = temp_src.join("__svelte_check_rs_shims.d.ts");
-        std::fs::write(
-            &shim_path,
-            "declare function __svelte_empty_array<T>(value: () => T): Awaited<T>;\n",
-        )
-        .map_err(|e| TsgoError::TempFileFailed(format!("write shim: {e}")))?;
+        let shim_content =
+            "declare function __svelte_empty_array<T>(value: () => T): Awaited<T>;\n";
+        write_if_changed(&shim_path, shim_content.as_bytes(), "write shim")?;
 
         // Use the existing tsconfig via symlink overlay
         let project_tsconfig = self.resolve_tsconfig_path()?;
@@ -567,6 +599,56 @@ fn read_env_bool(name: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<(), TsgoError> {
+    if let Ok(metadata) = std::fs::metadata(path) {
+        if metadata.len() == contents.len() as u64 {
+            if let Ok(existing) = std::fs::read(path) {
+                if existing == contents {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    std::fs::write(path, contents)
+        .map_err(|e| TsgoError::TempFileFailed(format!("{context}: {e}")))?;
+    Ok(())
+}
+
+fn is_newer_than(path: &Utf8Path, baseline: SystemTime) -> bool {
+    if !path.exists() {
+        return false;
+    }
+
+    match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(modified) => modified > baseline,
+        Err(_) => true,
+    }
+}
+
+fn dir_has_newer_mtime(dir: &Utf8Path, baseline: SystemTime) -> bool {
+    for entry in WalkDir::new(dir).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return true,
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => return true,
+        };
+        match metadata.modified() {
+            Ok(modified) => {
+                if modified > baseline {
+                    return true;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+
+    false
 }
 
 fn is_ts_like_file(path: &Utf8Path) -> bool {

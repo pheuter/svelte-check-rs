@@ -24,8 +24,8 @@ svelte-diagnostics = { path = "crates/svelte-diagnostics" }
 tsgo-runner = { path = "crates/tsgo-runner" }
 
 # Parsing
-logos = "0.14"
-rowan = "0.15"
+logos = "0.16"
+rowan = "0.16"
 text-size = "1.1"
 swc_ecma_parser = "32.0"
 swc_ecma_ast = "19.0"
@@ -48,7 +48,7 @@ miette = { version = "7.2", features = ["fancy"] }
 # File system
 walkdir = "2.5"
 globset = "0.4"
-notify = "6.1"
+notify = "8.2"
 
 # Testing
 insta = { version = "1.40", features = ["json", "redactions"] }
@@ -60,10 +60,10 @@ rustc-hash = "2.0"
 smol_str = "0.3"
 camino = { version = "1.1", features = ["serde1"] }
 rayon = "1.10"
-which = "6.0"
+which = "8.0"
 shellexpand = "3.1"
 tempfile = "3.13"
-dirs = "5.0"
+dirs = "6.0"
 
 [profile.release]
 lto = true
