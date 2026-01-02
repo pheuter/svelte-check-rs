@@ -45,6 +45,10 @@ pub enum TsgoError {
     /// npm not found.
     #[error("npm not found - please install Node.js to auto-download tsgo")]
     NpmNotFound,
+
+    /// svelte-kit sync failed.
+    #[error("svelte-kit sync failed: {0}")]
+    SvelteKitSyncFailed(String),
 }
 
 /// The tsgo runner.
@@ -108,6 +112,88 @@ impl TsgoRunner {
         dirs::cache_dir()
             .and_then(|p| Utf8PathBuf::try_from(p).ok())
             .map(|p| p.join("svelte-check-rs"))
+    }
+
+    /// Runs `svelte-kit sync` to generate types before type-checking.
+    ///
+    /// This will:
+    /// 1. Check if the project uses SvelteKit (has @sveltejs/kit in node_modules)
+    /// 2. Find `svelte-kit` binary in node_modules/.bin (searches parent dirs for monorepos)
+    /// 3. Run `svelte-kit sync` to generate/update types
+    ///
+    /// Returns `Ok(true)` if sync was run, `Ok(false)` if skipped (not a SvelteKit project).
+    pub async fn ensure_sveltekit_sync(project_root: &Utf8Path) -> Result<bool, TsgoError> {
+        // Check if this is a SvelteKit project by searching for @sveltejs/kit
+        // in node_modules, including parent directories for monorepo support
+        if !Self::is_sveltekit_project(project_root) {
+            return Ok(false);
+        }
+
+        // Find svelte-kit binary in node_modules
+        let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
+
+        // Run svelte-kit sync
+        let output = Command::new(&svelte_kit_bin)
+            .arg("sync")
+            .current_dir(project_root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| TsgoError::SvelteKitSyncFailed(format!("failed to run: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TsgoError::SvelteKitSyncFailed(format!(
+                "exited with code {}: {}",
+                output.status.code().unwrap_or(-1),
+                stderr
+            )));
+        }
+
+        Ok(true)
+    }
+
+    /// Checks if this is a SvelteKit project by searching for @sveltejs/kit
+    /// in node_modules, walking up the directory tree for monorepo support.
+    fn is_sveltekit_project(project_root: &Utf8Path) -> bool {
+        let mut current = Some(project_root);
+
+        while let Some(dir) = current {
+            let kit_package = dir.join("node_modules/@sveltejs/kit");
+            if kit_package.exists() {
+                return true;
+            }
+            current = dir.parent();
+        }
+
+        false
+    }
+
+    /// Finds the svelte-kit binary by searching node_modules/.bin up the directory tree.
+    /// This handles monorepo setups where dependencies may be hoisted to a parent directory.
+    fn find_sveltekit_binary(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        let mut current = Some(project_root);
+
+        while let Some(dir) = current {
+            // Try node_modules/.bin/svelte-kit
+            let bin_path = dir.join("node_modules/.bin/svelte-kit");
+            if bin_path.exists() {
+                return Ok(bin_path);
+            }
+
+            // Try the package's bin directly
+            let pkg_bin = dir.join("node_modules/@sveltejs/kit/svelte-kit.js");
+            if pkg_bin.exists() {
+                return Ok(pkg_bin);
+            }
+
+            current = dir.parent();
+        }
+
+        Err(TsgoError::SvelteKitSyncFailed(
+            "svelte-kit binary not found in node_modules (searched parent directories)".into(),
+        ))
     }
 
     /// Finds tsgo or installs it if not found.

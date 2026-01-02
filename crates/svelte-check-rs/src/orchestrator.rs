@@ -251,6 +251,11 @@ async fn run_single_check(
         let transformed = transformed_files.into_inner().unwrap_or_default();
 
         if !transformed.files.is_empty() {
+            // Ensure SvelteKit types are generated before running tsgo
+            if let Err(e) = TsgoRunner::ensure_sveltekit_sync(workspace).await {
+                eprintln!("Warning: {}", e);
+            }
+
             match run_tsgo_check(workspace, &transformed, args).await {
                 Ok(mut ts_diagnostics) => {
                     ts_diagnostics

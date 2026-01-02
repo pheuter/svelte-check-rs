@@ -1001,6 +1001,16 @@ impl TemplateContext {
                     let snippet_param = format!("__snippet_params_{}", self.next_id());
                     self.emit(&format!("{}: ({}) => {{", block.name, snippet_param));
                     self.indent += 1;
+                    // Emit the destructuring with source mapping for the parameters
+                    let indent_str = self.indent_str();
+                    let prefix = format!("{}const ", indent_str);
+                    let generated_start = self.output.len() + prefix.len();
+                    let generated_end = generated_start + trimmed_params.len();
+                    self.mappings.push(GeneratedMapping {
+                        generated_start,
+                        generated_end,
+                        original_span: block.parameters_span,
+                    });
                     self.emit(&format!("const {} = {};", trimmed_params, snippet_param));
                     self.generate_fragment(&block.body);
                     self.emit("return __svelte_snippet_return;");

@@ -498,6 +498,184 @@ fn test_component_with_props_no_generics() {
 }
 
 // ============================================================================
+// SNIPPET PARAMETER SOURCE MAPPING TESTS
+// ============================================================================
+// These tests ensure that snippet parameters map back to their original
+// source positions, preventing the regression where errors in snippet
+// parameters would show incorrect line numbers.
+
+#[test]
+fn test_snippet_parameter_line_number() {
+    let source = r#"<script>
+    import Button from './Button.svelte';
+</script>
+
+<Button>
+    {#snippet icon({ size })}
+        <span style="font-size: {size}px">★</span>
+    {/snippet}
+</Button>"#;
+
+    // The destructured parameter { size } should map to line 6
+    verify_line_mapping(source, "{ size }", 6);
+}
+
+#[test]
+fn test_snippet_parameter_with_multiple_params() {
+    let source = r#"<script>
+    import List from './List.svelte';
+</script>
+
+<List>
+    {#snippet item({ label, value, index })}
+        <li>{index}: {label} = {value}</li>
+    {/snippet}
+</List>"#;
+
+    // The destructured parameters should map to line 6
+    verify_line_mapping(source, "{ label, value, index }", 6);
+}
+
+#[test]
+fn test_snippet_parameter_in_component_child_prop() {
+    // This is the exact pattern that caused the original bug
+    let source = r#"<script>
+    import * as Tooltip from './tooltip';
+    import Info from './Info.svelte';
+</script>
+
+<Tooltip.Root>
+    <Tooltip.Trigger>
+        {#snippet child({ props })}
+            <span {...props}>
+                <Info class="h-3.5 w-3.5" />
+            </span>
+        {/snippet}
+    </Tooltip.Trigger>
+</Tooltip.Root>"#;
+
+    // The { props } parameter should map to line 8
+    verify_line_mapping(source, "{ props }", 8);
+}
+
+#[test]
+fn test_snippet_parameter_with_type_annotation() {
+    let source = r#"<script lang="ts">
+    import Dialog from './Dialog.svelte';
+    type ButtonProps = { variant: string };
+</script>
+
+<Dialog>
+    {#snippet trigger({ props }: { props: ButtonProps })}
+        <button {...props}>Open</button>
+    {/snippet}
+</Dialog>"#;
+
+    // Parameters with type annotations should still map correctly
+    verify_line_mapping(source, "{ props }", 7);
+}
+
+#[test]
+fn test_snippet_parameter_nested_in_each() {
+    let source = r#"<script>
+    import Card from './Card.svelte';
+    let items = [1, 2, 3];
+</script>
+
+{#each items as item}
+    <Card>
+        {#snippet header({ title })}
+            <h2>{title}</h2>
+        {/snippet}
+    </Card>
+{/each}"#;
+
+    // The { title } parameter should map to line 8
+    verify_line_mapping(source, "{ title }", 8);
+}
+
+#[test]
+fn test_snippet_parameter_nested_in_if() {
+    let source = r#"<script>
+    import Modal from './Modal.svelte';
+    let showModal = true;
+</script>
+
+{#if showModal}
+    <Modal>
+        {#snippet footer({ close })}
+            <button onclick={close}>Close</button>
+        {/snippet}
+    </Modal>
+{/if}"#;
+
+    // The { close } parameter should map to line 8
+    verify_line_mapping(source, "{ close }", 8);
+}
+
+#[test]
+fn test_snippet_parameter_deeply_nested() {
+    let source = r#"<script>
+    import * as Dialog from './dialog';
+</script>
+
+<Dialog.Root>
+    <Dialog.Content>
+        <Dialog.Header>
+            {#snippet custom({ className })}
+                <div class={className}>Custom Header</div>
+            {/snippet}
+        </Dialog.Header>
+    </Dialog.Content>
+</Dialog.Root>"#;
+
+    // Deeply nested snippet parameters should map correctly
+    verify_line_mapping(source, "{ className }", 8);
+}
+
+#[test]
+fn test_multiple_snippets_with_parameters() {
+    let source = r#"<script>
+    import Table from './Table.svelte';
+</script>
+
+<Table>
+    {#snippet header({ column })}
+        <th>{column.name}</th>
+    {/snippet}
+    {#snippet cell({ row, column })}
+        <td>{row[column.key]}</td>
+    {/snippet}
+    {#snippet footer({ total })}
+        <tfoot>{total}</tfoot>
+    {/snippet}
+</Table>"#;
+
+    // Each snippet parameter should map to its correct line
+    verify_line_mapping(source, "{ column }", 6);
+    verify_line_mapping(source, "{ row, column }", 9);
+    verify_line_mapping(source, "{ total }", 12);
+}
+
+#[test]
+fn test_snippet_body_and_parameter_both_mapped() {
+    let source = r#"<script>
+    import Button from './Button.svelte';
+</script>
+
+<Button>
+    {#snippet leading({ size })}
+        <span>{size}</span>
+    {/snippet}
+</Button>"#;
+
+    // Both the parameter and the expression inside should map correctly
+    verify_line_mapping(source, "{ size }", 6);
+    // The expression in the body is emitted as a standalone statement with semicolon
+    verify_line_mapping(source, "size;", 7);
+}
+
+// ============================================================================
 // EDGE CASES
 // ============================================================================
 
