@@ -63,6 +63,10 @@ pub struct Args {
     /// Timing output format
     #[arg(long, value_enum, default_value = "text")]
     pub timings_format: TimingFormat,
+
+    /// Disable caching of .svelte-kit (fallback to direct symlink)
+    #[arg(long = "disable-sveltekit-cache")]
+    pub disable_sveltekit_cache: bool,
 }
 
 /// Output format options.

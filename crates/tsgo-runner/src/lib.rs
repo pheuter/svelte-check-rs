@@ -15,6 +15,7 @@
 //!         Utf8PathBuf::from("/usr/local/bin/tsgo"),
 //!         Utf8PathBuf::from("/path/to/project"),
 //!         None,
+//!         true,
 //!     );
 //!
 //!     let files = TransformedFiles::new();

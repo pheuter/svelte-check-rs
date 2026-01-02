@@ -5,9 +5,12 @@ use crate::parser::{parse_tsgo_output, TsgoDiagnostic};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::{Map, Value};
 use source_map::SourceMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
+use swc_common::{FileName, SourceMap as SwcSourceMap};
+use swc_ecma_ast::{Decl, ExportDecl, FnDecl, Module, ModuleDecl, ModuleItem, Pat};
+use swc_ecma_parser::{EsSyntax, Parser, StringInput, Syntax, TsSyntax};
 use thiserror::Error;
 use tokio::process::Command;
 use walkdir::WalkDir;
@@ -60,6 +63,8 @@ pub struct TsgoRunner {
     project_root: Utf8PathBuf,
     /// Optional tsconfig path override.
     tsconfig_path: Option<Utf8PathBuf>,
+    /// Whether to cache .svelte-kit contents in a stable location.
+    use_sveltekit_cache: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -114,11 +119,13 @@ impl TsgoRunner {
         tsgo_path: Utf8PathBuf,
         project_root: Utf8PathBuf,
         tsconfig_path: Option<Utf8PathBuf>,
+        use_sveltekit_cache: bool,
     ) -> Self {
         Self {
             tsgo_path,
             project_root,
             tsconfig_path,
+            use_sveltekit_cache,
         }
     }
 
@@ -176,15 +183,48 @@ impl TsgoRunner {
             return Ok(false);
         }
 
+        let signature = Self::compute_sveltekit_sync_signature(project_root);
+        if let Some(signature) = signature {
+            let state_path = project_root.join(".svelte-check-rs/kit-sync.sig");
+            if let Some(previous) = read_signature(&state_path) {
+                if previous == signature {
+                    return Ok(false);
+                }
+            }
+
+            // Find svelte-kit binary in node_modules
+            let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
+
+            // Run svelte-kit sync
+            let output = Command::new(&svelte_kit_bin)
+                .arg("sync")
+                .current_dir(project_root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| TsgoError::SvelteKitSyncFailed(format!("failed to run: {e}")))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(TsgoError::SvelteKitSyncFailed(format!(
+                    "exited with code {}: {}",
+                    output.status.code().unwrap_or(-1),
+                    stderr
+                )));
+            }
+
+            write_signature(&state_path, &signature)?;
+            return Ok(true);
+        }
+
         // Avoid re-running sync when no route/config inputs changed.
         if !Self::sveltekit_sync_needed(project_root) {
             return Ok(false);
         }
 
-        // Find svelte-kit binary in node_modules
-        let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
-
         // Run svelte-kit sync
+        let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
         let output = Command::new(&svelte_kit_bin)
             .arg("sync")
             .current_dir(project_root)
@@ -284,6 +324,148 @@ impl TsgoRunner {
         }
 
         false
+    }
+
+    fn compute_sveltekit_sync_signature(project_root: &Utf8Path) -> Option<String> {
+        let mut signature = String::new();
+        signature.push_str("v1\n");
+
+        let config_candidates = [
+            "svelte.config.js",
+            "svelte.config.cjs",
+            "svelte.config.mjs",
+            "svelte.config.ts",
+        ];
+        for name in config_candidates {
+            let path = project_root.join(name);
+            if path.exists() {
+                let content = std::fs::read_to_string(&path).ok()?;
+                signature.push_str("config:");
+                signature.push_str(name);
+                signature.push('\n');
+                signature.push_str(&content);
+                signature.push_str("\n--\n");
+            }
+        }
+
+        let hooks_dir = project_root.join("src");
+        if hooks_dir.exists() {
+            let mut hook_entries: Vec<(String, Vec<String>)> = Vec::new();
+            let entries = std::fs::read_dir(hooks_dir.as_std_path()).ok()?;
+            for entry in entries {
+                let entry = entry.ok()?;
+                let path_buf = entry.path();
+                let path = Utf8Path::from_path(&path_buf)?;
+                if !path.is_file() {
+                    continue;
+                }
+                let file_name = match path.file_name() {
+                    Some(name) => name,
+                    None => continue,
+                };
+                if !file_name.starts_with("hooks.") {
+                    continue;
+                }
+                if !matches!(path.extension(), Some("ts" | "js")) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(path).ok()?;
+                let exports = extract_relevant_exports(path, &source, is_relevant_hook_export)?;
+                let rel = path.strip_prefix(project_root).unwrap_or(path).to_string();
+                hook_entries.push((rel, exports));
+            }
+            hook_entries.sort_by(|a, b| a.0.cmp(&b.0));
+            for (rel, exports) in hook_entries {
+                signature.push_str("hook:");
+                signature.push_str(&rel);
+                signature.push('|');
+                signature.push_str(&exports.join(","));
+                signature.push('\n');
+            }
+        }
+
+        let params_dir = project_root.join("src/params");
+        if params_dir.exists() {
+            let mut params: Vec<String> = Vec::new();
+            for entry in WalkDir::new(&params_dir).follow_links(false) {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = match Utf8Path::from_path(entry.path()) {
+                    Some(path) => path,
+                    None => continue,
+                };
+                let file_name = match path.file_name() {
+                    Some(file_name) => file_name,
+                    None => continue,
+                };
+                if file_name.contains(".test") || file_name.contains(".spec") {
+                    continue;
+                }
+                if !matches!(path.extension(), Some("ts" | "js")) {
+                    continue;
+                }
+                let rel = path.strip_prefix(project_root).unwrap_or(path).to_string();
+                params.push(rel);
+            }
+            params.sort();
+            for rel in params {
+                signature.push_str("param:");
+                signature.push_str(&rel);
+                signature.push('\n');
+            }
+        }
+
+        let routes_dir = project_root.join("src/routes");
+        if routes_dir.exists() {
+            struct RouteEntry {
+                rel: String,
+                detail: String,
+            }
+            let mut routes: Vec<RouteEntry> = Vec::new();
+            for entry in WalkDir::new(&routes_dir).follow_links(false) {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = match Utf8Path::from_path(entry.path()) {
+                    Some(path) => path,
+                    None => continue,
+                };
+                let kind = match route_signature_kind(path) {
+                    Some(kind) => kind,
+                    None => continue,
+                };
+                let rel = path.strip_prefix(project_root).unwrap_or(path).to_string();
+                let detail = match kind {
+                    RouteSignatureKind::Svelte => "svelte".to_string(),
+                    RouteSignatureKind::Script => {
+                        let source = std::fs::read_to_string(path).ok()?;
+                        let exports =
+                            extract_relevant_exports(path, &source, is_relevant_route_export)?;
+                        format!("exports:{}", exports.join(","))
+                    }
+                };
+                routes.push(RouteEntry { rel, detail });
+            }
+            routes.sort_by(|a, b| a.rel.cmp(&b.rel));
+            for entry in routes {
+                signature.push_str("route:");
+                signature.push_str(&entry.rel);
+                signature.push('|');
+                signature.push_str(&entry.detail);
+                signature.push('\n');
+            }
+        }
+
+        Some(signature)
     }
 
     /// Finds tsgo or installs it if not found.
@@ -606,7 +788,6 @@ impl TsgoRunner {
         // Note: Don't symlink 'src' since we write transformed files there
         let symlinks = [
             ("node_modules", self.project_root.join("node_modules")),
-            (".svelte-kit", self.project_root.join(".svelte-kit")),
             ("tests", self.project_root.join("tests")),
             ("workflows", self.project_root.join("workflows")),
             ("vite.config.js", self.project_root.join("vite.config.js")),
@@ -632,6 +813,33 @@ impl TsgoRunner {
                             TsgoError::TempFileFailed(format!("symlink {name}: {e}"))
                         })?;
                     }
+                }
+            }
+        }
+
+        // Keep a stable copy of .svelte-kit to avoid invalidating tsgo incremental builds
+        let kit_source = self.project_root.join(".svelte-kit");
+        if kit_source.exists() {
+            let kit_link_source = if self.use_sveltekit_cache {
+                let kit_cache = self.project_root.join(".svelte-check-rs/kit");
+                sync_sveltekit_cache(&kit_source, &kit_cache)?;
+                kit_cache
+            } else {
+                kit_source.clone()
+            };
+            let target = temp_path.join(".svelte-kit");
+            if !target.exists() {
+                #[cfg(unix)]
+                {
+                    std::os::unix::fs::symlink(&kit_link_source, &target).map_err(|e| {
+                        TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
+                    })?;
+                }
+                #[cfg(windows)]
+                {
+                    std::os::windows::fs::symlink_dir(&kit_link_source, &target).map_err(|e| {
+                        TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
+                    })?;
                 }
             }
         }
@@ -741,6 +949,100 @@ fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<b
     Ok(true)
 }
 
+fn read_signature(path: &Utf8Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+fn write_signature(path: &Utf8Path, signature: &str) -> Result<(), TsgoError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| TsgoError::TempFileFailed(format!("create sync dir: {e}")))?;
+    }
+    let _ = write_if_changed(path, signature.as_bytes(), "write kit sync signature")?;
+    Ok(())
+}
+
+fn sync_sveltekit_cache(source: &Utf8Path, target: &Utf8Path) -> Result<(), TsgoError> {
+    if !source.exists() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(target)
+        .map_err(|e| TsgoError::TempFileFailed(format!("create kit cache dir: {e}")))?;
+
+    let mut seen_files: HashSet<Utf8PathBuf> = HashSet::new();
+    let mut seen_dirs: HashSet<Utf8PathBuf> = HashSet::new();
+    seen_dirs.insert(target.to_owned());
+
+    for entry in WalkDir::new(source).follow_links(false).into_iter() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = match Utf8Path::from_path(entry.path()) {
+            Some(path) => path,
+            None => continue,
+        };
+        let relative = match path.strip_prefix(source) {
+            Ok(relative) => relative,
+            Err(_) => continue,
+        };
+        let dest = target.join(relative);
+
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&dest)
+                .map_err(|e| TsgoError::TempFileFailed(format!("kit cache dir: {e}")))?;
+            seen_dirs.insert(dest);
+            continue;
+        }
+
+        if entry.file_type().is_file() {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| TsgoError::TempFileFailed(format!("kit cache dir: {e}")))?;
+                seen_dirs.insert(parent.to_owned());
+            }
+            let contents = std::fs::read(path)
+                .map_err(|e| TsgoError::TempFileFailed(format!("read kit file: {e}")))?;
+            let _ = write_if_changed(&dest, &contents, "write kit cache")?;
+            seen_files.insert(dest);
+        }
+    }
+
+    // Remove stale files and empty directories
+    for entry in WalkDir::new(target).follow_links(false).into_iter() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = match Utf8Path::from_path(entry.path()) {
+            Some(path) => path,
+            None => continue,
+        };
+        if entry.file_type().is_file() && !seen_files.contains(path) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    for entry in WalkDir::new(target)
+        .follow_links(false)
+        .contents_first(true)
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = match Utf8Path::from_path(entry.path()) {
+            Some(path) => path,
+            None => continue,
+        };
+        if entry.file_type().is_dir() && !seen_dirs.contains(path) {
+            let _ = std::fs::remove_dir(path);
+        }
+    }
+
+    Ok(())
+}
+
 fn extract_tsgo_diagnostics(stdout: &str) -> Option<String> {
     let mut collected = Vec::new();
     let mut found = false;
@@ -823,10 +1125,138 @@ fn routes_changed(routes_dir: &Utf8Path, baseline: SystemTime) -> bool {
     false
 }
 
-fn is_route_sync_file(file_name: &str) -> bool {
+#[derive(Clone, Copy)]
+enum RouteSignatureKind {
+    Script,
+    Svelte,
+}
+
+fn route_signature_kind(path: &Utf8Path) -> Option<RouteSignatureKind> {
+    let file_name = path.file_name()?;
+    let ext = path.extension()?;
+    let base = route_base_name(file_name)?;
+
+    match ext {
+        "svelte" => match base {
+            "+page" | "+layout" | "+error" => Some(RouteSignatureKind::Svelte),
+            _ => None,
+        },
+        "ts" | "js" => match base {
+            "+page" | "+layout" | "+page.server" | "+layout.server" | "+server" => {
+                Some(RouteSignatureKind::Script)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn route_base_name(file_name: &str) -> Option<&str> {
+    let (stem, _ext) = file_name.rsplit_once('.')?;
+    if let Some((base, _)) = stem.split_once('@') {
+        Some(base)
+    } else {
+        Some(stem)
+    }
+}
+
+fn extract_relevant_exports(
+    path: &Utf8Path,
+    source: &str,
+    is_relevant: fn(&str) -> bool,
+) -> Option<Vec<String>> {
+    let is_ts = matches!(path.extension(), Some("ts" | "mts" | "cts"));
+    let module = parse_module_for_exports(path, source, is_ts)?;
+    let mut exports = collect_export_names(&module);
+    exports.retain(|name| is_relevant(name));
+    exports.sort();
+    exports.dedup();
+    Some(exports)
+}
+
+fn parse_module_for_exports(path: &Utf8Path, source: &str, is_ts: bool) -> Option<Module> {
+    let cm: SwcSourceMap = Default::default();
+    let fm = cm.new_source_file(
+        FileName::Custom(path.to_string()).into(),
+        source.to_string(),
+    );
+    let syntax = if is_ts {
+        Syntax::Typescript(TsSyntax {
+            tsx: false,
+            ..Default::default()
+        })
+    } else {
+        Syntax::Es(EsSyntax {
+            jsx: false,
+            ..Default::default()
+        })
+    };
+    let mut parser = Parser::new(syntax, StringInput::from(&*fm), None);
+    parser.parse_module().ok()
+}
+
+fn collect_export_names(module: &Module) -> Vec<String> {
+    let mut names = Vec::new();
+    for item in &module.body {
+        let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl { decl, .. })) = item else {
+            continue;
+        };
+        match decl {
+            Decl::Fn(FnDecl { ident, .. }) => names.push(ident.sym.to_string()),
+            Decl::Var(var) => {
+                for decl in &var.decls {
+                    if let Pat::Ident(ident) = &decl.name {
+                        names.push(ident.id.sym.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn is_relevant_route_export(name: &str) -> bool {
     matches!(
-        file_name,
-        "+page.ts" | "+page.server.ts" | "+layout.ts" | "+layout.server.ts" | "+server.ts"
+        name,
+        "load"
+            | "actions"
+            | "entries"
+            | "prerender"
+            | "trailingSlash"
+            | "ssr"
+            | "csr"
+            | "GET"
+            | "PUT"
+            | "POST"
+            | "PATCH"
+            | "DELETE"
+            | "OPTIONS"
+            | "HEAD"
+            | "fallback"
+    )
+}
+
+fn is_relevant_hook_export(name: &str) -> bool {
+    matches!(name, "handle" | "handleFetch" | "handleError" | "reroute")
+}
+
+fn is_route_sync_file(file_name: &str) -> bool {
+    let (stem, ext) = match file_name.rsplit_once('.') {
+        Some((stem, ext)) => (stem, ext),
+        None => return false,
+    };
+    if !matches!(ext, "ts" | "js") {
+        return false;
+    }
+    let base = if let Some((base, _)) = stem.split_once('@') {
+        base
+    } else {
+        stem
+    };
+    matches!(
+        base,
+        "+page" | "+page.server" | "+layout" | "+layout.server" | "+server"
     )
 }
 

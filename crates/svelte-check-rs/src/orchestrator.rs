@@ -442,7 +442,12 @@ async fn run_tsgo_check(
         .await
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))?;
 
-    let runner = TsgoRunner::new(tsgo_path, workspace.to_owned(), args.tsconfig.clone());
+    let runner = TsgoRunner::new(
+        tsgo_path,
+        workspace.to_owned(),
+        args.tsconfig.clone(),
+        !args.disable_sveltekit_cache,
+    );
 
     runner
         .check(files, emit_diagnostics)
