@@ -306,7 +306,7 @@ code {
 .install-cmd {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   padding: 14px 18px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -315,6 +315,8 @@ code {
   color: var(--text);
   cursor: text;
   transition: border-color 0.15s ease;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .install-cmd:hover {
@@ -324,6 +326,27 @@ code {
 .install-cmd .prompt {
   color: var(--accent);
   user-select: none;
+  flex-shrink: 0;
+}
+
+.install-cmd .install-text {
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.install-cmd .install-text::-webkit-scrollbar {
+  height: 4px;
+}
+
+.install-cmd .install-text::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.install-cmd .install-text::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
 }
 
 .copy-btn {
@@ -338,6 +361,7 @@ code {
   color: var(--text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
+  flex-shrink: 0;
 }
 
 .copy-btn:hover {
