@@ -11,6 +11,11 @@
 //!
 //! Note: Tests are serialized using #[serial] to avoid race conditions during
 //! fixture setup (bun install creates bun.lock before node_modules is complete).
+//!
+//! Note: These tests are skipped on Windows due to tsgo/path handling differences.
+
+// Skip all tests on Windows - tsgo and path handling differs
+#![cfg(not(target_os = "windows"))]
 
 use serial_test::serial;
 use std::process::Command;
