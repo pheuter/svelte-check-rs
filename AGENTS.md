@@ -39,7 +39,7 @@ find crates -name "*.snap.new" -exec sh -c 'mv "$1" "${1%.new}"' _ {} \;
 
 ## Releasing
 
-Uses [cargo-dist](https://opensource.axo.dev/cargo-dist/) for cross-platform binaries.
+Uses [cargo-dist](https://github.com/axodotdev/cargo-dist) for cross-platform binaries.
 
 ```bash
 # 1. Update version in Cargo.toml (workspace.package.version)
