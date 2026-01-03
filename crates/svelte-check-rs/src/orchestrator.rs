@@ -54,7 +54,17 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
 
     // Load configuration
     let svelte_config = SvelteConfig::load(&workspace);
-    let _ts_config = TsConfig::find(&workspace);
+
+    // Load tsconfig to detect module resolution strategy
+    let ts_config = if let Some(ref custom_path) = args.tsconfig {
+        TsConfig::load(custom_path)
+    } else {
+        TsConfig::find(&workspace).map(|(_, config)| config)
+    };
+    let use_nodenext_imports = ts_config
+        .as_ref()
+        .map(|c| c.compiler_options.requires_explicit_extensions())
+        .unwrap_or(false);
 
     let timings_enabled = args.timings
         || args.timings_format == TimingFormat::Json
@@ -107,9 +117,23 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     };
 
     if args.watch {
-        run_watch_mode(&args, &workspace, files, file_scan_time).await
+        run_watch_mode(
+            &args,
+            &workspace,
+            files,
+            file_scan_time,
+            use_nodenext_imports,
+        )
+        .await
     } else {
-        run_single_check(&args, &workspace, files, file_scan_time).await
+        run_single_check(
+            &args,
+            &workspace,
+            files,
+            file_scan_time,
+            use_nodenext_imports,
+        )
+        .await
     }
 }
 
@@ -119,6 +143,7 @@ async fn run_single_check(
     workspace: &Utf8Path,
     files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
+    use_nodenext_imports: bool,
 ) -> Result<CheckSummary, OrchestratorError> {
     let total_start = Instant::now();
     let timings_enabled = args.timings
@@ -187,6 +212,7 @@ async fn run_single_check(
                 let transform_options = TransformOptions {
                     filename: Some(file_path.to_string()),
                     source_maps: true,
+                    use_nodenext_imports,
                 };
 
                 let transform_result = transform(&parse_result.document, transform_options);
@@ -691,6 +717,7 @@ async fn run_watch_mode(
     workspace: &Utf8Path,
     initial_files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
+    use_nodenext_imports: bool,
 ) -> Result<CheckSummary, OrchestratorError> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::time::Duration;
@@ -698,7 +725,14 @@ async fn run_watch_mode(
     println!("Starting watch mode...\n");
 
     // Initial check
-    let _summary = run_single_check(args, workspace, initial_files.clone(), file_scan_time).await?;
+    let _summary = run_single_check(
+        args,
+        workspace,
+        initial_files.clone(),
+        file_scan_time,
+        use_nodenext_imports,
+    )
+    .await?;
 
     // Set up file watcher with tokio channel
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
@@ -735,7 +769,14 @@ async fn run_watch_mode(
             println!("File changed, re-checking...\n");
 
             // Re-run check
-            let _ = run_single_check(args, workspace, initial_files.clone(), file_scan_time).await;
+            let _ = run_single_check(
+                args,
+                workspace,
+                initial_files.clone(),
+                file_scan_time,
+                use_nodenext_imports,
+            )
+            .await;
         }
     }
 

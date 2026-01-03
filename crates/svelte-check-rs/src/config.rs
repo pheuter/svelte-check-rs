@@ -272,6 +272,9 @@ pub struct CompilerOptions {
     /// Module system.
     pub module: Option<String>,
 
+    /// Module resolution strategy.
+    pub module_resolution: Option<String>,
+
     /// Enable strict mode.
     #[serde(default)]
     pub strict: bool,
@@ -282,6 +285,22 @@ pub struct CompilerOptions {
     /// Path mappings.
     #[serde(default)]
     pub paths: HashMap<String, Vec<String>>,
+}
+
+impl CompilerOptions {
+    /// Returns true if the module resolution strategy requires explicit file extensions
+    /// for relative imports (NodeNext, Node16).
+    pub fn requires_explicit_extensions(&self) -> bool {
+        // Check moduleResolution first, then fall back to module
+        // (when module is NodeNext/Node16, moduleResolution defaults to the same)
+        let resolution = self
+            .module_resolution
+            .as_deref()
+            .or(self.module.as_deref())
+            .unwrap_or("");
+
+        matches!(resolution.to_lowercase().as_str(), "nodenext" | "node16")
+    }
 }
 
 impl TsConfig {
@@ -489,5 +508,49 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(config_path).ok();
+    }
+
+    #[test]
+    fn test_requires_explicit_extensions() {
+        // NodeNext requires explicit extensions
+        let opts = CompilerOptions {
+            module: Some("NodeNext".to_string()),
+            ..Default::default()
+        };
+        assert!(opts.requires_explicit_extensions());
+
+        // Node16 requires explicit extensions
+        let opts = CompilerOptions {
+            module: Some("Node16".to_string()),
+            ..Default::default()
+        };
+        assert!(opts.requires_explicit_extensions());
+
+        // Case insensitive
+        let opts = CompilerOptions {
+            module: Some("nodenext".to_string()),
+            ..Default::default()
+        };
+        assert!(opts.requires_explicit_extensions());
+
+        // moduleResolution takes precedence
+        let opts = CompilerOptions {
+            module: Some("ESNext".to_string()),
+            module_resolution: Some("NodeNext".to_string()),
+            ..Default::default()
+        };
+        assert!(opts.requires_explicit_extensions());
+
+        // Bundler does not require explicit extensions
+        let opts = CompilerOptions {
+            module: Some("ESNext".to_string()),
+            module_resolution: Some("bundler".to_string()),
+            ..Default::default()
+        };
+        assert!(!opts.requires_explicit_extensions());
+
+        // Default does not require explicit extensions
+        let opts = CompilerOptions::default();
+        assert!(!opts.requires_explicit_extensions());
     }
 }

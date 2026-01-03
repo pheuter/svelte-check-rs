@@ -20,6 +20,7 @@ fn verify_line_mapping(source: &str, generated_pattern: &str, expected_source_li
         TransformOptions {
             filename: Some("Test.svelte".to_string()),
             source_maps: true,
+            ..Default::default()
         },
     );
 

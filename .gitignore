@@ -18,6 +18,12 @@ Thumbs.db
 # Test output
 *.snap.new
 
+# Test fixture generated files
+test-fixtures/**/node_modules/
+test-fixtures/**/.svelte-kit/
+test-fixtures/**/.svelte-check-rs/
+test-fixtures/**/bun.lock
+
 # Coverage
 *.profraw
 coverage/

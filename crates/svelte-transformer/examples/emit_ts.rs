@@ -13,6 +13,7 @@ fn main() {
         TransformOptions {
             filename: Some(path.clone()),
             source_maps: true,
+            ..Default::default()
         },
     );
     println!("{}", result.tsx_code);

@@ -87,6 +87,8 @@ pub struct TransformOptions {
     pub filename: Option<String>,
     /// Whether to generate source maps.
     pub source_maps: bool,
+    /// Whether to rewrite `.svelte` imports to `.svelte.js` for NodeNext/Node16 module resolution.
+    pub use_nodenext_imports: bool,
 }
 
 /// The result of transformation.
@@ -455,6 +457,25 @@ fn generics_ref(params: &[GenericParam]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("<{}>", refs)
+}
+
+/// Rewrites `.svelte` imports to `.svelte.js` for NodeNext/Node16 module resolution.
+///
+/// This is necessary because NodeNext requires explicit file extensions for relative imports.
+/// TypeScript resolves `.js` imports to `.ts` files at runtime, so we use `.svelte.js` which
+/// resolves to our generated `.svelte.ts` files.
+///
+/// Handles:
+/// - Static imports: `import X from './Other.svelte'` -> `import X from './Other.svelte.js'`
+/// - Dynamic imports: `import('./Other.svelte')` -> `import('./Other.svelte.js')`
+/// - Type imports: `import type { X } from './Other.svelte'` -> `import type { X } from './Other.svelte.js'`
+fn rewrite_svelte_imports(script: &str) -> String {
+    // Simple string replacement approach:
+    // Replace '.svelte"' with '.svelte.js"' and '.svelte'' with '.svelte.js''
+    // This handles both quote styles for import specifiers
+    script
+        .replace(".svelte\"", ".svelte.js\"")
+        .replace(".svelte'", ".svelte.js'")
 }
 
 fn extract_top_level_imports(script: &str) -> (String, String) {
@@ -1066,8 +1087,15 @@ export default {internal_name};\n",
     output.push_str(&export_line);
     builder.add_generated(&export_line);
 
+    // Rewrite .svelte imports to .svelte.js for NodeNext/Node16 module resolution
+    let final_output = if options.use_nodenext_imports {
+        rewrite_svelte_imports(&output)
+    } else {
+        output
+    };
+
     TransformResult {
-        tsx_code: output,
+        tsx_code: final_output,
         source_map: builder.build(),
         exports,
     }
@@ -1118,5 +1146,49 @@ mod tests {
         );
         // Uses internal name to avoid conflicts with imports
         assert!(result.tsx_code.contains("__SvelteComponent_Counter_"));
+    }
+
+    #[test]
+    fn test_rewrite_svelte_imports() {
+        // Double quotes
+        assert_eq!(
+            rewrite_svelte_imports(r#"import X from "./Other.svelte""#),
+            r#"import X from "./Other.svelte.js""#
+        );
+        // Single quotes
+        assert_eq!(
+            rewrite_svelte_imports(r#"import X from './Other.svelte'"#),
+            r#"import X from './Other.svelte.js'"#
+        );
+        // Type imports
+        assert_eq!(
+            rewrite_svelte_imports(r#"import type { X } from "./Other.svelte""#),
+            r#"import type { X } from "./Other.svelte.js""#
+        );
+        // Dynamic imports
+        assert_eq!(
+            rewrite_svelte_imports(r#"const X = await import("./Other.svelte")"#),
+            r#"const X = await import("./Other.svelte.js")"#
+        );
+        // Non-svelte imports unchanged
+        assert_eq!(
+            rewrite_svelte_imports(r#"import X from "./other.ts""#),
+            r#"import X from "./other.ts""#
+        );
+    }
+
+    #[test]
+    fn test_transform_with_nodenext_imports() {
+        let doc = parse(r#"<script>import Other from "./Other.svelte";</script>"#).document;
+        let result = transform(
+            &doc,
+            TransformOptions {
+                use_nodenext_imports: true,
+                ..Default::default()
+            },
+        );
+        assert!(result
+            .tsx_code
+            .contains(r#"import Other from "./Other.svelte.js""#));
     }
 }

@@ -12,6 +12,7 @@ fn transform_snapshot(name: &str, source: &str) {
         TransformOptions {
             filename: Some("Test.svelte".to_string()),
             source_maps: true,
+            ..Default::default()
         },
     );
 
@@ -32,6 +33,7 @@ fn transform_snapshot_with_source_map(name: &str, source: &str) {
         TransformOptions {
             filename: Some("Test.svelte".to_string()),
             source_maps: true,
+            ..Default::default()
         },
     );
 
@@ -65,6 +67,7 @@ fn transform_snapshot_with_filename(name: &str, filename: &str, source: &str) {
         TransformOptions {
             filename: Some(filename.to_string()),
             source_maps: true,
+            ..Default::default()
         },
     );
 
