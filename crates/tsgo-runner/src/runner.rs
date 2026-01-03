@@ -161,11 +161,106 @@ impl TsgoRunner {
     }
 
     /// Gets the cache directory for svelte-check-rs.
-    fn get_cache_dir() -> Option<Utf8PathBuf> {
+    pub fn get_cache_dir() -> Option<Utf8PathBuf> {
         // Use XDG cache dir on Linux, ~/Library/Caches on macOS, etc.
         dirs::cache_dir()
             .and_then(|p| Utf8PathBuf::try_from(p).ok())
             .map(|p| p.join("svelte-check-rs"))
+    }
+
+    /// Gets the version of the installed tsgo binary.
+    ///
+    /// Returns a tuple of (version_string, path) or an error if tsgo is not found.
+    pub async fn get_tsgo_version() -> Result<(String, Utf8PathBuf), TsgoError> {
+        let tsgo_path = Self::find_tsgo().ok_or_else(|| {
+            TsgoError::InstallFailed("tsgo not found - run with --tsgo-update to install".into())
+        })?;
+
+        let output = Command::new(&tsgo_path)
+            .arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(TsgoError::SpawnFailed)?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TsgoError::ProcessFailed {
+                code: output.status.code().unwrap_or(-1),
+                stderr: stderr.to_string(),
+            });
+        }
+
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((version, tsgo_path))
+    }
+
+    /// Updates tsgo to the specified version or latest if None.
+    ///
+    /// This will install/update tsgo via npm in the cache directory.
+    pub async fn update_tsgo(version: Option<&str>) -> Result<Utf8PathBuf, TsgoError> {
+        // Check if npm is available
+        if which::which("npm").is_err() {
+            return Err(TsgoError::NpmNotFound);
+        }
+
+        // Get or create cache directory
+        let cache_dir = Self::get_cache_dir().ok_or_else(|| {
+            TsgoError::InstallFailed("could not determine cache directory".into())
+        })?;
+
+        std::fs::create_dir_all(&cache_dir)
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to create cache dir: {e}")))?;
+
+        let package_spec = match version {
+            Some(v) => format!("@typescript/native-preview@{}", v),
+            None => "@typescript/native-preview@latest".to_string(),
+        };
+
+        eprintln!("Installing {}...", package_spec);
+
+        // Run npm install in cache directory
+        let output = Command::new("npm")
+            .args(["install", &package_spec])
+            .current_dir(&cache_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to run npm: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TsgoError::InstallFailed(format!(
+                "npm install failed: {stderr}"
+            )));
+        }
+
+        // Verify installation
+        let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
+        if !tsgo_path.exists() {
+            return Err(TsgoError::InstallFailed(
+                "tsgo binary not found after npm install".into(),
+            ));
+        }
+
+        // Get and display the installed version
+        let version_output = Command::new(&tsgo_path)
+            .arg("--version")
+            .stdout(Stdio::piped())
+            .output()
+            .await
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+        if let Some(v) = version_output {
+            eprintln!("tsgo {} installed at {}", v, tsgo_path);
+        } else {
+            eprintln!("tsgo installed at {}", tsgo_path);
+        }
+
+        Ok(tsgo_path)
     }
 
     /// Runs `svelte-kit sync` to generate types before type-checking.

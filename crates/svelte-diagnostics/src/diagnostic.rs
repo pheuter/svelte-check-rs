@@ -126,6 +126,10 @@ pub enum DiagnosticCode {
     MissingDeclaration,
     /// `invalid-rune-usage`
     InvalidRuneUsage,
+
+    // === Parse Codes ===
+    /// `parse-error`: Syntax error during parsing
+    ParseError,
 }
 
 impl DiagnosticCode {
@@ -136,6 +140,7 @@ impl DiagnosticCode {
             DiagnosticCode::A11yMissingAttribute => Severity::Warning,
             DiagnosticCode::InvalidRuneUsage => Severity::Error,
             DiagnosticCode::MissingDeclaration => Severity::Error,
+            DiagnosticCode::ParseError => Severity::Error,
 
             // Warnings (most a11y)
             DiagnosticCode::A11yAccesskey
@@ -213,6 +218,7 @@ impl DiagnosticCode {
             DiagnosticCode::UnusedExportLet => "unused-export-let",
             DiagnosticCode::MissingDeclaration => "missing-declaration",
             DiagnosticCode::InvalidRuneUsage => "invalid-rune-usage",
+            DiagnosticCode::ParseError => "parse-error",
         }
     }
 }

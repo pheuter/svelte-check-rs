@@ -167,7 +167,7 @@ async fn run_single_check(
             // Convert parse errors to diagnostics
             for error in &parse_result.errors {
                 all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
-                    svelte_diagnostics::DiagnosticCode::InvalidRuneUsage, // Using as generic parse error
+                    svelte_diagnostics::DiagnosticCode::ParseError,
                     error.to_string(),
                     error.span,
                 ));

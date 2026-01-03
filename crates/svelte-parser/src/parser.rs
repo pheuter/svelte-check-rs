@@ -753,6 +753,11 @@ impl<'src> Parser<'src> {
             TokenKind::LBraceHash => self.parse_block(),
             TokenKind::LBraceAt => self.parse_special_tag(),
             TokenKind::LBrace => self.parse_expression_tag(),
+            TokenKind::LBraceColon => {
+                // {:...} outside of a valid block context is an error
+                // Valid continuation tags are {:else}, {:else if}, {:then}, {:catch}
+                self.parse_invalid_block_continuation()
+            }
             TokenKind::Text | TokenKind::Ident | TokenKind::Number | TokenKind::Error => {
                 self.parse_text()
             }
@@ -1852,6 +1857,51 @@ impl<'src> Parser<'src> {
         self.source[offset..].starts_with(s)
     }
 
+    /// Handles an invalid block continuation tag like {:els} (typo for {:else}).
+    /// Emits an appropriate error and skips past the invalid tag.
+    fn parse_invalid_block_continuation(&mut self) -> Option<TemplateNode> {
+        let start = self.current().span.start;
+
+        // Skip {:
+        self.advance();
+
+        // Read the invalid keyword
+        let keyword = if self.check(TokenKind::Ident) || self.check(TokenKind::Text) {
+            self.current_text().to_string()
+        } else {
+            String::new()
+        };
+
+        // Find the end of the tag (look for })
+        while !self.check(TokenKind::RBrace) && !self.check(TokenKind::Eof) {
+            self.advance();
+        }
+
+        let end = if self.check(TokenKind::RBrace) {
+            let end = self.current().span.end;
+            self.advance();
+            end
+        } else {
+            self.current().span.start
+        };
+
+        // Emit appropriate error message
+        let message = if keyword.is_empty() {
+            "expected block continuation keyword (else, then, catch)".to_string()
+        } else {
+            format!(
+                "'{keyword}' is not a valid block continuation. Expected {{:else}}, {{:else if}}, {{:then}}, or {{:catch}}"
+            )
+        };
+
+        self.errors.push(ParseError::new(
+            ParseErrorKind::InvalidBlockSyntax { message },
+            Span::new(start, end),
+        ));
+
+        None
+    }
+
     /// Parses a special tag ({@html}, {@const}, {@debug}, {@render}).
     fn parse_special_tag(&mut self) -> Option<TemplateNode> {
         let start = self.current().span.start;
@@ -2320,5 +2370,121 @@ mod tests {
         } else {
             panic!("Expected Element");
         }
+    }
+
+    #[test]
+    fn test_invalid_block_continuation_els_typo() {
+        // {:els} is a typo for {:else}
+        let result = Parser::new("{#if true}yes{:els}no{/if}", ParseOptions::default()).parse();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].to_string().contains("els"));
+        assert!(result.errors[0]
+            .to_string()
+            .contains("not a valid block continuation"));
+    }
+
+    #[test]
+    fn test_invalid_block_continuation_elseif_typo() {
+        // {:elseif} should be {:else if} (with a space)
+        let result = Parser::new(
+            "{#if true}yes{:elseif false}maybe{/if}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].to_string().contains("elseif"));
+    }
+
+    #[test]
+    fn test_invalid_block_continuation_than_typo() {
+        // {:than} is a typo for {:then}
+        let result = Parser::new(
+            "{#await promise}{:than value}done{/await}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].to_string().contains("than"));
+    }
+
+    #[test]
+    fn test_invalid_block_continuation_chatch_typo() {
+        // {:chatch} is a typo for {:catch}
+        let result = Parser::new(
+            "{#await promise}{:then value}done{:chatch e}error{/await}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].to_string().contains("chatch"));
+    }
+
+    #[test]
+    fn test_invalid_block_continuation_unknown_keyword() {
+        // {:foo} is not a valid block continuation
+        let result = Parser::new("{#if true}yes{:foo}no{/if}", ParseOptions::default()).parse();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].to_string().contains("foo"));
+    }
+
+    #[test]
+    fn test_invalid_block_continuation_empty() {
+        // {:} with no keyword
+        let result = Parser::new("{#if true}yes{:}no{/if}", ParseOptions::default()).parse();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0]
+            .to_string()
+            .contains("expected block continuation keyword"));
+    }
+
+    #[test]
+    fn test_valid_else_not_flagged() {
+        // Valid {:else} should not produce errors
+        let result = Parser::new("{#if true}yes{:else}no{/if}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_valid_else_if_not_flagged() {
+        // Valid {:else if} should not produce errors
+        let result = Parser::new(
+            "{#if a}1{:else if b}2{:else}3{/if}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_valid_then_not_flagged() {
+        // Valid {:then} should not produce errors
+        let result = Parser::new(
+            "{#await promise}{:then value}{value}{/await}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_valid_catch_not_flagged() {
+        // Valid {:catch} should not produce errors
+        let result = Parser::new(
+            "{#await promise}{:then value}{value}{:catch e}{e}{/await}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_valid_each_else_not_flagged() {
+        // Valid {:else} in each block should not produce errors
+        let result = Parser::new(
+            "{#each items as item}{item}{:else}no items{/each}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty());
     }
 }

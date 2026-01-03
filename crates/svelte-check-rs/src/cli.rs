@@ -67,6 +67,14 @@ pub struct Args {
     /// Disable caching of .svelte-kit (fallback to direct symlink)
     #[arg(long = "disable-sveltekit-cache")]
     pub disable_sveltekit_cache: bool,
+
+    /// Show tsgo version and installation path
+    #[arg(long = "tsgo-version")]
+    pub tsgo_version: bool,
+
+    /// Update tsgo to latest or specified version (e.g., --tsgo-update or --tsgo-update=7.0.0-dev.20260101.1)
+    #[arg(long = "tsgo-update")]
+    pub tsgo_update: Option<Option<String>>,
 }
 
 /// Output format options.
