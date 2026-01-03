@@ -232,32 +232,72 @@
           <div class="install-grid">
             <div class="install-block full">
               <div class="install-label">macOS / Linux</div>
-              <code class="code-block">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</code>
+              <code class="install-cmd" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh">
+                <span class="prompt">$</span><span class="install-text">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
             </div>
             <div class="install-block full">
               <div class="install-label">Windows (PowerShell)</div>
-              <code class="code-block">irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex</code>
+              <code class="install-cmd" data-copy="irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex">
+                <span class="prompt">></span><span class="install-text">irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
             </div>
             <div class="install-block">
               <div class="install-label">With Cargo</div>
-              <code class="code-block">cargo install svelte-check-rs</code>
+              <code class="install-cmd" data-copy="cargo install svelte-check-rs">
+                <span class="prompt">$</span><span class="install-text">cargo install svelte-check-rs</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
             </div>
             <div class="install-block">
               <div class="install-label">From source</div>
-              <code class="code-block">cargo install --path crates/svelte-check-rs</code>
+              <code class="install-cmd" data-copy="cargo install --path crates/svelte-check-rs">
+                <span class="prompt">$</span><span class="install-text">cargo install --path crates/svelte-check-rs</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
             </div>
             <div class="install-block full">
               <div class="install-label">Replace existing scripts</div>
-              <code class="code-block"><span class="dim">// package.json</span>
+              <code class="code-block code-block-copyable" data-copy='{"scripts":{"check":"svelte-check-rs --workspace ."}}'><span class="dim">// package.json</span>
 {
   "scripts": {
     "check": "svelte-check-rs --workspace ."
   }
-}</code>
+}<button class="copy-btn" aria-label="Copy to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></code>
             </div>
             <div class="install-block full">
               <div class="install-label">Or alias for zero-config switch</div>
-              <code class="code-block">alias svelte-check=svelte-check-rs</code>
+              <code class="install-cmd" data-copy="alias svelte-check=svelte-check-rs">
+                <span class="prompt">$</span><span class="install-text">alias svelte-check=svelte-check-rs</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
             </div>
           </div>
         </div>

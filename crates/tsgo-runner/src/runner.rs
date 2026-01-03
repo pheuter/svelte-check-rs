@@ -715,6 +715,10 @@ impl TsgoRunner {
         apply_tsgo_fixes: bool,
         stats: &mut TsgoCacheStats,
     ) -> Result<(), TsgoError> {
+        // Always create temp_src so shim can be written even if project has no src dir
+        std::fs::create_dir_all(temp_src)
+            .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+
         if !project_src.exists() {
             return Ok(());
         }

@@ -88,6 +88,7 @@ body {
   background: var(--bg);
   min-height: 100vh;
   transition: background-color 0.3s ease, color 0.3s ease;
+  overflow-x: hidden;
 }
 
 /* Subtle scanline effect */
@@ -244,6 +245,7 @@ code {
 
 .hero {
   padding: 140px 0 80px;
+  overflow-x: hidden;
 }
 
 .hero .container {
@@ -303,6 +305,12 @@ code {
   color: var(--accent);
 }
 
+.hero-cta {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+
 .install-tabs {
   display: inline-flex;
   background: var(--bg);
@@ -335,7 +343,7 @@ code {
 }
 
 .install-cmd {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   padding: 14px 18px;
@@ -346,6 +354,7 @@ code {
   color: var(--text);
   cursor: text;
   transition: border-color 0.15s ease;
+  width: 100%;
   max-width: 100%;
   overflow: hidden;
 }
@@ -365,10 +374,12 @@ code {
 }
 
 .install-cmd .install-text {
+  flex: 1;
   overflow-x: auto;
   white-space: nowrap;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+  min-width: 0;
 }
 
 .install-cmd .install-text::-webkit-scrollbar {
@@ -881,12 +892,17 @@ code {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .install-block {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .install-block.full {
@@ -921,6 +937,17 @@ code {
 
 .code-block .dim {
   color: var(--text-dim);
+}
+
+.code-block-copyable {
+  position: relative;
+  padding-right: 48px;
+}
+
+.code-block-copyable .copy-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
 }
 
 /* ========================================
@@ -1281,8 +1308,10 @@ code {
   }
 
   .hero-content {
-    max-width: none;
+    max-width: 100%;
+    width: 100%;
     text-align: center;
+    overflow: hidden;
   }
 
   .use-case-grid {
