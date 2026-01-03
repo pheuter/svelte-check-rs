@@ -38,3 +38,4 @@ swc_common.workspace = true
 insta.workspace = true
 pretty_assertions.workspace = true
 text-size.workspace = true
+serial_test = "3.2"

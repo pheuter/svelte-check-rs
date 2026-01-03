@@ -8,9 +8,13 @@
 //! - Server load functions (+page.server.ts)
 //! - Shared components with typed props
 //! - Intentional type errors to verify detection
+//!
+//! Note: Tests are serialized using #[serial] to avoid race conditions during
+//! fixture setup (bun install creates bun.lock before node_modules is complete).
 
+use serial_test::serial;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 /// Path to the test fixtures directory
 fn fixtures_dir() -> std::path::PathBuf {
@@ -35,30 +39,20 @@ fn binary_path() -> std::path::PathBuf {
         .join("svelte-check-rs")
 }
 
-// Global mutex to serialize fixture setup (prevents race conditions)
-static SETUP_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-
 // Track which fixtures have been set up
 static BUNDLER_READY: OnceLock<()> = OnceLock::new();
 static NODENEXT_READY: OnceLock<()> = OnceLock::new();
 static NODE16_READY: OnceLock<()> = OnceLock::new();
 
-fn get_setup_mutex() -> &'static Mutex<()> {
-    SETUP_MUTEX.get_or_init(|| Mutex::new(()))
-}
-
-/// Ensures dependencies are installed for a fixture (thread-safe, runs once per fixture)
+/// Ensures dependencies are installed for a fixture (runs once per fixture)
 fn ensure_deps_installed(fixture_name: &str, ready: &'static OnceLock<()>) {
-    // Use get_or_init for atomic initialization
+    // Use get_or_init to ensure we only install once per fixture
     ready.get_or_init(|| {
-        // Acquire global lock to serialize all setup operations
-        let _guard = get_setup_mutex().lock().unwrap();
-
         let fixture_path = fixtures_dir().join(fixture_name);
 
-        // Check if node_modules exists and has enough content (bun.lock is a good indicator)
-        let bun_lock = fixture_path.join("bun.lock");
-        if !bun_lock.exists() {
+        // Check if node_modules exists (more reliable than bun.lock which is created early)
+        let node_modules = fixture_path.join("node_modules");
+        if !node_modules.exists() {
             eprintln!("Installing dependencies for {}...", fixture_name);
 
             let output = Command::new("bun")
@@ -133,6 +127,7 @@ fn assert_error_detected(output: &str, pattern: &str, context: &str) {
 // ============================================================================
 
 #[test]
+#[serial]
 fn test_sveltekit_bundler_detects_invalid_props() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-bundler");
 
@@ -144,6 +139,7 @@ fn test_sveltekit_bundler_detects_invalid_props() {
 }
 
 #[test]
+#[serial]
 fn test_sveltekit_bundler_detects_invalid_variant() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-bundler");
 
@@ -154,6 +150,7 @@ fn test_sveltekit_bundler_detects_invalid_variant() {
 }
 
 #[test]
+#[serial]
 fn test_sveltekit_bundler_detects_page_data_errors() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-bundler");
 
@@ -179,6 +176,7 @@ fn test_sveltekit_bundler_detects_page_data_errors() {
 // ============================================================================
 
 #[test]
+#[serial]
 fn test_sveltekit_nodenext_detects_invalid_props() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-nodenext");
 
@@ -191,6 +189,7 @@ fn test_sveltekit_nodenext_detects_invalid_props() {
 }
 
 #[test]
+#[serial]
 fn test_sveltekit_nodenext_detects_invalid_variant() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-nodenext");
 
@@ -209,6 +208,7 @@ fn test_sveltekit_nodenext_detects_invalid_variant() {
 // ============================================================================
 
 #[test]
+#[serial]
 fn test_sveltekit_node16_detects_invalid_props() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-node16");
 
@@ -220,6 +220,7 @@ fn test_sveltekit_node16_detects_invalid_props() {
 }
 
 #[test]
+#[serial]
 fn test_sveltekit_node16_detects_invalid_variant() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-node16");
 
@@ -238,6 +239,7 @@ fn test_sveltekit_node16_detects_invalid_variant() {
 // ============================================================================
 
 #[test]
+#[serial]
 fn test_all_configs_detect_same_errors() {
     // All three configurations should detect the same errors
     let (bundler_exit, _, bundler_stderr) = run_check("sveltekit-bundler");
@@ -287,6 +289,7 @@ fn test_all_configs_detect_same_errors() {
 /// to silently fail to resolve, making component types become `any` and
 /// missing prop type errors.
 #[test]
+#[serial]
 fn test_issue_4_nodenext_prop_detection() {
     let (exit_code, _stdout, stderr) = run_check("sveltekit-nodenext");
 
