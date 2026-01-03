@@ -37,6 +37,19 @@ find crates -name "*.snap.new" -exec sh -c 'mv "$1" "${1%.new}"' _ {} \;
 - Prefer exhaustive pattern matching over `_` wildcards for enums
 - Use `insta` snapshot tests for parser/transformer output
 
+## Releasing
+
+Uses [cargo-dist](https://opensource.axo.dev/cargo-dist/) for cross-platform binaries.
+
+```bash
+# 1. Update version in Cargo.toml (workspace.package.version)
+# 2. Commit: git commit -am "chore: release v0.x.x"
+# 3. Tag and push:
+git tag v0.x.x && git push && git push --tags
+```
+
+GitHub Actions builds binaries for macOS/Linux/Windows and creates a GitHub Release with installers.
+
 ## References
 
 - [Svelte 5 Docs](https://svelte.dev/docs)

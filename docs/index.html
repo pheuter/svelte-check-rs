@@ -58,8 +58,8 @@
               Same CLI. Same output. Faster feedback.
             </p>
             <div class="hero-cta">
-              <code class="install-cmd" data-copy="cargo install svelte-check-rs">
-                <span class="prompt">$</span> cargo install svelte-check-rs
+              <code class="install-cmd" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh">
+                <span class="prompt">$</span> curl -LsSf https://github.com/.../svelte-check-rs-installer.sh | sh
                 <button class="copy-btn" aria-label="Copy to clipboard">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -122,7 +122,7 @@
 
       <section class="section" id="use-case">
         <div class="container">
-          <h2>Built for batch operations</h2>
+          <h2>Built for agentic coding</h2>
           <div class="use-case-content">
             <p class="use-case-lead">
               <strong>svelte-check</strong> is built on Language Server Protocol infrastructure&mdash;optimized for IDEs with persistent connections, incremental updates, and interactive editing. Great for autocomplete and hover info. Slow for one-shot CLI checks.
@@ -217,8 +217,16 @@
         <div class="container">
           <h2>Install</h2>
           <div class="install-grid">
+            <div class="install-block full">
+              <div class="install-label">macOS / Linux</div>
+              <code class="code-block">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</code>
+            </div>
+            <div class="install-block full">
+              <div class="install-label">Windows (PowerShell)</div>
+              <code class="code-block">irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex</code>
+            </div>
             <div class="install-block">
-              <div class="install-label">From crates.io</div>
+              <div class="install-label">With Cargo</div>
               <code class="code-block">cargo install svelte-check-rs</code>
             </div>
             <div class="install-block">
