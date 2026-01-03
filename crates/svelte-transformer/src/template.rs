@@ -371,6 +371,8 @@ pub enum ExpressionContext {
     ConstTag,
     /// `{@debug ...}` - debug tag.
     DebugTag,
+    /// `{@attach expr}` - attach tag.
+    AttachTag,
 }
 
 /// A mapping from generated position to original span.
@@ -836,6 +838,14 @@ impl TemplateContext {
                     // {name} is shorthand for name={name}
                     self.emit_expression(s.name.as_ref(), s.span, ExpressionContext::Attribute);
                 }
+                Attribute::Attach(a) => {
+                    // {@attach expr} => [Symbol("@attach")]: expr
+                    self.emit_expression(
+                        &a.expression,
+                        a.expression_span,
+                        ExpressionContext::AttachTag,
+                    );
+                }
             }
         }
     }
@@ -1104,6 +1114,20 @@ impl TemplateContext {
                 }
                 Attribute::Directive(_) => {
                     // Directives handled in second pass
+                }
+                Attribute::Attach(a) => {
+                    // {@attach expr} => [Symbol("@attach")]: expr
+                    let transformed = self.track_inline_expression(
+                        &a.expression,
+                        a.expression_span,
+                        ExpressionContext::AttachTag,
+                    );
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.output.push_str("[Symbol(\"@attach\")]: ");
+                    self.record_mapping_at_current_pos(&transformed, a.expression_span);
+                    self.output.push_str(&transformed);
+                    self.output.push_str(",\n");
                 }
             }
         }

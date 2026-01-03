@@ -13,12 +13,16 @@ A high-performance, Rust-powered diagnostic engine designed as a drop-in replace
 
 ## Installation
 
-```bash
-# From source
-cargo install --path crates/svelte-check-rs
+### macOS / Linux
 
-# Or build locally
-cargo build --release
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex
 ```
 
 ## Usage

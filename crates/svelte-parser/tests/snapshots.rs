@@ -181,3 +181,45 @@ fn test_snapshot_component() {
 </MyComponent>"#,
     );
 }
+
+#[test]
+fn test_snapshot_attach() {
+    parse_snapshot(
+        "attach",
+        r#"<div {@attach myAttachment}></div>
+<div {@attach (node) => { console.log(node); }}></div>
+<Component {@attach tooltip(content)} />"#,
+    );
+}
+
+#[test]
+fn test_snapshot_attach_with_other_attrs() {
+    parse_snapshot(
+        "attach_with_attrs",
+        r#"<div class="container" {@attach myAttachment} id="main">Content</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_attach_multiple() {
+    parse_snapshot(
+        "attach_multiple",
+        r#"<div {@attach first} {@attach second} {@attach third}>Multiple</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_attach_factory() {
+    parse_snapshot(
+        "attach_factory",
+        r#"<button {@attach tooltip(content, { placement: 'top' })}>Hover</button>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_attach_self_closing() {
+    parse_snapshot(
+        "attach_self_closing",
+        r#"<input type="text" {@attach myAttachment} />"#,
+    );
+}

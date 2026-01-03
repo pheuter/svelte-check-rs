@@ -1,0 +1,72 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<input type="text" {@attach myAttachment} />
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 44,
+                    },
+                    name: "input",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 7,
+                                    end: 18,
+                                },
+                                name: "type",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 13,
+                                            end: 17,
+                                        },
+                                        value: "text",
+                                    },
+                                ),
+                            },
+                        ),
+                        Attach(
+                            AttachAttribute {
+                                span: Span {
+                                    start: 19,
+                                    end: 41,
+                                },
+                                expression_span: Span {
+                                    start: 28,
+                                    end: 40,
+                                },
+                                expression: "myAttachment",
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 44,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 44,
+    },
+}

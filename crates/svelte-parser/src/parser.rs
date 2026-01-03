@@ -956,6 +956,11 @@ impl<'src> Parser<'src> {
             return self.parse_spread_or_shorthand();
         }
 
+        // Check for attach: {@attach expr}
+        if self.check(TokenKind::LBraceAt) {
+            return self.parse_attach_attribute();
+        }
+
         // Check for identifier (normal attribute or directive)
         // Also accept keyword tokens that can be valid HTML attribute names
         let is_keyword_as_attr = matches!(
@@ -1288,6 +1293,43 @@ impl<'src> Parser<'src> {
                 name: SmolStr::new(expr.trim()),
             }))
         }
+    }
+
+    /// Parses an attach attribute `{@attach expr}`.
+    fn parse_attach_attribute(&mut self) -> Option<Attribute> {
+        let start = self.current().span.start;
+
+        if !self.eat(TokenKind::LBraceAt) {
+            return None;
+        }
+
+        // Check for 'attach' keyword (will be an Ident token)
+        let tag_text = self.current_text();
+        if tag_text != "attach" {
+            self.error(ParseErrorKind::InvalidBlockSyntax {
+                message: format!("expected 'attach' after '{{@', found '{}'", tag_text),
+            });
+            return None;
+        }
+        self.advance();
+
+        self.skip_whitespace();
+
+        // Read the expression until closing brace
+        let (expr, expr_span) = self.read_expression_until('}');
+        self.eat(TokenKind::RBrace);
+
+        let end = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span.end)
+            .unwrap_or(start);
+
+        Some(Attribute::Attach(AttachAttribute {
+            span: Span::new(start, end),
+            expression_span: expr_span,
+            expression: expr,
+        }))
     }
 
     /// Parses children until a closing tag.

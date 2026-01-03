@@ -1,0 +1,65 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<button {@attach tooltip(content, { placement: 'top' })}>Hover</button>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 71,
+                    },
+                    name: "button",
+                    attributes: [
+                        Attach(
+                            AttachAttribute {
+                                span: Span {
+                                    start: 8,
+                                    end: 56,
+                                },
+                                expression_span: Span {
+                                    start: 17,
+                                    end: 55,
+                                },
+                                expression: "tooltip(content, { placement: 'top' })",
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 57,
+                                    end: 62,
+                                },
+                                data: "Hover",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 71,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 71,
+    },
+}

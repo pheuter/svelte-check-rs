@@ -1,0 +1,101 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div class="container" {@attach myAttachment} id="main">Content</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 69,
+                    },
+                    name: "div",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 22,
+                                },
+                                name: "class",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 12,
+                                            end: 21,
+                                        },
+                                        value: "container",
+                                    },
+                                ),
+                            },
+                        ),
+                        Attach(
+                            AttachAttribute {
+                                span: Span {
+                                    start: 23,
+                                    end: 45,
+                                },
+                                expression_span: Span {
+                                    start: 32,
+                                    end: 44,
+                                },
+                                expression: "myAttachment",
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 46,
+                                    end: 55,
+                                },
+                                name: "id",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 50,
+                                            end: 54,
+                                        },
+                                        value: "main",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 56,
+                                    end: 63,
+                                },
+                                data: "Content",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 69,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 69,
+    },
+}

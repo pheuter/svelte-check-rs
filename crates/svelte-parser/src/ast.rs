@@ -414,6 +414,8 @@ pub enum Attribute {
     Directive(Directive),
     /// A shorthand attribute `{value}`.
     Shorthand(ShorthandAttribute),
+    /// An attach attribute `{@attach expr}`.
+    Attach(AttachAttribute),
 }
 
 impl Attribute {
@@ -424,6 +426,7 @@ impl Attribute {
             Attribute::Spread(a) => a.span,
             Attribute::Directive(a) => a.span,
             Attribute::Shorthand(a) => a.span,
+            Attribute::Attach(a) => a.span,
         }
     }
 }
@@ -489,6 +492,17 @@ pub struct SpreadAttribute {
     /// The span of the expression.
     pub expression_span: Span,
     /// The expression being spread.
+    pub expression: String,
+}
+
+/// An attach attribute `{@attach expr}`.
+#[derive(Debug, Clone)]
+pub struct AttachAttribute {
+    /// The span of the attribute.
+    pub span: Span,
+    /// The span of the expression.
+    pub expression_span: Span,
+    /// The attachment expression.
     pub expression: String,
 }
 

@@ -24,6 +24,40 @@ fn transform_snapshot(name: &str, source: &str) {
     insta::assert_snapshot!(name, output);
 }
 
+/// Transform snapshot with detailed source map output for testing line/column accuracy
+fn transform_snapshot_with_source_map(name: &str, source: &str) {
+    let parsed = parse(source);
+    let result = transform(
+        &parsed.document,
+        TransformOptions {
+            filename: Some("Test.svelte".to_string()),
+            source_maps: true,
+        },
+    );
+
+    // Format source map entries with their spans for debugging
+    let mut mappings = String::new();
+    for (i, mapping) in result.source_map.mappings().enumerate() {
+        mappings.push_str(&format!(
+            "  {}: generated {}..{} -> original {}..{}\n",
+            i,
+            u32::from(mapping.generated.start),
+            u32::from(mapping.generated.end),
+            u32::from(mapping.original.start),
+            u32::from(mapping.original.end)
+        ));
+    }
+
+    let output = format!(
+        "=== Source ===\n{}\n\n=== TSX Output ===\n{}\n\n=== Source Map Mappings ({}) ===\n{}",
+        source,
+        result.tsx_code,
+        result.source_map.len(),
+        mappings
+    );
+    insta::assert_snapshot!(name, output);
+}
+
 fn transform_snapshot_with_filename(name: &str, filename: &str, source: &str) {
     let parsed = parse(source);
     let result = transform(
@@ -875,5 +909,83 @@ fn test_await_with_components() {
 {:catch error}
     <ErrorAlert {error} />
 {/await}"#,
+    );
+}
+
+// ============================================================================
+// ATTACHMENTS TESTS
+// ============================================================================
+
+#[test]
+fn test_attach_on_element() {
+    transform_snapshot(
+        "attach_element",
+        r#"<script lang="ts">
+    import type { Attachment } from 'svelte/attachments';
+
+    const myAttachment: Attachment = (element) => {
+        console.log(element.nodeName);
+        return () => console.log('cleanup');
+    };
+</script>
+
+<div {@attach myAttachment}></div>"#,
+    );
+}
+
+#[test]
+fn test_attach_inline() {
+    transform_snapshot(
+        "attach_inline",
+        r#"<script lang="ts">
+    let color = $state('red');
+</script>
+
+<canvas
+    width={32}
+    height={32}
+    {@attach (canvas) => {
+        const context = canvas.getContext('2d');
+        context.fillStyle = color;
+    }}
+></canvas>"#,
+    );
+}
+
+#[test]
+fn test_attach_on_component() {
+    transform_snapshot(
+        "attach_component",
+        r#"<script lang="ts">
+    import tippy from 'tippy.js';
+    import Button from './Button.svelte';
+
+    let content = $state('Hello!');
+
+    function tooltip(content: string) {
+        return (element: HTMLElement) => {
+            const tooltip = tippy(element, { content });
+            return tooltip.destroy;
+        };
+    }
+</script>
+
+<Button {@attach tooltip(content)}>
+    Hover me
+</Button>"#,
+    );
+}
+
+#[test]
+fn test_attach_source_mapping() {
+    // This test verifies that source mappings for @attach expressions
+    // are correctly tracked for error reporting
+    transform_snapshot_with_source_map(
+        "attach_source_mapping",
+        r#"<script lang="ts">
+    const myAttach = (el: Element) => { el.id = 'test'; };
+</script>
+
+<div {@attach myAttach}></div>"#,
     );
 }

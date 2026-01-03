@@ -125,6 +125,7 @@ fn test_new_test_fixtures() {
         "AttributeEdgeCases.svelte",
         "ComplexExpressions.svelte",
         "SpecialTags.svelte",
+        "Attachments.svelte",
     ];
 
     for fixture_name in new_fixtures {

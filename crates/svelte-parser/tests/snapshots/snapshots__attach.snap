@@ -1,0 +1,108 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div {@attach myAttachment}></div>
+<div {@attach (node) => { console.log(node); }}></div>
+<Component {@attach tooltip(content)} />
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 34,
+                    },
+                    name: "div",
+                    attributes: [
+                        Attach(
+                            AttachAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 27,
+                                },
+                                expression_span: Span {
+                                    start: 14,
+                                    end: 26,
+                                },
+                                expression: "myAttachment",
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: false,
+                },
+            ),
+            Element(
+                Element {
+                    span: Span {
+                        start: 35,
+                        end: 89,
+                    },
+                    name: "div",
+                    attributes: [
+                        Attach(
+                            AttachAttribute {
+                                span: Span {
+                                    start: 40,
+                                    end: 82,
+                                },
+                                expression_span: Span {
+                                    start: 49,
+                                    end: 81,
+                                },
+                                expression: "(node) => { console.log(node); }",
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: false,
+                },
+            ),
+            Component(
+                Component {
+                    span: Span {
+                        start: 90,
+                        end: 130,
+                    },
+                    name: "Component",
+                    attributes: [
+                        Attach(
+                            AttachAttribute {
+                                span: Span {
+                                    start: 101,
+                                    end: 127,
+                                },
+                                expression_span: Span {
+                                    start: 110,
+                                    end: 126,
+                                },
+                                expression: "tooltip(content)",
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 130,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 130,
+    },
+}
