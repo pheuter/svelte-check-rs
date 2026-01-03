@@ -303,6 +303,37 @@ code {
   color: var(--accent);
 }
 
+.install-tabs {
+  display: inline-flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px;
+  margin-bottom: 12px;
+}
+
+.install-tabs button {
+  padding: 6px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.install-tabs button:hover {
+  color: var(--text);
+}
+
+.install-tabs button[aria-selected="true"] {
+  background: var(--border);
+  color: var(--text);
+}
+
 .install-cmd {
   display: inline-flex;
   align-items: center;
@@ -317,6 +348,10 @@ code {
   transition: border-color 0.15s ease;
   max-width: 100%;
   overflow: hidden;
+}
+
+.install-cmd[hidden] {
+  display: none;
 }
 
 .install-cmd:hover {

@@ -330,6 +330,34 @@ function setupScrollAnimations() {
 }
 
 // ========================================
+// Install OS Tabs
+// ========================================
+
+function setupInstallTabs() {
+  const installTabs = document.querySelector(".install-tabs");
+  if (!installTabs) return;
+
+  const buttons = installTabs.querySelectorAll("[data-os]");
+  const commands = document.querySelectorAll(".install-cmd[data-os]");
+
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const os = button.dataset.os;
+
+      // Update tab states
+      buttons.forEach((btn) => {
+        btn.setAttribute("aria-selected", btn.dataset.os === os ? "true" : "false");
+      });
+
+      // Show/hide commands
+      commands.forEach((cmd) => {
+        cmd.hidden = cmd.dataset.os !== os;
+      });
+    });
+  });
+}
+
+// ========================================
 // Event Listeners
 // ========================================
 
@@ -384,6 +412,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Setup interactions
   setupCopyButtons();
   setupModal();
+  setupInstallTabs();
 
   // Check if reduced motion is preferred
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
