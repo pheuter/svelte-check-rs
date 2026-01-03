@@ -46,9 +46,11 @@ Uses [cargo-dist](https://opensource.axo.dev/cargo-dist/) for cross-platform bin
 # 2. Commit: git commit -am "chore: release v0.x.x"
 # 3. Tag and push:
 git tag v0.x.x && git push && git push --tags
+# 4. Wait for workflow to complete (~5 min)
+gh run watch
 ```
 
-GitHub Actions builds binaries for macOS/Linux/Windows and creates a GitHub Release with installers.
+**Important**: Do NOT manually create GitHub releases — cargo-dist creates the release and uploads binaries automatically. Monitor at: https://github.com/pheuter/svelte-check-rs/actions
 
 ## References
 
