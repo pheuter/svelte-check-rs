@@ -14,7 +14,7 @@ cargo test --test snapshots    # Run snapshot tests only
 cargo test --test corpus_test  # Run corpus/fixture tests only
 cargo clippy --all-targets -- -D warnings  # Lint (warnings as errors)
 cargo fmt                      # Format (always run before committing)
-cargo run -p svelte-check-rs -- --workspace ./path/to/project [--emit-tsx]
+cargo run -p svelte-check-rs -- --workspace ./path/to/project [--emit-ts]
 ```
 
 **Snapshots**: Located in `crates/*/tests/snapshots/`. To accept new snapshots:

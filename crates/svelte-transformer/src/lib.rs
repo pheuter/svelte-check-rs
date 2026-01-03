@@ -1,10 +1,10 @@
-//! Svelte to TSX transformation for type-checking.
+//! Svelte to TypeScript transformation for type-checking.
 //!
-//! This crate transforms Svelte components into TypeScript/TSX code that can be
+//! This crate transforms Svelte components into TypeScript code that can be
 //! type-checked by `tsgo`. It handles:
 //! - Extracting and transforming script content
 //! - Converting runes to their TypeScript equivalents
-//! - Generating a TSX template for type-checking expressions
+//! - Generating a TypeScript template block for type-checking expressions
 //! - Building source maps for position mapping
 //!
 //! # Example
@@ -23,7 +23,7 @@
 //!
 //! let parsed = parse(source);
 //! let result = transform(&parsed.document, TransformOptions::default());
-//! println!("TSX output:\n{}", result.tsx_code);
+//! println!("TypeScript output:\n{}", result.tsx_code);
 //! ```
 
 mod props;

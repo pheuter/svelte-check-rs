@@ -48,9 +48,9 @@ pub struct Args {
     #[arg(long)]
     pub ignore: Vec<String>,
 
-    /// Output transformed TSX to stdout (for debugging)
-    #[arg(long = "emit-tsx")]
-    pub emit_tsx: bool,
+    /// Output transformed TypeScript to stdout (for debugging)
+    #[arg(long = "emit-ts")]
+    pub emit_ts: bool,
 
     /// Print tsgo compiler diagnostics (performance stats)
     #[arg(long = "tsgo-diagnostics")]

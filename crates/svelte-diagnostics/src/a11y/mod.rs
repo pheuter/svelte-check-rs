@@ -87,8 +87,12 @@ fn check_element(
 
     // === Existing Rules ===
 
-    // a11y-missing-attribute: img requires alt
-    if tag == "img" && !has_attribute(&el.attributes, "alt") {
+    // a11y-missing-attribute: img requires alt (or aria-label/aria-labelledby)
+    if tag == "img"
+        && !has_attribute(&el.attributes, "alt")
+        && !has_attribute(&el.attributes, "aria-label")
+        && !has_attribute(&el.attributes, "aria-labelledby")
+    {
         diagnostics.push(Diagnostic::new(
             DiagnosticCode::A11yMissingAttribute,
             "A11y: <img> element should have an alt attribute",
@@ -96,8 +100,12 @@ fn check_element(
         ));
     }
 
-    // a11y-missing-attribute: area requires alt
-    if tag == "area" && !has_attribute(&el.attributes, "alt") {
+    // a11y-missing-attribute: area requires alt (or aria-label/aria-labelledby)
+    if tag == "area"
+        && !has_attribute(&el.attributes, "alt")
+        && !has_attribute(&el.attributes, "aria-label")
+        && !has_attribute(&el.attributes, "aria-labelledby")
+    {
         diagnostics.push(Diagnostic::new(
             DiagnosticCode::A11yMissingAttribute,
             "A11y: <area> element should have an alt attribute",
@@ -158,17 +166,20 @@ fn check_element(
         }
     }
 
-    // a11y-hidden: aria-hidden on focusable elements
-    if has_attribute(&el.attributes, "aria-hidden") {
-        let is_focusable = matches!(tag, "a" | "button" | "input" | "select" | "textarea")
-            || has_attribute(&el.attributes, "tabindex");
+    // a11y-hidden: aria-hidden="true" on focusable elements
+    if let Some(aria_hidden) = get_attribute_value(&el.attributes, "aria-hidden") {
+        // Only flag if aria-hidden is explicitly "true" (not "false" or empty)
+        if aria_hidden == "true" || aria_hidden.is_empty() {
+            let is_focusable = matches!(tag, "a" | "button" | "input" | "select" | "textarea")
+                || has_attribute(&el.attributes, "tabindex");
 
-        if is_focusable {
-            diagnostics.push(Diagnostic::new(
-                DiagnosticCode::A11yHidden,
-                "A11y: aria-hidden should not be used on focusable elements",
-                el.span,
-            ));
+            if is_focusable {
+                diagnostics.push(Diagnostic::new(
+                    DiagnosticCode::A11yHidden,
+                    "A11y: aria-hidden should not be used on focusable elements",
+                    el.span,
+                ));
+            }
         }
     }
 
@@ -614,5 +625,19 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|d| matches!(d.code, DiagnosticCode::A11yStructure)));
+    }
+
+    #[test]
+    fn test_div_with_interactive_role_and_tabindex() {
+        // A div with role="button" and tabindex should NOT trigger noninteractive-tabindex
+        let doc = parse(r#"<div role="button" tabindex="0">Click me</div>"#).document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yNoNoninteractiveTabindex)),
+            "Should NOT trigger noninteractive-tabindex when element has interactive role"
+        );
     }
 }

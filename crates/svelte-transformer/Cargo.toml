@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Svelte to TSX transformation for type-checking"
+description = "Svelte to TypeScript transformation for type-checking"
 
 [dependencies]
 source-map.workspace = true

@@ -191,11 +191,11 @@ async fn run_single_check(
 
                 let transform_result = transform(&parse_result.document, transform_options);
 
-                // If emit_tsx is enabled, print TSX for each transformed file.
-                if args.emit_tsx {
+                // If emit_ts is enabled, print transformed TypeScript for each file.
+                if args.emit_ts {
                     let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
                     eprintln!(
-                        "=== TSX for {} ===\n{}",
+                        "=== TypeScript for {} ===\n{}",
                         relative_path, transform_result.tsx_code
                     );
                 }

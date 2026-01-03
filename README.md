@@ -63,7 +63,7 @@ svelte-check-rs --output human-verbose
 crates/
 ├── svelte-parser/        # Lexer + parser + AST types
 ├── source-map/           # Position tracking and mapping
-├── svelte-transformer/   # Svelte → TSX transformation
+├── svelte-transformer/   # Svelte → TypeScript transformation
 ├── svelte-diagnostics/   # A11y, CSS, and component checks
 ├── tsgo-runner/          # tsgo process management
 └── svelte-check-rs/      # CLI binary

@@ -1,6 +1,6 @@
-//! Template to TSX transformation.
+//! Template to TypeScript transformation.
 //!
-//! Converts Svelte template nodes to TSX for type-checking expressions.
+//! Converts Svelte template nodes to TypeScript for type-checking expressions.
 //! This module generates proper TypeScript that preserves type narrowing
 //! for control flow blocks and tracks spans for source mapping.
 
@@ -386,10 +386,10 @@ pub struct GeneratedMapping {
     pub original_span: Span,
 }
 
-/// Result of template TSX generation.
+/// Result of template TypeScript generation.
 #[derive(Debug)]
 pub struct TemplateCheckResult {
-    /// The generated TSX code.
+    /// The generated TypeScript code.
     pub code: String,
     /// Expressions with their spans for source mapping.
     pub expressions: Vec<TemplateExpression>,
@@ -397,7 +397,7 @@ pub struct TemplateCheckResult {
     pub mappings: Vec<GeneratedMapping>,
 }
 
-/// Generates a TSX type-checking block for the template.
+/// Generates a TypeScript type-checking block for the template.
 ///
 /// This generates code that includes all expressions from the template
 /// with proper control flow to preserve TypeScript type narrowing.
@@ -406,7 +406,7 @@ pub fn generate_template_check(fragment: &Fragment) -> String {
     result.code
 }
 
-/// Generates a TSX type-checking block with span information.
+/// Generates a TypeScript type-checking block with span information.
 pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckResult {
     let mut ctx = TemplateContext::new();
     ctx.generate_fragment(fragment);

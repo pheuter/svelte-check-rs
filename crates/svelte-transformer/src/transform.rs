@@ -92,7 +92,7 @@ pub struct TransformOptions {
 /// The result of transformation.
 #[derive(Debug)]
 pub struct TransformResult {
-    /// The generated TSX code.
+    /// The generated TypeScript code.
     pub tsx_code: String,
     /// The source map for position mapping.
     pub source_map: SourceMap,
@@ -685,7 +685,7 @@ fn emit_template_with_mappings(builder: &mut SourceMapBuilder, result: &Template
     }
 }
 
-/// Transforms a Svelte document to TSX.
+/// Transforms a Svelte document to TypeScript.
 pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformResult {
     let mut output = String::new();
     let mut builder = SourceMapBuilder::new();

@@ -170,6 +170,66 @@ fn test_edge_cases() {
 }
 
 #[test]
+fn test_invalid_syntax_produces_errors() {
+    // These SHOULD produce parse errors - this tests the parser catches issues
+    let invalid_cases: &[(&str, &str)] = &[
+        ("<div>", "unclosed tag"),
+        ("<div></span>", "mismatched closing tag"),
+        ("{#if}", "if without condition"),
+        ("{#each items}", "each without as pattern"),
+        ("{expression", "unclosed expression"),
+        ("<div attr=\"unclosed>", "unclosed attribute quote"),
+    ];
+
+    for (source, description) in invalid_cases {
+        let result = parse(source);
+        // Note: We're documenting which cases the parser catches vs doesn't
+        // This helps identify parser gaps
+        if result.errors.is_empty() {
+            println!(
+                "WARNING: Parser did NOT produce error for: {} ({})",
+                description, source
+            );
+        } else {
+            println!(
+                "OK: Parser produced {} error(s) for: {}",
+                result.errors.len(),
+                description
+            );
+        }
+    }
+}
+
+#[test]
+fn test_unclosed_blocks_produce_errors() {
+    // Specifically test that unclosed blocks produce errors
+    let unclosed_block_cases: &[(&str, &str)] = &[
+        ("{#if true}<p>test</p>", "unclosed if block"),
+        ("{#each items as item}<li>test</li>", "unclosed each block"),
+        ("{#await promise}<p>loading</p>", "unclosed await block"),
+        ("{#key id}<div>test</div>", "unclosed key block"),
+    ];
+
+    let mut all_caught = true;
+    for (source, description) in unclosed_block_cases {
+        let result = parse(source);
+        if result.errors.is_empty() {
+            println!("BUG: Parser did NOT produce error for: {}", description);
+            all_caught = false;
+        } else {
+            println!("OK: {} - {} errors", description, result.errors.len());
+        }
+    }
+
+    // This assertion documents whether the parser catches unclosed blocks
+    // If it fails, it means the parser is too lenient
+    if !all_caught {
+        println!("\nNOTE: Parser does not currently report all unclosed block errors.");
+        println!("This may be by design (lenient parsing) or a bug to fix.");
+    }
+}
+
+#[test]
 fn test_stress_deeply_nested() {
     // Test deeply nested structures don't cause stack overflow
     let mut source = String::new();

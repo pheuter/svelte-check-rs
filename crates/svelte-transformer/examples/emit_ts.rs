@@ -5,7 +5,7 @@ use svelte_transformer::{transform, TransformOptions};
 fn main() {
     let path = std::env::args()
         .nth(1)
-        .expect("Usage: emit_tsx <file.svelte>");
+        .expect("Usage: emit_ts <file.svelte>");
     let source = fs::read_to_string(&path).expect("Failed to read file");
     let parsed = parse(&source);
     let result = transform(
