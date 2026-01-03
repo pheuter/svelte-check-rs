@@ -166,6 +166,7 @@ pub struct TsgoCacheStats {
     pub source_existing_skipped: usize,
     pub source_linked: usize,
     pub source_copied: usize,
+    pub stale_removed: usize,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -823,94 +824,151 @@ impl TsgoRunner {
         // Always create temp_src so shim can be written even if project has no src dir
         std::fs::create_dir_all(temp_src).map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
 
-        if !project_src.exists() {
-            return Ok(());
-        }
+        // Track files and directories we write to the cache
+        let mut cache_files: HashSet<Utf8PathBuf> = HashSet::new();
+        let mut cache_dirs: HashSet<Utf8PathBuf> = HashSet::new();
+        cache_dirs.insert(temp_src.to_owned());
 
-        for entry in WalkDir::new(project_src).into_iter().filter_map(|e| e.ok()) {
-            stats.source_entries += 1;
-            let path = match Utf8Path::from_path(entry.path()) {
-                Some(p) => p,
-                None => continue,
-            };
+        if project_src.exists() {
+            for entry in WalkDir::new(project_src).into_iter().filter_map(|e| e.ok()) {
+                stats.source_entries += 1;
+                let path = match Utf8Path::from_path(entry.path()) {
+                    Some(p) => p,
+                    None => continue,
+                };
 
-            // Calculate relative path
-            let relative = match path.strip_prefix(project_src) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let target = temp_src.join(relative);
+                // Calculate relative path
+                let relative = match path.strip_prefix(project_src) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                let target = temp_src.join(relative);
 
-            // Create directories
-            if entry.file_type().is_dir() {
-                stats.source_dirs += 1;
-                std::fs::create_dir_all(&target)
-                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                continue;
-            }
+                // Create directories
+                if entry.file_type().is_dir() {
+                    stats.source_dirs += 1;
+                    std::fs::create_dir_all(&target)
+                        .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                    cache_dirs.insert(target);
+                    continue;
+                }
 
-            stats.source_files += 1;
+                stats.source_files += 1;
 
-            // Skip .svelte files - we write transformed .ts versions
-            if path.extension() == Some("svelte") {
-                stats.source_svelte_skipped += 1;
-                continue;
-            }
+                // Skip .svelte files - we write transformed .ts versions
+                if path.extension() == Some("svelte") {
+                    stats.source_svelte_skipped += 1;
+                    continue;
+                }
 
-            if let Some(kind) = kit::kit_file_kind(path, project_root) {
-                let source = std::fs::read_to_string(path)
-                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                let mut transformed =
-                    kit::transform_kit_source(kind, path, &source).unwrap_or(source);
-                if apply_tsgo_fixes {
-                    if let Some(patched) = patch_promise_all_empty_arrays(&transformed) {
-                        transformed = patched;
+                if let Some(kind) = kit::kit_file_kind(path, project_root) {
+                    let source = std::fs::read_to_string(path)
+                        .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                    let mut transformed =
+                        kit::transform_kit_source(kind, path, &source).unwrap_or(source);
+                    if apply_tsgo_fixes {
+                        if let Some(patched) = patch_promise_all_empty_arrays(&transformed) {
+                            transformed = patched;
+                        }
                     }
+                    let wrote =
+                        write_if_changed(&target, transformed.as_bytes(), "write kit transform")?;
+                    if wrote {
+                        stats.kit_written += 1;
+                    } else {
+                        stats.kit_skipped += 1;
+                    }
+                    cache_files.insert(target);
+                    continue;
                 }
-                let wrote =
-                    write_if_changed(&target, transformed.as_bytes(), "write kit transform")?;
-                if wrote {
-                    stats.kit_written += 1;
-                } else {
-                    stats.kit_skipped += 1;
+
+                // Skip if target already exists (transformed file takes precedence)
+                if target.exists() {
+                    stats.source_existing_skipped += 1;
+                    cache_files.insert(target);
+                    continue;
                 }
-                continue;
-            }
 
-            // Skip if target already exists (transformed file takes precedence)
-            if target.exists() {
-                stats.source_existing_skipped += 1;
-                continue;
-            }
-
-            if apply_tsgo_fixes && is_ts_like_file(path) {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    if content.contains("Promise.all") {
-                        if let Some(patched) = patch_promise_all_empty_arrays(&content) {
-                            let wrote =
-                                write_if_changed(&target, patched.as_bytes(), "write patched ts")?;
-                            if wrote {
-                                stats.patched_written += 1;
-                            } else {
-                                stats.patched_skipped += 1;
+                if apply_tsgo_fixes && is_ts_like_file(path) {
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        if content.contains("Promise.all") {
+                            if let Some(patched) = patch_promise_all_empty_arrays(&content) {
+                                let wrote = write_if_changed(
+                                    &target,
+                                    patched.as_bytes(),
+                                    "write patched ts",
+                                )?;
+                                if wrote {
+                                    stats.patched_written += 1;
+                                } else {
+                                    stats.patched_skipped += 1;
+                                }
+                                cache_files.insert(target);
+                                continue;
                             }
-                            continue;
                         }
                     }
                 }
-            }
 
-            // Prefer hard links to keep paths under the temp root. Fall back to copying.
-            if let Err(err) = std::fs::hard_link(path, &target) {
-                stats.source_copied += 1;
-                std::fs::copy(path, &target).map_err(|e| {
-                    TsgoError::TempFileFailed(format!(
-                        "link/copy {}: hard link error {}, copy error {}",
-                        relative, err, e
-                    ))
-                })?;
-            } else {
-                stats.source_linked += 1;
+                // Prefer hard links to keep paths under the temp root. Fall back to copying.
+                if let Err(err) = std::fs::hard_link(path, &target) {
+                    stats.source_copied += 1;
+                    std::fs::copy(path, &target).map_err(|e| {
+                        TsgoError::TempFileFailed(format!(
+                            "link/copy {}: hard link error {}, copy error {}",
+                            relative, err, e
+                        ))
+                    })?;
+                } else {
+                    stats.source_linked += 1;
+                }
+                cache_files.insert(target);
+            }
+        }
+
+        // Clean up stale source files (from deleted .ts files)
+        // Skip .svelte.ts and .svelte.d.ts files - those are handled elsewhere
+        for entry in WalkDir::new(temp_src).follow_links(false).into_iter() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = match Utf8Path::from_path(entry.path()) {
+                Some(path) => path,
+                None => continue,
+            };
+            if entry.file_type().is_file() {
+                let path_str = path.as_str();
+                // Skip .svelte.ts and .svelte.d.ts - handled in check()
+                if path_str.ends_with(".svelte.ts") || path_str.ends_with(".svelte.d.ts") {
+                    continue;
+                }
+                // Skip shim file
+                if path_str.ends_with("__svelte_check_rs_shims.d.ts") {
+                    continue;
+                }
+                if !cache_files.contains(path) {
+                    let _ = std::fs::remove_file(path);
+                    stats.stale_removed += 1;
+                }
+            }
+        }
+        // Remove empty directories (contents_first ensures we process children before parents)
+        for entry in WalkDir::new(temp_src)
+            .follow_links(false)
+            .contents_first(true)
+        {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = match Utf8Path::from_path(entry.path()) {
+                Some(path) => path,
+                None => continue,
+            };
+            if entry.file_type().is_dir() && !cache_dirs.contains(path) {
+                // Try to remove - will fail if not empty, which is fine
+                let _ = std::fs::remove_dir(path);
             }
         }
 
@@ -958,11 +1016,25 @@ impl TsgoRunner {
         let write_start = Instant::now();
         // Write transformed files
         let mut tsx_files = Vec::new();
+        let mut cache_files: HashSet<Utf8PathBuf> = HashSet::new();
+        let mut cache_dirs: HashSet<Utf8PathBuf> = HashSet::new();
+        cache_dirs.insert(cache_path.clone());
+
         for (virtual_path, file) in &files.files {
             let full_path = temp_path.join(virtual_path);
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                // Track all parent directories
+                let mut dir = parent.to_owned();
+                while dir.starts_with(&cache_path) && dir != cache_path {
+                    cache_dirs.insert(dir.clone());
+                    if let Some(p) = dir.parent() {
+                        dir = p.to_owned();
+                    } else {
+                        break;
+                    }
+                }
             }
             let wrote = write_if_changed(&full_path, file.tsx_content.as_bytes(), "write tsx")?;
             if wrote {
@@ -970,6 +1042,8 @@ impl TsgoRunner {
             } else {
                 stats.cache.tsx_skipped += 1;
             }
+            cache_files.insert(full_path.clone());
+
             if let Some(file_name) = full_path.file_name() {
                 let stub_path = full_path.with_extension("d.ts");
                 let stub_content = format!(
@@ -982,9 +1056,35 @@ impl TsgoRunner {
                 } else {
                     stats.cache.stub_skipped += 1;
                 }
+                cache_files.insert(stub_path);
             }
             tsx_files.push(full_path.to_string());
         }
+
+        // Clean up stale cache files (from deleted .svelte files)
+        // Note: we only clean .svelte.ts and .svelte.d.ts here.
+        // Other source files are cleaned in symlink_source_tree_with_cleanup.
+        for entry in WalkDir::new(&cache_path).follow_links(false).into_iter() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = match Utf8Path::from_path(entry.path()) {
+                Some(path) => path,
+                None => continue,
+            };
+            // Only clean up .svelte.ts and .svelte.d.ts files (transformed files)
+            if entry.file_type().is_file() {
+                let path_str = path.as_str();
+                if (path_str.ends_with(".svelte.ts") || path_str.ends_with(".svelte.d.ts"))
+                    && !cache_files.contains(path)
+                {
+                    let _ = std::fs::remove_file(path);
+                    stats.cache.stale_removed += 1;
+                }
+            }
+        }
+
         stats.timings.write_time = write_start.elapsed();
 
         // Symlink key directories/files from project to temp directory for module resolution

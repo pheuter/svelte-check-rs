@@ -675,7 +675,8 @@ fn timings_json(
                 "source_svelte_skipped": stats.cache.source_svelte_skipped,
                 "source_existing_skipped": stats.cache.source_existing_skipped,
                 "source_linked": stats.cache.source_linked,
-                "source_copied": stats.cache.source_copied
+                "source_copied": stats.cache.source_copied,
+                "stale_removed": stats.cache.stale_removed
             }),
         );
         root.insert(
