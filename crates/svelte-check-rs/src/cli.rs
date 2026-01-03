@@ -75,6 +75,10 @@ pub struct Args {
     /// Update tsgo to latest or specified version (e.g., --tsgo-update or --tsgo-update=7.0.0-dev.20260101.1)
     #[arg(long = "tsgo-update")]
     pub tsgo_update: Option<Option<String>>,
+
+    /// Show resolved paths for package manager, tsgo, and svelte-kit binaries
+    #[arg(long = "debug-paths")]
+    pub debug_paths: bool,
 }
 
 /// Output format options.

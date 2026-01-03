@@ -438,7 +438,7 @@ async fn run_tsgo_check(
     emit_diagnostics: bool,
 ) -> Result<TsgoCheckOutput, OrchestratorError> {
     // Find or install tsgo
-    let tsgo_path = TsgoRunner::ensure_tsgo()
+    let tsgo_path = TsgoRunner::ensure_tsgo(Some(workspace))
         .await
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))?;
 

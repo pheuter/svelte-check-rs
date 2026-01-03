@@ -34,6 +34,6 @@ mod runner;
 
 pub use parser::{DiagnosticSeverity, TsgoDiagnostic, TsgoOutput};
 pub use runner::{
-    TransformedFile, TransformedFiles, TsgoCacheStats, TsgoCheckOutput, TsgoCheckStats, TsgoError,
-    TsgoRunner, TsgoTimingStats,
+    PackageManager, TransformedFile, TransformedFiles, TsgoCacheStats, TsgoCheckOutput,
+    TsgoCheckStats, TsgoError, TsgoRunner, TsgoTimingStats,
 };
