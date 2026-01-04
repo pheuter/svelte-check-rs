@@ -13,6 +13,28 @@ A high-performance, Rust-powered diagnostic engine designed as a drop-in replace
 
 ## Installation
 
+### npm (recommended)
+
+```bash
+npm install -D svelte-check-rs
+```
+
+Then add to your package.json scripts:
+
+```json
+{
+  "scripts": {
+    "check": "svelte-check-rs"
+  }
+}
+```
+
+Or run directly with npx:
+
+```bash
+npx svelte-check-rs
+```
+
 ### macOS / Linux
 
 ```bash

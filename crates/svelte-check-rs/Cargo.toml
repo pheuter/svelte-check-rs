@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 description = "High-performance Svelte type-checker and linter"
 repository = "https://github.com/pheuter/svelte-check-rs"
-homepage = "https://github.com/pheuter/svelte-check-rs"
+homepage = "https://svelte-check-rs.vercel.app/"
 
 [[bin]]
 name = "svelte-check-rs"

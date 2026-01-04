@@ -59,10 +59,20 @@
             </p>
             <div class="hero-cta">
               <div class="install-tabs" role="tablist">
-                <button data-os="unix" role="tab" aria-selected="true">macOS / Linux</button>
+                <button data-os="npm" role="tab" aria-selected="true">npm</button>
+                <button data-os="unix" role="tab" aria-selected="false">macOS / Linux</button>
                 <button data-os="windows" role="tab" aria-selected="false">Windows</button>
               </div>
-              <code class="install-cmd" data-os="unix" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh">
+              <code class="install-cmd" data-os="npm" data-copy="npm install -D svelte-check-rs">
+                <span class="prompt">$</span><span class="install-text">npm install -D svelte-check-rs</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
+              <code class="install-cmd" data-os="unix" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh" hidden>
                 <span class="prompt">$</span><span class="install-text">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</span>
                 <button class="copy-btn" aria-label="Copy to clipboard">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -231,6 +241,18 @@
           <h2>Install</h2>
           <div class="install-grid">
             <div class="install-block full">
+              <div class="install-label">npm (recommended)</div>
+              <code class="install-cmd" data-copy="npm install -D svelte-check-rs">
+                <span class="prompt">$</span><span class="install-text">npm install -D svelte-check-rs</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
+            </div>
+            <div class="install-block full">
               <div class="install-label">macOS / Linux</div>
               <code class="install-cmd" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh">
                 <span class="prompt">$</span><span class="install-text">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</span>
@@ -256,10 +278,10 @@
             </div>
             <div class="install-block full">
               <div class="install-label">Replace existing scripts</div>
-              <code class="code-block code-block-copyable" data-copy='{"scripts":{"check":"svelte-check-rs --workspace ."}}'><span class="dim">// package.json</span>
+              <code class="code-block code-block-copyable" data-copy='{"scripts":{"check":"svelte-check-rs"}}'><span class="dim">// package.json</span>
 {
   "scripts": {
-    "check": "svelte-check-rs --workspace ."
+    "check": "svelte-check-rs"
   }
 }<button class="copy-btn" aria-label="Copy to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></code>
             </div>
