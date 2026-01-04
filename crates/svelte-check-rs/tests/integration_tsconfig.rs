@@ -123,6 +123,15 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
 
 /// Runs svelte-check-rs on a fixture with JSON output
 fn run_check_json(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>) {
+    let (exit_code, diagnostics, _stderr) = run_check_json_internal(fixture_name, false);
+    (exit_code, diagnostics)
+}
+
+/// Runs svelte-check-rs on a fixture with JSON output and optional TS emission.
+fn run_check_json_internal(
+    fixture_name: &str,
+    emit_ts: bool,
+) -> (i32, Vec<JsonDiagnostic>, String) {
     // Map fixture name to its ready flag
     let ready = match fixture_name {
         "sveltekit-bundler" => &BUNDLER_READY,
@@ -148,6 +157,7 @@ fn run_check_json(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>) {
         .arg(&fixture_path)
         .arg("--diagnostic-sources")
         .arg("js")
+        .args(if emit_ts { vec!["--emit-ts"] } else { vec![] })
         .arg("--output")
         .arg("json")
         .output()
@@ -155,6 +165,7 @@ fn run_check_json(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>) {
 
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     // Parse JSON diagnostics
     let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_else(|e| {
@@ -163,7 +174,21 @@ fn run_check_json(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>) {
         vec![]
     });
 
-    (exit_code, diagnostics)
+    (exit_code, diagnostics, stderr)
+}
+
+/// Runs svelte-check-rs on a fixture with JSON output and emitted TS output.
+fn run_check_json_with_emit_ts(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>, String) {
+    run_check_json_internal(fixture_name, true)
+}
+
+/// Extract emitted TS block for a relative path from stderr output.
+fn extract_emitted_ts(stderr: &str, relative_path: &str) -> Option<String> {
+    let marker = format!("=== TypeScript for {} ===\n", relative_path);
+    let start = stderr.find(&marker)? + marker.len();
+    let rest = &stderr[start..];
+    let end = rest.find("=== TypeScript for ").unwrap_or(rest.len());
+    Some(rest[..end].to_string())
 }
 
 /// Verifies that an expected error is present in the diagnostics
@@ -636,6 +661,39 @@ fn test_node16_no_errors_in_button() {
     let (_exit_code, diagnostics) = run_check_json("sveltekit-node16");
 
     assert_no_errors_in_file(&diagnostics, "src/lib/components/Button.svelte");
+}
+
+#[test]
+#[serial]
+fn test_node16_rewrites_svelte_imports_in_emitted_ts() {
+    let (_exit_code, _diagnostics, stderr) = run_check_json_with_emit_ts("sveltekit-node16");
+    let ts = extract_emitted_ts(&stderr, "src/routes/+page.svelte")
+        .expect("Expected emitted TS for src/routes/+page.svelte");
+
+    assert!(
+        ts.contains("Button.svelte.js"),
+        "Expected Node16 emitted TS to rewrite .svelte imports to .svelte.js, but got:\n{}",
+        ts
+    );
+}
+
+#[test]
+#[serial]
+fn test_bundler_does_not_rewrite_svelte_imports_in_emitted_ts() {
+    let (_exit_code, _diagnostics, stderr) = run_check_json_with_emit_ts("sveltekit-bundler");
+    let ts = extract_emitted_ts(&stderr, "src/routes/+page.svelte")
+        .expect("Expected emitted TS for src/routes/+page.svelte");
+
+    assert!(
+        ts.contains("Button.svelte"),
+        "Expected bundler emitted TS to include .svelte import, but got:\n{}",
+        ts
+    );
+    assert!(
+        !ts.contains("Button.svelte.js"),
+        "Did not expect bundler emitted TS to rewrite .svelte imports to .svelte.js, but got:\n{}",
+        ts
+    );
 }
 
 // ============================================================================

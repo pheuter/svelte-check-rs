@@ -355,10 +355,16 @@ fn loosen_props_annotation_edit(script: &str, type_ann: &str) -> Option<TextEdit
         .find(|c| !c.is_whitespace());
 
     if before == Some(':') && after == Some('=') {
+        let trimmed = type_ann.trim();
+        let replacement = if trimmed.is_empty() {
+            "any".to_string()
+        } else {
+            format!("__SvelteLoosen<{trimmed}>")
+        };
         return Some(TextEdit {
             start: pos,
             end: pos + type_ann.len(),
-            replacement: "any".to_string(),
+            replacement,
         });
     }
 
@@ -1119,8 +1125,15 @@ type __SvelteComponent<
   z_$$bindings?: string;
 };
 
-declare function __svelte_each_indexed<T>(arr: ArrayLike<T> | Iterable<T>): [number, T][];
-declare function __svelte_is_empty<T>(arr: ArrayLike<T> | Iterable<T>): boolean;
+type __SvelteEachItem<T> =
+  T extends ArrayLike<infer U> ? U :
+  T extends Iterable<infer U> ? U :
+  never;
+
+declare function __svelte_each_indexed<
+  T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+>(arr: T): [number, __SvelteEachItem<T>][];
+declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
 // Helper to get store value type from store subscription ($store syntax)
 declare function __svelte_store_get<T>(store: { subscribe(fn: (value: T) => void): any }): T;

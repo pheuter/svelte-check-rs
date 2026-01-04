@@ -36,8 +36,15 @@ declare global {
 
   type __SvelteSnippet<T extends any[] = any[]> = SvelteSnippet<T>;
 
-  declare function __svelte_each_indexed<T>(arr: ArrayLike<T> | Iterable<T>): [number, T][];
-  declare function __svelte_is_empty<T>(arr: ArrayLike<T> | Iterable<T>): boolean;
+  type __SvelteEachItem<T> =
+    T extends ArrayLike<infer U> ? U :
+    T extends Iterable<infer U> ? U :
+    never;
+
+  declare function __svelte_each_indexed<
+    T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+  >(arr: T): [number, __SvelteEachItem<T>][];
+  declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
   declare function __svelte_store_get<T>(store: { subscribe(fn: (value: T) => void): any }): T;
 
