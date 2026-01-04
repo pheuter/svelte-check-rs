@@ -28,7 +28,7 @@
 //! }
 //! "#;
 //!
-//! let result = transform_module(source, None);
+//! let result = transform_module(source, None, None);
 //! // Result contains transformed code with runes replaced
 //! ```
 
@@ -36,6 +36,54 @@ use crate::runes::{transform_runes, RuneKind, RuneTransformResult};
 use smol_str::SmolStr;
 use source_map::{SourceMap, SourceMapBuilder};
 use std::collections::HashSet;
+
+const MODULE_HEADER: &str = "// Transformed by svelte-check-rs\n";
+const MODULE_HELPERS: &str = r#"// Svelte module rune helpers
+declare function __svelte_effect(fn: () => void | (() => void)): void;
+declare function __svelte_effect_pre(fn: () => void | (() => void)): void;
+declare function __svelte_effect_root(fn: (...args: any[]) => any): void;
+type __SvelteLoosen<T> = T extends (...args: any) => any ? T : T extends readonly any[] ? T : T extends object ? T & Record<string, any> : T;
+
+"#;
+
+fn consume_helpers_import(text: &str) -> Option<usize> {
+    let line_end = text.find('\n')?;
+    let line = &text[..line_end + 1];
+    let is_import = line.starts_with("import \"") || line.starts_with("import '");
+    if !is_import || !line.contains("__svelte_check_rs_helpers") {
+        return None;
+    }
+    let mut consumed = line_end + 1;
+    if text[consumed..].starts_with('\n') {
+        consumed += 1;
+    }
+    Some(consumed)
+}
+
+fn strip_module_prelude(source: &str) -> (&str, u32) {
+    let mut offset = 0usize;
+    let mut rest = source;
+
+    loop {
+        if !rest.starts_with(MODULE_HEADER) {
+            break;
+        }
+        let after_header = &rest[MODULE_HEADER.len()..];
+        if after_header.starts_with(MODULE_HELPERS) {
+            offset += MODULE_HEADER.len() + MODULE_HELPERS.len();
+            rest = &rest[MODULE_HEADER.len() + MODULE_HELPERS.len()..];
+            continue;
+        }
+        if let Some(consumed) = consume_helpers_import(after_header) {
+            offset += MODULE_HEADER.len() + consumed;
+            rest = &after_header[consumed..];
+            continue;
+        }
+        break;
+    }
+
+    (rest, offset as u32)
+}
 
 /// Result of transforming a Svelte module file.
 #[derive(Debug)]
@@ -94,28 +142,31 @@ impl std::fmt::Display for ModuleTransformError {
 ///
 /// A `ModuleTransformResult` containing the transformed code, source map,
 /// and any errors encountered.
-pub fn transform_module(source: &str, filename: Option<&str>) -> ModuleTransformResult {
+pub fn transform_module(
+    source: &str,
+    filename: Option<&str>,
+    helpers_import_path: Option<String>,
+) -> ModuleTransformResult {
     let mut builder = SourceMapBuilder::new();
     let mut errors = Vec::new();
 
     // Add a header comment
-    let header = "// Transformed by svelte-check-rs\n";
-    builder.add_generated(header);
+    builder.add_generated(MODULE_HEADER);
 
-    // Add helper declarations for effect runes
-    // Note: __SvelteLoosen is included to prevent TypeScript errors when users
-    // incorrectly use $props in module files (we report a better error message)
-    let helpers = r#"// Svelte module rune helpers
-declare function __svelte_effect(fn: () => void | (() => void)): void;
-declare function __svelte_effect_pre(fn: () => void | (() => void)): void;
-declare function __svelte_effect_root(fn: (...args: any[]) => any): void;
-type __SvelteLoosen<T> = T extends (...args: any) => any ? T : T extends readonly any[] ? T : T extends object ? T & Record<string, any> : T;
+    if let Some(import_path) = helpers_import_path.as_deref() {
+        let import_line = format!("import \"{}\";\n\n", import_path);
+        builder.add_generated(&import_line);
+    } else {
+        // Add helper declarations for effect runes
+        // Note: __SvelteLoosen is included to prevent TypeScript errors when users
+        // incorrectly use $props in module files (we report a better error message)
+        builder.add_generated(MODULE_HELPERS);
+    }
 
-"#;
-    builder.add_generated(helpers);
+    let (clean_source, base_offset) = strip_module_prelude(source);
 
     // Transform runes in the source
-    let rune_result: RuneTransformResult = transform_runes(source, 0);
+    let rune_result: RuneTransformResult = transform_runes(clean_source, base_offset);
 
     // Check for component-only runes and report errors
     for rune in &rune_result.runes {
@@ -143,14 +194,23 @@ type __SvelteLoosen<T> = T extends (...args: any) => any ? T : T extends readonl
     }
 
     // Add the transformed source with proper source mapping using rune mappings
-    emit_module_with_rune_mappings(&mut builder, &rune_result.output, &rune_result.mappings);
+    emit_module_with_rune_mappings(
+        &mut builder,
+        &rune_result.output,
+        base_offset,
+        &rune_result.mappings,
+    );
 
     let has_runes = !rune_result.runes.is_empty();
 
     // Build output
     let mut output = String::new();
-    output.push_str(header);
-    output.push_str(helpers);
+    output.push_str(MODULE_HEADER);
+    if let Some(import_path) = helpers_import_path.as_deref() {
+        output.push_str(&format!("import \"{}\";\n\n", import_path));
+    } else {
+        output.push_str(MODULE_HELPERS);
+    }
     output.push_str(&rune_result.output);
 
     ModuleTransformResult {
@@ -166,11 +226,12 @@ type __SvelteLoosen<T> = T extends (...args: any) => any ? T : T extends readonl
 fn emit_module_with_rune_mappings(
     builder: &mut SourceMapBuilder,
     output: &str,
+    base_offset: u32,
     mappings: &[crate::runes::RuneMapping],
 ) {
     if mappings.is_empty() {
         // No rune transformations, simple 1:1 mapping
-        builder.add_source(0.into(), output);
+        builder.add_source(base_offset.into(), output);
         return;
     }
 
@@ -179,7 +240,7 @@ fn emit_module_with_rune_mappings(
     sorted_mappings.sort_by_key(|m| u32::from(m.generated.start));
 
     let mut gen_pos: usize = 0; // Position in generated output
-    let mut orig_pos: u32 = 0; // Position in original
+    let mut orig_pos: u32 = base_offset; // Position in original
 
     for mapping in &sorted_mappings {
         let gen_start: usize = u32::from(mapping.generated.start) as usize;
@@ -242,7 +303,7 @@ mod tests {
     let count = $state(0);
     return { get count() { return count; } };
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("let count = 0;"));
         assert!(!result.code.contains("$state"));
@@ -256,7 +317,7 @@ mod tests {
     let count = $state<number>(0);
     return count;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("let count = (0 as number);"));
         assert!(!result.code.contains("$state"));
@@ -270,7 +331,7 @@ mod tests {
     let doubled = $derived(count * 2);
     return { doubled };
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("let count = 0;"));
         assert!(result.code.contains("let doubled = (count * 2);"));
@@ -284,7 +345,7 @@ mod tests {
     let value = $derived.by(() => expensiveComputation());
     return value;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result
             .code
@@ -301,7 +362,7 @@ mod tests {
     });
     return { get count() { return count; } };
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("__svelte_effect("));
         assert!(!result.code.contains("$effect("));
@@ -315,7 +376,7 @@ mod tests {
         // runs before DOM updates
     });
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("__svelte_effect_pre("));
         assert!(!result.code.contains("$effect.pre("));
@@ -330,7 +391,7 @@ mod tests {
     });
     return cleanup;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("__svelte_effect_root("));
         assert!(!result.code.contains("$effect.root("));
@@ -342,7 +403,7 @@ mod tests {
     let items = $state.raw([1, 2, 3]);
     return items;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("let items = [1, 2, 3];"));
         assert!(!result.code.contains("$state.raw"));
@@ -353,10 +414,38 @@ mod tests {
         let source = r#"export function getSnapshot(obj: any) {
     return $state.snapshot(obj);
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("return (obj);"));
         assert!(!result.code.contains("$state.snapshot"));
+    }
+
+    #[test]
+    fn test_transform_module_strips_prelude() {
+        let source = format!(
+            "{}{}{}{}export const value = 1;\n",
+            MODULE_HEADER, MODULE_HELPERS, MODULE_HEADER, MODULE_HELPERS
+        );
+        let result = transform_module(&source, None, None);
+
+        let helper_count = result.code.matches("// Svelte module rune helpers").count();
+        assert_eq!(helper_count, 1);
+        assert!(result.code.contains("export const value = 1;"));
+    }
+
+    #[test]
+    fn test_transform_module_with_helpers_import() {
+        let source = "export const value = 1;\n";
+        let result = transform_module(
+            source,
+            None,
+            Some("./__svelte_check_rs_helpers".to_string()),
+        );
+
+        assert!(result
+            .code
+            .contains("import \"./__svelte_check_rs_helpers\";"));
+        assert!(!result.code.contains("// Svelte module rune helpers"));
     }
 
     #[test]
@@ -366,7 +455,7 @@ mod tests {
     $inspect(count);
     return count;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("void 0;"));
         assert!(!result.code.contains("$inspect"));
@@ -378,7 +467,7 @@ mod tests {
     let { name } = $props();
     return name;
 }"#;
-        let result = transform_module(source, Some("test.svelte.ts"));
+        let result = transform_module(source, Some("test.svelte.ts"), None);
 
         assert!(!result.errors.is_empty());
         assert!(result.errors[0]
@@ -392,7 +481,7 @@ mod tests {
     let value = $bindable(0);
     return value;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(!result.errors.is_empty());
         assert!(result.errors[0]
@@ -405,7 +494,7 @@ mod tests {
         let source = r#"export function invalid() {
     $host().dispatchEvent(new Event('test'));
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(!result.errors.is_empty());
         assert!(result.errors[0]
@@ -418,7 +507,7 @@ mod tests {
         let source = r#"export function add(a: number, b: number): number {
     return a + b;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(!result.has_runes);
         assert!(result.errors.is_empty());
@@ -447,7 +536,7 @@ export function createCounter(initial: number = 0) {
         reset() { count = initial; },
     };
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.has_runes);
         assert!(result.errors.is_empty());
@@ -468,7 +557,7 @@ export function createState() {
     let value = $state(0);
     return value;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result
             .code
@@ -487,7 +576,7 @@ export function createState() {
     let value = $state(0); // This one should
     return value;
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         // Comments should be preserved
         assert!(result.code.contains("// This is a comment"));
@@ -507,7 +596,7 @@ export function createState() {
 export function updateStore() {
     $myStore = 'new value';
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         // Store names should be collected
         assert!(result.store_names.contains("myStore"));
@@ -519,7 +608,7 @@ export function updateStore() {
     let a = $state(1), b = $state(2);
     return { a, b };
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("let a = 1, b = 2;"));
         assert!(result.has_runes);
@@ -537,7 +626,7 @@ export function updateStore() {
 
     return { outerCount, inner };
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("let outerCount = 0;"));
         assert!(result.code.contains("let innerCount = 0;"));
@@ -553,7 +642,7 @@ export function updateStore() {
         this.count++;
     }
 }"#;
-        let result = transform_module(source, None);
+        let result = transform_module(source, None, None);
 
         assert!(result.code.contains("count = 0;"));
         assert!(result.code.contains("doubled = (this.count * 2);"));

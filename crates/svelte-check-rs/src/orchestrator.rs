@@ -20,6 +20,84 @@ use tsgo_runner::{
 };
 use walkdir::WalkDir;
 
+const SHARED_HELPERS_MODULE: &str = "__svelte_check_rs_helpers";
+
+fn ensure_relative_path(path: &Utf8Path) -> Utf8PathBuf {
+    if !path.is_absolute() {
+        return path.to_owned();
+    }
+
+    let mut out = Utf8PathBuf::new();
+    for component in path.components() {
+        match component {
+            camino::Utf8Component::Prefix(_) | camino::Utf8Component::RootDir => {}
+            _ => out.push(component.as_str()),
+        }
+    }
+    out
+}
+
+fn virtual_path_for(file_path: &Utf8Path, workspace: &Utf8Path, suffix_ts: bool) -> Utf8PathBuf {
+    let relative = file_path.strip_prefix(workspace).unwrap_or(file_path);
+    let relative = ensure_relative_path(relative);
+    if suffix_ts {
+        Utf8PathBuf::from(format!("{}.ts", relative))
+    } else {
+        relative
+    }
+}
+
+fn relative_import_path(from_file: &Utf8Path, to: &Utf8Path) -> String {
+    let from_dir = from_file.parent().unwrap_or(Utf8Path::new(""));
+    let from_components: Vec<&str> = from_dir
+        .components()
+        .filter_map(|c| match c {
+            camino::Utf8Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let to_components: Vec<&str> = to
+        .components()
+        .filter_map(|c| match c {
+            camino::Utf8Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+
+    let mut common = 0usize;
+    while common < from_components.len()
+        && common < to_components.len()
+        && from_components[common] == to_components[common]
+    {
+        common += 1;
+    }
+
+    let mut rel = Utf8PathBuf::new();
+    for _ in common..from_components.len() {
+        rel.push("..");
+    }
+    for comp in &to_components[common..] {
+        rel.push(comp);
+    }
+
+    let mut rel_str = rel.as_str().to_string();
+    if rel_str.is_empty() {
+        rel_str.push_str(".");
+    }
+    if !rel_str.starts_with('.') {
+        rel_str = format!("./{}", rel_str);
+    }
+    rel_str
+}
+
+fn helpers_import_path_for(virtual_path: &Utf8Path, use_nodenext_imports: bool) -> String {
+    let mut path = relative_import_path(virtual_path, Utf8Path::new(SHARED_HELPERS_MODULE));
+    if use_nodenext_imports {
+        path.push_str(".js");
+    }
+    path
+}
+
 /// Orchestration errors.
 #[derive(Debug, Error)]
 pub enum OrchestratorError {
@@ -215,10 +293,13 @@ async fn run_single_check(
 
             // Transform for TypeScript checking (if JS diagnostics enabled)
             if args.include_js() {
+                let virtual_path = virtual_path_for(file_path, workspace, true);
+                let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
                 let transform_options = TransformOptions {
                     filename: Some(file_path.to_string()),
                     source_maps: true,
                     use_nodenext_imports,
+                    helpers_import_path: Some(helpers_import),
                 };
 
                 let transform_result = transform(&parse_result.document, transform_options);
@@ -233,8 +314,7 @@ async fn run_single_check(
                 }
 
                 // Create the virtual path (original.svelte -> original.svelte.ts)
-                let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
-                let virtual_path = Utf8PathBuf::from(format!("{}.ts", relative_path));
+                let virtual_path = virtual_path_for(file_path, workspace, true);
 
                 let transformed_file = TransformedFile {
                     original_path: file_path.clone(),
@@ -295,7 +375,10 @@ async fn run_single_check(
             };
 
             // Transform module file (runes only, no template/styles)
-            let transform_result = transform_module(&source, Some(file_path.as_str()));
+            let virtual_path = virtual_path_for(file_path, workspace, false);
+            let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
+            let transform_result =
+                transform_module(&source, Some(file_path.as_str()), Some(helpers_import));
 
             // Collect any errors from invalid rune usage (e.g., $props in module files)
             let mut all_diagnostics: Vec<svelte_diagnostics::Diagnostic> = Vec::new();
@@ -323,8 +406,7 @@ async fn run_single_check(
 
                 // For module files, we keep the same relative path (they're already .ts/.js)
                 // But we need to write transformed content to the cache
-                let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
-                let virtual_path = Utf8PathBuf::from(relative_path.as_str());
+                let virtual_path = virtual_path_for(file_path, workspace, false);
 
                 let transformed_file = TransformedFile {
                     original_path: file_path.clone(),

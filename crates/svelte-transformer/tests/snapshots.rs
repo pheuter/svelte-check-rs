@@ -237,6 +237,20 @@ fn test_props_with_rest() {
     );
 }
 
+#[test]
+fn test_props_with_rest_loosened_annotation() {
+    transform_snapshot(
+        "props_rest_loosened_annotation",
+        r#"<script lang="ts">
+    type Foo = { foo: string };
+    type Bar<T> = T & Record<string, unknown>;
+    let { foo, ...rest }: Foo & Bar<{ baz: string }> = $props();
+</script>
+
+<div {...rest}>{foo}</div>"#,
+    );
+}
+
 // ============================================================================
 // TEMPLATE EXPRESSION TESTS
 // ============================================================================
@@ -640,6 +654,20 @@ fn test_generic_component_simple() {
         {option.label}
     </button>
 {/each}"#,
+    );
+}
+
+#[test]
+fn test_generic_placeholder_rune_mapping() {
+    transform_snapshot_with_filename(
+        "generic_placeholder_rune",
+        "Placeholder.svelte",
+        r#"<script lang="ts" generics="T">
+    type T = any;
+    let count = $state(0);
+</script>
+
+<p>{count}</p>"#,
     );
 }
 
