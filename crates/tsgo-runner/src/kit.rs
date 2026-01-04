@@ -652,10 +652,10 @@ fn adjust_return_type_for_async(return_type: &str, is_async: bool) -> String {
     if trimmed.starts_with("Promise<") {
         return return_type.to_string();
     }
-    if trimmed == "Response | Promise<Response>" {
-        return "Promise<Response>".to_string();
+    if trimmed.starts_with("Awaited<") {
+        return format!("Promise<{}>", return_type);
     }
-    format!("Promise<{}>", return_type)
+    format!("Promise<Awaited<{}>>", return_type)
 }
 
 fn expr_start_with_async(source: &str, start: usize) -> usize {

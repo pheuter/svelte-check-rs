@@ -95,18 +95,53 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
   target: Target;
 };
 
+// Backwards-compatibility namespace for libraries augmenting `svelteHTML`.
+declare global {
+  namespace svelteHTML {
+    interface HTMLAttributes<T extends EventTarget = any> {}
+  }
+}
+
 // Helper types for element attribute name checking.
 type __SvelteIntrinsicElements = __SvelteHTMLElements;
+type __SvelteHTMLAttributesCompat<T extends EventTarget> =
+  __SvelteHTMLAttributes<T> & svelteHTML.HTMLAttributes<T>;
 type __SvelteEventProps<T> =
   T & { [K in keyof T as K extends `on:${infer E}` ? `on${E}` : never]?: T[K] };
 type __SvelteElementAttributes<K extends string> =
   __SvelteEventProps<
-    K extends keyof __SvelteIntrinsicElements ? __SvelteIntrinsicElements[K] : __SvelteHTMLAttributes<any>
+    K extends keyof __SvelteIntrinsicElements
+      ? __SvelteIntrinsicElements[K] & svelteHTML.HTMLAttributes<any>
+      : __SvelteHTMLAttributesCompat<any>
   >;
+type __SvelteEventHandler<K extends string, E extends string, A = {}> =
+  A extends { [key in `on:${E}`]?: infer H }
+    ? H | undefined
+    : A extends { [key in `on${E}`]?: infer H }
+      ? H | undefined
+      : __SvelteElementAttributes<K> extends { [key in `on:${E}`]?: infer H }
+        ? H | undefined
+        : __SvelteElementAttributes<K> extends { [key in `on${E}`]?: infer H }
+          ? H | undefined
+          : ((e: Event) => void) | null | undefined;
 
-declare function __svelte_check_element<K extends string>(
+type __SvelteActionReturnType = {
+  update?: (parameter: any) => void;
+  destroy?: () => void;
+  $$_attributes?: Record<string, any>;
+} | void;
+declare function __svelte_ensure_action<T extends __SvelteActionReturnType>(
+  actionCall: T
+): T extends { $$_attributes?: any } ? T["$$_attributes"] : {};
+
+type __SvelteUnionToIntersection<U> =
+  (U extends any ? (k: U) => void : never) extends (k: infer I) => void ? I : never;
+declare function __svelte_union<T extends any[]>(...args: T): __SvelteUnionToIntersection<T[number]>;
+
+declare function __svelte_create_element<K extends string, T>(
   tag: K | undefined | null,
-  attrs: __SvelteElementAttributes<K>
+  actionAttrs: T,
+  attrs: __SvelteElementAttributes<K> & T
 ): void;
 
 declare const __svelte_any: any;
@@ -135,8 +170,8 @@ async function __svelte_template_check__() {
       return __svelte_snippet_return;
     },
     empty: () => {
-      __svelte_check_element("td", {
-        colspan: __svelte_any,
+      __svelte_create_element("td", {}, {
+        colspan: 3,
       });
       return __svelte_snippet_return;
     },
