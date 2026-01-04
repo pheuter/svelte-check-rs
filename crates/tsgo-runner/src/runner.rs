@@ -1187,29 +1187,58 @@ impl TsgoRunner {
             }
         }
 
-        // Keep a stable copy of .svelte-kit to avoid invalidating tsgo incremental builds
+        // Keep a stable copy of .svelte-kit to avoid invalidating tsgo incremental builds.
+        // When caching is enabled, write directly into the cache root to avoid duplicate copies.
         let kit_source = self.project_root.join(".svelte-kit");
         if kit_source.exists() {
-            let kit_link_source = if self.use_sveltekit_cache {
-                let kit_cache = self.project_root.join(".svelte-check-rs/kit");
-                sync_sveltekit_cache(&kit_source, &kit_cache)?;
-                kit_cache
-            } else {
-                kit_source.clone()
-            };
             let target = temp_path.join(".svelte-kit");
-            if !target.exists() {
-                #[cfg(unix)]
-                {
-                    std::os::unix::fs::symlink(&kit_link_source, &target).map_err(|e| {
-                        TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
-                    })?;
+            if self.use_sveltekit_cache {
+                // Clean up legacy cache location if present.
+                let legacy_cache = self.project_root.join(".svelte-check-rs/kit");
+                if legacy_cache.exists() {
+                    let _ = std::fs::remove_dir_all(&legacy_cache);
                 }
-                #[cfg(windows)]
-                {
-                    std::os::windows::fs::symlink_dir(&kit_link_source, &target).map_err(|e| {
-                        TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
-                    })?;
+                if let Ok(meta) = std::fs::symlink_metadata(&target) {
+                    if meta.file_type().is_symlink() || meta.is_file() {
+                        let _ = std::fs::remove_file(&target);
+                    } else if meta.is_dir() {
+                        // Keep existing directory; sync will update contents.
+                    } else {
+                        let _ = std::fs::remove_file(&target);
+                    }
+                }
+                sync_sveltekit_cache(&kit_source, &target)?;
+            } else {
+                let mut needs_link = true;
+                if let Ok(meta) = std::fs::symlink_metadata(&target) {
+                    if meta.file_type().is_symlink() {
+                        if let Ok(existing) = std::fs::read_link(&target) {
+                            if existing == kit_source.as_std_path() {
+                                needs_link = false;
+                            }
+                        }
+                    }
+                    if needs_link {
+                        if meta.is_dir() {
+                            let _ = std::fs::remove_dir_all(&target);
+                        } else {
+                            let _ = std::fs::remove_file(&target);
+                        }
+                    }
+                }
+                if needs_link {
+                    #[cfg(unix)]
+                    {
+                        std::os::unix::fs::symlink(&kit_source, &target).map_err(|e| {
+                            TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
+                        })?;
+                    }
+                    #[cfg(windows)]
+                    {
+                        std::os::windows::fs::symlink_dir(&kit_source, &target).map_err(|e| {
+                            TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
+                        })?;
+                    }
                 }
             }
         }

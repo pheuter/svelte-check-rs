@@ -82,7 +82,7 @@ fn relative_import_path(from_file: &Utf8Path, to: &Utf8Path) -> String {
 
     let mut rel_str = rel.as_str().to_string();
     if rel_str.is_empty() {
-        rel_str.push_str(".");
+        rel_str.push('.');
     }
     if !rel_str.starts_with('.') {
         rel_str = format!("./{}", rel_str);

@@ -430,7 +430,7 @@ fn adjust_rune_mappings_for_edits(
             let edit_end = edit.end as i64;
 
             if edit_end <= gen_start {
-                let delta = edit.replacement.len() as i64 - (edit_end - edit_start) as i64;
+                let delta = edit.replacement.len() as i64 - (edit_end - edit_start);
                 gen_start += delta;
                 gen_end += delta;
             } else if edit_start >= gen_end {
