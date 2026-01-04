@@ -789,6 +789,38 @@ fn test_bind_directive_name() {
 }
 
 #[test]
+fn test_bind_pair_expression_line_number() {
+    let source = r#"<script>
+    const sidebar = {
+        openMobile: false,
+        setOpenMobile: (v: boolean) => {}
+    };
+</script>
+
+<Sheet.Root
+    bind:open={() => sidebar.openMobile,
+      (v) => sidebar.setOpenMobile(v)}
+/>"#;
+
+    let getter_line = source
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("sidebar.openMobile"))
+        .map(|(i, _)| (i + 1) as u32)
+        .unwrap();
+
+    let setter_line = source
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("sidebar.setOpenMobile"))
+        .map(|(i, _)| (i + 1) as u32)
+        .unwrap();
+
+    verify_line_mapping(source, "sidebar.openMobile", getter_line);
+    verify_line_mapping(source, "sidebar.setOpenMobile", setter_line);
+}
+
+#[test]
 fn test_multiple_prop_names() {
     let source = r#"<script>
     import Form from './Form.svelte';

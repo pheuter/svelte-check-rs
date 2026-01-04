@@ -488,7 +488,7 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
             .properties
             .iter()
             .filter(|prop| prop.default_value.is_some() || prop.is_bindable)
-            .map(|prop| format!("{:?}", prop.name))
+            .map(|prop| format_prop_key_literal(&prop.name))
             .collect();
 
         if optional_props.is_empty() {
@@ -550,6 +550,19 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
     } else {
         base
     }
+}
+
+fn format_prop_key_literal(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.len() >= 2 {
+        let first = trimmed.chars().next().unwrap_or_default();
+        let last = trimmed.chars().last().unwrap_or_default();
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            return format!("{:?}", &trimmed[1..trimmed.len() - 1]);
+        }
+    }
+
+    format!("{:?}", trimmed)
 }
 
 fn is_complex_type_reference(type_ann: &str) -> bool {

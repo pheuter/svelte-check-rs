@@ -89,6 +89,8 @@ pub struct TransformOptions {
     pub source_maps: bool,
     /// Whether to rewrite `.svelte` imports to `.svelte.js` for NodeNext/Node16 module resolution.
     pub use_nodenext_imports: bool,
+    /// Optional shared helpers module to import instead of inlining helper declarations.
+    pub helpers_import_path: Option<String>,
 }
 
 /// The result of transformation.
@@ -291,22 +293,273 @@ fn collect_placeholder_types(script: &str, out: &mut HashSet<String>) {
     }
 }
 
-fn strip_placeholder_type_aliases(script: &str, placeholders: &HashSet<String>) -> String {
+#[derive(Debug, Clone)]
+struct TextEdit {
+    start: usize,
+    end: usize,
+    replacement: String,
+}
+
+fn placeholder_type_alias_edits(script: &str, placeholders: &HashSet<String>) -> Vec<TextEdit> {
     if placeholders.is_empty() {
+        return Vec::new();
+    }
+
+    let mut edits = Vec::new();
+    let mut offset = 0;
+    let mut last_line_kept = false;
+
+    for line in script.split_inclusive('\n') {
+        let line_no_nl = line.strip_suffix('\n').unwrap_or(line);
+        let mut remove_line = false;
+        if let Some(name) = placeholder_alias_name(line_no_nl) {
+            if placeholders.contains(&name) {
+                remove_line = true;
+            }
+        }
+
+        if remove_line {
+            edits.push(TextEdit {
+                start: offset,
+                end: offset + line.len(),
+                replacement: String::new(),
+            });
+            last_line_kept = false;
+        } else {
+            last_line_kept = true;
+        }
+
+        offset += line.len();
+    }
+
+    if !script.is_empty() && !script.ends_with('\n') && last_line_kept {
+        edits.push(TextEdit {
+            start: script.len(),
+            end: script.len(),
+            replacement: "\n".to_string(),
+        });
+    }
+
+    edits
+}
+
+fn loosen_props_annotation_edit(script: &str, type_ann: &str) -> Option<TextEdit> {
+    if type_ann.trim().is_empty() {
+        return None;
+    }
+
+    let pos = script.find(type_ann)?;
+    let before = script[..pos].chars().rev().find(|c| !c.is_whitespace());
+    let after = script[pos + type_ann.len()..]
+        .chars()
+        .find(|c| !c.is_whitespace());
+
+    if before == Some(':') && after == Some('=') {
+        let trimmed = type_ann.trim();
+        let replacement = if trimmed.is_empty() {
+            "any".to_string()
+        } else {
+            format!("__SvelteLoosen<{trimmed}>")
+        };
+        return Some(TextEdit {
+            start: pos,
+            end: pos + type_ann.len(),
+            replacement,
+        });
+    }
+
+    None
+}
+
+fn normalize_edits(script_len: usize, mut edits: Vec<TextEdit>) -> Vec<TextEdit> {
+    if edits.is_empty() {
+        return edits;
+    }
+
+    edits.sort_by_key(|edit| edit.start);
+    let mut normalized = Vec::new();
+    let mut last_end = 0;
+
+    for edit in edits {
+        if edit.start > edit.end || edit.end > script_len {
+            continue;
+        }
+        if edit.start < last_end {
+            continue;
+        }
+        last_end = edit.end;
+        normalized.push(edit);
+    }
+
+    normalized
+}
+
+fn apply_text_edits(script: &str, edits: &[TextEdit]) -> String {
+    if edits.is_empty() {
         return script.to_string();
     }
 
-    let mut out = String::new();
-    for line in script.lines() {
-        if let Some(name) = placeholder_alias_name(line) {
-            if placeholders.contains(&name) {
-                continue;
+    let total_delta: isize = edits
+        .iter()
+        .map(|edit| edit.replacement.len() as isize - (edit.end - edit.start) as isize)
+        .sum();
+    let mut out = String::with_capacity((script.len() as isize + total_delta).max(0) as usize);
+    let mut cursor = 0;
+
+    for edit in edits {
+        out.push_str(&script[cursor..edit.start]);
+        out.push_str(&edit.replacement);
+        cursor = edit.end;
+    }
+
+    out.push_str(&script[cursor..]);
+    out
+}
+
+fn adjust_rune_mappings_for_edits(
+    mappings: &[crate::runes::RuneMapping],
+    edits: &[TextEdit],
+) -> Vec<crate::runes::RuneMapping> {
+    if edits.is_empty() {
+        return mappings.to_vec();
+    }
+
+    let mut adjusted = Vec::with_capacity(mappings.len());
+
+    for mapping in mappings {
+        let mut gen_start = u32::from(mapping.generated.start) as i64;
+        let mut gen_end = u32::from(mapping.generated.end) as i64;
+        let mut dropped = false;
+
+        for edit in edits {
+            let edit_start = edit.start as i64;
+            let edit_end = edit.end as i64;
+
+            if edit_end <= gen_start {
+                let delta = edit.replacement.len() as i64 - (edit_end - edit_start);
+                gen_start += delta;
+                gen_end += delta;
+            } else if edit_start >= gen_end {
+                break;
+            } else {
+                dropped = true;
+                break;
             }
         }
-        out.push_str(line);
-        out.push('\n');
+
+        if dropped || gen_start < 0 || gen_end < gen_start {
+            continue;
+        }
+
+        adjusted.push(crate::runes::RuneMapping {
+            original: mapping.original,
+            generated: source_map::Span::new(gen_start as u32, gen_end as u32),
+        });
     }
-    out
+
+    adjusted
+}
+
+fn generated_to_original_offset(
+    gen_pos: usize,
+    base_offset: u32,
+    mappings: &[crate::runes::RuneMapping],
+) -> u32 {
+    let mut sorted_mappings = mappings.to_vec();
+    sorted_mappings.sort_by_key(|m| u32::from(m.generated.start));
+
+    let mut gen_cursor: usize = 0;
+    let mut orig_cursor: u32 = 0;
+
+    for mapping in &sorted_mappings {
+        let gen_start = u32::from(mapping.generated.start) as usize;
+        let gen_end = u32::from(mapping.generated.end) as usize;
+
+        if gen_pos < gen_start {
+            return base_offset + orig_cursor + (gen_pos - gen_cursor) as u32;
+        }
+
+        orig_cursor = u32::from(mapping.original.end) - base_offset;
+        gen_cursor = gen_end;
+
+        if gen_pos < gen_end {
+            let offset_in_gen = gen_pos.saturating_sub(gen_start) as u32;
+            return u32::from(mapping.original.start) + offset_in_gen;
+        }
+    }
+
+    base_offset + orig_cursor + (gen_pos - gen_cursor) as u32
+}
+
+fn edit_overlaps_rune_mapping(edit: &TextEdit, mappings: &[crate::runes::RuneMapping]) -> bool {
+    for mapping in mappings {
+        let gen_start = u32::from(mapping.generated.start) as usize;
+        let gen_end = u32::from(mapping.generated.end) as usize;
+
+        if edit.end <= gen_start {
+            return false;
+        }
+        if edit.start < gen_end && edit.end > gen_start {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn build_edit_mappings(
+    edits: &[TextEdit],
+    base_offset: u32,
+    mappings: &[crate::runes::RuneMapping],
+) -> Vec<crate::runes::RuneMapping> {
+    if edits.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted_mappings = mappings.to_vec();
+    sorted_mappings.sort_by_key(|m| u32::from(m.generated.start));
+
+    let mut edit_mappings = Vec::new();
+    let mut delta: isize = 0;
+
+    for edit in edits {
+        let gen_start = (edit.start as isize + delta).max(0) as u32;
+        let gen_end = gen_start + edit.replacement.len() as u32;
+
+        if !edit_overlaps_rune_mapping(edit, &sorted_mappings) {
+            let orig_start =
+                generated_to_original_offset(edit.start, base_offset, &sorted_mappings);
+            let orig_end = generated_to_original_offset(edit.end, base_offset, &sorted_mappings);
+            edit_mappings.push(crate::runes::RuneMapping {
+                original: source_map::Span::new(orig_start, orig_end),
+                generated: source_map::Span::new(gen_start, gen_end),
+            });
+        }
+
+        delta += edit.replacement.len() as isize - (edit.end - edit.start) as isize;
+    }
+
+    edit_mappings
+}
+
+fn apply_script_edits_with_mappings(
+    script: &str,
+    base_offset: u32,
+    mappings: &[crate::runes::RuneMapping],
+    edits: Vec<TextEdit>,
+) -> (String, Vec<crate::runes::RuneMapping>) {
+    let edits = normalize_edits(script.len(), edits);
+    if edits.is_empty() {
+        return (script.to_string(), mappings.to_vec());
+    }
+
+    let output = apply_text_edits(script, &edits);
+    let edit_mappings = build_edit_mappings(&edits, base_offset, mappings);
+    let mut updated_mappings = Vec::with_capacity(edit_mappings.len() + mappings.len());
+    updated_mappings.extend(edit_mappings);
+    updated_mappings.extend(adjust_rune_mappings_for_edits(mappings, &edits));
+
+    (output, updated_mappings)
 }
 
 fn should_loosen_props_annotation(type_ann: &str) -> bool {
@@ -320,29 +573,6 @@ fn should_loosen_props_annotation(type_ann: &str) -> bool {
         || trimmed.contains('>')
         || trimmed.contains('&')
         || trimmed.contains('|')
-}
-
-fn loosen_props_annotation(script: &str, type_ann: &str) -> String {
-    if type_ann.trim().is_empty() {
-        return script.to_string();
-    }
-
-    if let Some(pos) = script.find(type_ann) {
-        let before = script[..pos].chars().rev().find(|c| !c.is_whitespace());
-        let after = script[pos + type_ann.len()..]
-            .chars()
-            .find(|c| !c.is_whitespace());
-
-        if before == Some(':') && after == Some('=') {
-            let mut out = String::with_capacity(script.len());
-            out.push_str(&script[..pos]);
-            out.push_str("any");
-            out.push_str(&script[pos + type_ann.len()..]);
-            return out;
-        }
-    }
-
-    script.to_string()
 }
 
 fn extract_script_generics(doc: &SvelteDocument) -> Option<String> {
@@ -665,6 +895,90 @@ fn read_import_statement(script: &str, start: usize) -> usize {
     i
 }
 
+/// Emits script content with proper source mappings for rune transformations.
+///
+/// Unlike template expressions where unmapped code is purely generated,
+/// script content has a 1:1 correspondence between original and generated
+/// for non-rune code. This function:
+/// 1. Emits non-rune regions with proper source mapping (add_source)
+/// 2. Emits rune-transformed regions with their original spans (add_transformed)
+fn emit_script_with_rune_mappings(
+    builder: &mut SourceMapBuilder,
+    script_output: &str,
+    base_offset: u32,
+    mappings: &[crate::runes::RuneMapping],
+) {
+    if mappings.is_empty() {
+        // No rune transformations, simple 1:1 mapping
+        builder.add_source(base_offset.into(), script_output);
+        return;
+    }
+
+    // Sort mappings by generated start position, then original start for tie-breaks
+    let mut sorted_mappings = mappings.to_vec();
+    sorted_mappings.sort_by_key(|m| (u32::from(m.generated.start), u32::from(m.original.start)));
+
+    let mut gen_pos: usize = 0; // Position in generated output
+    let mut orig_pos: u32 = 0; // Position in original (relative to script start)
+
+    let output_len = script_output.len();
+
+    for mapping in &sorted_mappings {
+        let gen_start = u32::from(mapping.generated.start) as usize;
+        let mut gen_end = u32::from(mapping.generated.end) as usize;
+
+        if gen_start < gen_pos {
+            continue;
+        }
+        if gen_start > output_len {
+            break;
+        }
+
+        if gen_end > output_len {
+            gen_end = output_len;
+        }
+
+        if gen_start > gen_pos {
+            if script_output.is_char_boundary(gen_pos) && script_output.is_char_boundary(gen_start)
+            {
+                let unmapped = &script_output[gen_pos..gen_start];
+                let unmapped_orig_offset = base_offset + orig_pos;
+                builder.add_source(unmapped_orig_offset.into(), unmapped);
+            } else {
+                builder.skip((gen_start - gen_pos) as u32);
+            }
+        }
+
+        let mapping_end = u32::from(mapping.generated.end) as usize;
+        let map_valid = mapping_end <= output_len
+            && gen_end >= gen_start
+            && script_output.is_char_boundary(gen_start)
+            && script_output.is_char_boundary(gen_end);
+
+        if map_valid {
+            let expr = &script_output[gen_start..gen_end];
+            builder.add_transformed(mapping.original, expr);
+        } else {
+            builder.skip(gen_end.saturating_sub(gen_start) as u32);
+        }
+
+        gen_pos = gen_end;
+        // Update orig_pos to end of the original span (in file coordinates, minus base_offset)
+        orig_pos = u32::from(mapping.original.end).saturating_sub(base_offset);
+    }
+
+    // Emit any remaining code after the last mapping
+    if gen_pos < script_output.len() {
+        if script_output.is_char_boundary(gen_pos) {
+            let remaining = &script_output[gen_pos..];
+            let remaining_orig_offset = base_offset + orig_pos;
+            builder.add_source(remaining_orig_offset.into(), remaining);
+        } else {
+            builder.skip((script_output.len() - gen_pos) as u32);
+        }
+    }
+}
+
 /// Emits template code with proper source mappings for expressions.
 ///
 /// This function iterates through the template code, emitting unmapped sections
@@ -766,17 +1080,30 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     let generics_def_str = generics_def(&generic_decls);
     let generics_ref_str = generics_ref(&generic_decls);
 
+    let helpers_import_path = options.helpers_import_path.as_deref();
+
     // Add Svelte imports - alias to avoid collisions with user imports
-    let imports = String::from(
-        "import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n\
+    if helpers_import_path.is_none() {
+        let imports = String::from(
+            "import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n\
 import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';\n",
-    );
-    output.push_str(&imports);
-    builder.add_generated(&imports);
+        );
+        output.push_str(&imports);
+        builder.add_generated(&imports);
+    }
 
     // Add SvelteKit type imports for route files
+    // Use .js extension for NodeNext/Node16 module resolution
     if let Some(props_type) = route_kind.props_type() {
-        let sveltekit_import = format!("import type {{ {} }} from './$types';\n\n", props_type);
+        let types_path = if options.use_nodenext_imports {
+            "./$types.js"
+        } else {
+            "./$types"
+        };
+        let sveltekit_import = format!(
+            "import type {{ {} }} from '{}';\n\n",
+            props_type, types_path
+        );
         output.push_str(&sveltekit_import);
         builder.add_generated(&sveltekit_import);
     } else {
@@ -798,8 +1125,15 @@ type __SvelteComponent<
   z_$$bindings?: string;
 };
 
-declare function __svelte_each_indexed<T>(arr: ArrayLike<T> | Iterable<T>): [number, T][];
-declare function __svelte_is_empty<T>(arr: ArrayLike<T> | Iterable<T>): boolean;
+type __SvelteEachItem<T> =
+  T extends ArrayLike<infer U> ? U :
+  T extends Iterable<infer U> ? U :
+  never;
+
+declare function __svelte_each_indexed<
+  T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+>(arr: T): [number, __SvelteEachItem<T>][];
+declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
 // Helper to get store value type from store subscription ($store syntax)
 declare function __svelte_store_get<T>(store: { subscribe(fn: (value: T) => void): any }): T;
@@ -850,8 +1184,14 @@ declare function __svelte_check_element<K extends string>(
 declare const __svelte_any: any;
 
 "#;
-    output.push_str(helpers);
-    builder.add_generated(helpers);
+    if let Some(import_path) = helpers_import_path {
+        let import_line = format!("import \"{}\";\n\n", import_path);
+        output.push_str(&import_line);
+        builder.add_generated(&import_line);
+    } else {
+        output.push_str(helpers);
+        builder.add_generated(helpers);
+    }
 
     // Emit snippet declarations for module exports (top-level only when no generics)
     let mut snippet_block = String::new();
@@ -890,8 +1230,21 @@ declare const __svelte_any: any;
         let rune_result =
             transform_runes_with_options(&module.content, base_offset, default_props_type);
         let mut script_output = rune_result.output;
+        let mut script_mappings = rune_result.mappings;
+        let mut edits = Vec::new();
         if !placeholder_types.is_empty() {
-            script_output = strip_placeholder_type_aliases(&script_output, &placeholder_types);
+            edits.extend(placeholder_type_alias_edits(
+                &script_output,
+                &placeholder_types,
+            ));
+        }
+        if !edits.is_empty() {
+            (script_output, script_mappings) = apply_script_edits_with_mappings(
+                &script_output,
+                base_offset,
+                &script_mappings,
+                edits,
+            );
         }
 
         let indent = script_indent(&script_output);
@@ -911,10 +1264,8 @@ declare const __svelte_any: any;
         output.push_str(&script_output);
         output.push('\n');
 
-        // Add source mapping for the script content
-        // For now, use simple 1:1 mapping; in a full implementation,
-        // we would incorporate rune_result.mappings for precise rune spans
-        builder.add_source(module.content_span.start, &script_output);
+        // Add source mapping for the script content using rune mappings
+        emit_script_with_rune_mappings(&mut builder, &script_output, base_offset, &script_mappings);
         builder.add_generated("\n");
     }
 
@@ -935,17 +1286,32 @@ declare const __svelte_any: any;
         }
 
         let mut script_output = rune_result.output;
+        let mut script_mappings = rune_result.mappings;
+        let mut edits = Vec::new();
         if let Some(info) = &props_info {
             if info.properties.iter().any(|prop| prop.is_rest) {
                 if let Some(type_ann) = info.type_annotation.as_deref() {
                     if should_loosen_props_annotation(type_ann) {
-                        script_output = loosen_props_annotation(&script_output, type_ann);
+                        if let Some(edit) = loosen_props_annotation_edit(&script_output, type_ann) {
+                            edits.push(edit);
+                        }
                     }
                 }
             }
         }
         if !placeholder_types.is_empty() {
-            script_output = strip_placeholder_type_aliases(&script_output, &placeholder_types);
+            edits.extend(placeholder_type_alias_edits(
+                &script_output,
+                &placeholder_types,
+            ));
+        }
+        if !edits.is_empty() {
+            (script_output, script_mappings) = apply_script_edits_with_mappings(
+                &script_output,
+                base_offset,
+                &script_mappings,
+                edits,
+            );
         }
 
         let indent = script_indent(&script_output);
@@ -990,7 +1356,34 @@ declare const __svelte_any: any;
             output.push_str(&script_body);
             output.push('\n');
 
-            builder.add_source(instance.content_span.start, &script_body);
+            // Adjust rune mappings for the script body (which has imports extracted)
+            // The mappings are based on script_output positions, but we're emitting script_body
+            let import_len = import_block.len();
+            let adjusted_mappings: Vec<crate::runes::RuneMapping> = script_mappings
+                .iter()
+                .filter_map(|m| {
+                    let gen_start = u32::from(m.generated.start) as usize;
+                    let gen_end = u32::from(m.generated.end) as usize;
+                    // Only include mappings that fall after the import block
+                    if gen_start >= import_len {
+                        Some(crate::runes::RuneMapping {
+                            original: m.original,
+                            generated: source_map::Span::new(
+                                (gen_start - import_len) as u32,
+                                (gen_end - import_len) as u32,
+                            ),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            emit_script_with_rune_mappings(
+                &mut builder,
+                &script_body,
+                base_offset + import_len as u32,
+                &adjusted_mappings,
+            );
             builder.add_generated("\n");
 
             if !template_result.code.is_empty() {
@@ -1024,7 +1417,13 @@ declare const __svelte_any: any;
             output.push_str(&script_output);
             output.push('\n');
 
-            builder.add_source(instance.content_span.start, &script_output);
+            // Add source mapping for the script content using rune mappings
+            emit_script_with_rune_mappings(
+                &mut builder,
+                &script_output,
+                base_offset,
+                &script_mappings,
+            );
             builder.add_generated("\n");
         }
     }
@@ -1190,5 +1589,23 @@ mod tests {
         assert!(result
             .tsx_code
             .contains(r#"import Other from "./Other.svelte.js""#));
+    }
+
+    #[test]
+    fn test_transform_with_helpers_import() {
+        let doc = parse("<script>let x = $state(0);</script><p>{x}</p>").document;
+        let result = transform(
+            &doc,
+            TransformOptions {
+                helpers_import_path: Some("./__svelte_check_rs_helpers".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(result
+            .tsx_code
+            .contains("import \"./__svelte_check_rs_helpers\";"));
+        assert!(!result
+            .tsx_code
+            .contains("// Helper functions for template type-checking"));
     }
 }

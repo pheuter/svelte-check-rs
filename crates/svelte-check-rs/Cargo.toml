@@ -39,3 +39,5 @@ insta.workspace = true
 pretty_assertions.workspace = true
 text-size.workspace = true
 serial_test = "3.2"
+serde.workspace = true
+serde_json.workspace = true

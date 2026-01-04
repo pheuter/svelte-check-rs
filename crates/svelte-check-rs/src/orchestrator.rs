@@ -1,7 +1,7 @@
 //! Main orchestration logic.
 
 use crate::cli::{Args, TimingFormat};
-use crate::config::{SvelteConfig, TsConfig};
+use crate::config::{SvelteConfig, SvelteFileKind, TsConfig};
 use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
@@ -13,12 +13,90 @@ use std::sync::Mutex;
 use std::time::Instant;
 use svelte_diagnostics::{check as check_svelte, DiagnosticOptions, Severity};
 use svelte_parser::parse;
-use svelte_transformer::{transform, TransformOptions};
+use svelte_transformer::{transform, transform_module, TransformOptions};
 use thiserror::Error;
 use tsgo_runner::{
     TransformedFile, TransformedFiles, TsgoCheckOutput, TsgoCheckStats, TsgoDiagnostic, TsgoRunner,
 };
 use walkdir::WalkDir;
+
+const SHARED_HELPERS_MODULE: &str = "__svelte_check_rs_helpers";
+
+fn ensure_relative_path(path: &Utf8Path) -> Utf8PathBuf {
+    if !path.is_absolute() {
+        return path.to_owned();
+    }
+
+    let mut out = Utf8PathBuf::new();
+    for component in path.components() {
+        match component {
+            camino::Utf8Component::Prefix(_) | camino::Utf8Component::RootDir => {}
+            _ => out.push(component.as_str()),
+        }
+    }
+    out
+}
+
+fn virtual_path_for(file_path: &Utf8Path, workspace: &Utf8Path, suffix_ts: bool) -> Utf8PathBuf {
+    let relative = file_path.strip_prefix(workspace).unwrap_or(file_path);
+    let relative = ensure_relative_path(relative);
+    if suffix_ts {
+        Utf8PathBuf::from(format!("{}.ts", relative))
+    } else {
+        relative
+    }
+}
+
+fn relative_import_path(from_file: &Utf8Path, to: &Utf8Path) -> String {
+    let from_dir = from_file.parent().unwrap_or(Utf8Path::new(""));
+    let from_components: Vec<&str> = from_dir
+        .components()
+        .filter_map(|c| match c {
+            camino::Utf8Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let to_components: Vec<&str> = to
+        .components()
+        .filter_map(|c| match c {
+            camino::Utf8Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+
+    let mut common = 0usize;
+    while common < from_components.len()
+        && common < to_components.len()
+        && from_components[common] == to_components[common]
+    {
+        common += 1;
+    }
+
+    let mut rel = Utf8PathBuf::new();
+    for _ in common..from_components.len() {
+        rel.push("..");
+    }
+    for comp in &to_components[common..] {
+        rel.push(comp);
+    }
+
+    let mut rel_str = rel.as_str().to_string();
+    if rel_str.is_empty() {
+        rel_str.push('.');
+    }
+    if !rel_str.starts_with('.') {
+        rel_str = format!("./{}", rel_str);
+    }
+    rel_str
+}
+
+fn helpers_import_path_for(virtual_path: &Utf8Path, use_nodenext_imports: bool) -> String {
+    let mut path = relative_import_path(virtual_path, Utf8Path::new(SHARED_HELPERS_MODULE));
+    if use_nodenext_imports {
+        path.push_str(".js");
+    }
+    path
+}
 
 /// Orchestration errors.
 #[derive(Debug, Error)]
@@ -170,9 +248,15 @@ async fn run_single_check(
         json: Vec<FormattedDiagnostic>,
     }
 
+    // Separate files by kind: components (.svelte) vs modules (.svelte.ts/.svelte.js)
+    let (component_files, module_files): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|f| SvelteFileKind::from_path(f) == Some(SvelteFileKind::Component));
+
     let svelte_start = Instant::now();
-    // Process files in parallel: parse, run Svelte diagnostics, and transform
-    let outputs: Vec<FileOutput> = files
+
+    // Process component files (.svelte) in parallel: parse, run Svelte diagnostics, and transform
+    let component_outputs: Vec<FileOutput> = component_files
         .par_iter()
         .filter_map(|file_path| {
             let source = match fs::read_to_string(file_path) {
@@ -209,10 +293,13 @@ async fn run_single_check(
 
             // Transform for TypeScript checking (if JS diagnostics enabled)
             if args.include_js() {
+                let virtual_path = virtual_path_for(file_path, workspace, true);
+                let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
                 let transform_options = TransformOptions {
                     filename: Some(file_path.to_string()),
                     source_maps: true,
                     use_nodenext_imports,
+                    helpers_import_path: Some(helpers_import),
                 };
 
                 let transform_result = transform(&parse_result.document, transform_options);
@@ -227,8 +314,7 @@ async fn run_single_check(
                 }
 
                 // Create the virtual path (original.svelte -> original.svelte.ts)
-                let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
-                let virtual_path = Utf8PathBuf::from(format!("{}.ts", relative_path));
+                let virtual_path = virtual_path_for(file_path, workspace, true);
 
                 let transformed_file = TransformedFile {
                     original_path: file_path.clone(),
@@ -275,7 +361,109 @@ async fn run_single_check(
             }
         })
         .collect();
+
+    // Process module files (.svelte.ts/.svelte.js) in parallel: transform runes only
+    let module_outputs: Vec<FileOutput> = module_files
+        .par_iter()
+        .filter_map(|file_path| {
+            let source = match fs::read_to_string(file_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to read {}: {}", file_path, e);
+                    return None;
+                }
+            };
+
+            // Transform module file (runes only, no template/styles)
+            let virtual_path = virtual_path_for(file_path, workspace, false);
+            let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
+            let transform_result =
+                transform_module(&source, Some(file_path.as_str()), Some(helpers_import));
+
+            // Collect any errors from invalid rune usage (e.g., $props in module files)
+            let mut all_diagnostics: Vec<svelte_diagnostics::Diagnostic> = Vec::new();
+            for error in &transform_result.errors {
+                // Compute byte offset from line/column
+                let offset = line_column_to_offset(&source, error.line, error.column);
+                let span = source_map::Span::new(offset, offset + 1);
+                all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
+                    svelte_diagnostics::DiagnosticCode::ParseError,
+                    error.message.clone(),
+                    span,
+                ));
+            }
+
+            // Transform for TypeScript checking (if JS diagnostics enabled)
+            if args.include_js() {
+                // If emit_ts is enabled, print transformed TypeScript for each file.
+                if args.emit_ts {
+                    let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                    eprintln!(
+                        "=== TypeScript for {} ===\n{}",
+                        relative_path, transform_result.code
+                    );
+                }
+
+                // For module files, we keep the same relative path (they're already .ts/.js)
+                // But we need to write transformed content to the cache
+                let virtual_path = virtual_path_for(file_path, workspace, false);
+
+                let transformed_file = TransformedFile {
+                    original_path: file_path.clone(),
+                    tsx_content: transform_result.code,
+                    source_map: transform_result.source_map,
+                    original_line_index: LineIndex::new(&source),
+                };
+
+                // Add to shared collection
+                if let Ok(mut files) = transformed_files.lock() {
+                    files.add(virtual_path, transformed_file);
+                }
+            }
+
+            // Count errors and warnings
+            for diag in &all_diagnostics {
+                match diag.severity {
+                    Severity::Error => {
+                        error_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Severity::Warning => {
+                        warning_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Severity::Hint => {}
+                }
+            }
+
+            if all_diagnostics.is_empty() {
+                None
+            } else {
+                let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                Some(FileOutput {
+                    text: if output_json {
+                        None
+                    } else {
+                        Some(formatter.format(&all_diagnostics, relative_path, &source))
+                    },
+                    json: if output_json {
+                        Formatter::format_json_diagnostics(&all_diagnostics, relative_path, &source)
+                    } else {
+                        Vec::new()
+                    },
+                })
+            }
+        })
+        .collect();
+
+    // Combine outputs from both component and module files
+    let outputs: Vec<FileOutput> = component_outputs
+        .into_iter()
+        .chain(module_outputs)
+        .collect();
+
     let svelte_time = svelte_start.elapsed();
+
+    // Calculate total file count for summary
+    let total_file_count = component_files.len() + module_files.len();
 
     let mut json_output = Vec::new();
 
@@ -370,7 +558,7 @@ async fn run_single_check(
                 let json = timings_json(
                     file_scan_time,
                     svelte_time,
-                    files.len(),
+                    total_file_count,
                     transformed_count,
                     sveltekit_sync_time,
                     sveltekit_sync_ran,
@@ -383,13 +571,11 @@ async fn run_single_check(
             TimingFormat::Text => {
                 eprintln!("=== svelte-check-rs timings ===");
                 if let Some(scan_time) = file_scan_time {
-                    eprintln!("file scan: {:?} ({} files)", scan_time, files.len());
+                    eprintln!("file scan: {:?} ({} files)", scan_time, total_file_count);
                 }
                 eprintln!(
                     "svelte phase: {:?} ({} files, {} transformed)",
-                    svelte_time,
-                    files.len(),
-                    transformed_count
+                    svelte_time, total_file_count, transformed_count
                 );
                 if let (Some(sync_time), Some(sync_ran)) = (sveltekit_sync_time, sveltekit_sync_ran)
                 {
@@ -439,7 +625,7 @@ async fn run_single_check(
     }
 
     let summary = CheckSummary {
-        file_count: files.len(),
+        file_count: total_file_count,
         error_count: error_count.load(Ordering::Relaxed),
         warning_count: warning_count.load(Ordering::Relaxed),
         fail_on_warnings: args.fail_on_warnings,
@@ -755,11 +941,13 @@ async fn run_watch_mode(
     println!("Watching for changes... (Ctrl+C to stop)\n");
 
     while let Some(event) = rx.recv().await {
-        // Check if any Svelte files changed
-        let svelte_changed = event
-            .paths
-            .iter()
-            .any(|p| p.extension().map(|ext| ext == "svelte").unwrap_or(false));
+        // Check if any Svelte files changed (.svelte, .svelte.ts, .svelte.js)
+        let svelte_changed = event.paths.iter().any(|p| {
+            let path_str = p.to_string_lossy();
+            path_str.ends_with(".svelte")
+                || path_str.ends_with(".svelte.ts")
+                || path_str.ends_with(".svelte.js")
+        });
 
         if svelte_changed {
             if !args.preserve_watch_output {
@@ -786,6 +974,37 @@ async fn run_watch_mode(
     ))
 }
 
+/// Converts a 1-indexed line and column to a byte offset in the source.
+fn line_column_to_offset(source: &str, line: usize, column: usize) -> u32 {
+    let mut current_line = 1;
+    let mut current_offset = 0;
+
+    for (i, ch) in source.char_indices() {
+        if current_line == line {
+            // Found the target line, now count columns
+            let mut col = 1;
+            for (j, c) in source[i..].char_indices() {
+                if col == column {
+                    return (i + j) as u32;
+                }
+                if c == '\n' {
+                    break;
+                }
+                col += 1;
+            }
+            // Column not found, return start of line
+            return i as u32;
+        }
+        if ch == '\n' {
+            current_line += 1;
+        }
+        current_offset = i + ch.len_utf8();
+    }
+
+    // Line not found, return end of file
+    current_offset as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,5 +1014,18 @@ mod tests {
         // Test that relative paths are resolved correctly
         let workspace = Utf8PathBuf::from(".");
         assert!(workspace.is_relative());
+    }
+
+    #[test]
+    fn test_line_column_to_offset() {
+        let source = "line1\nline2\nline3";
+        // Line 1, column 1 = offset 0
+        assert_eq!(line_column_to_offset(source, 1, 1), 0);
+        // Line 1, column 3 = offset 2 ('n')
+        assert_eq!(line_column_to_offset(source, 1, 3), 2);
+        // Line 2, column 1 = offset 6 ('l')
+        assert_eq!(line_column_to_offset(source, 2, 1), 6);
+        // Line 3, column 1 = offset 12 ('l')
+        assert_eq!(line_column_to_offset(source, 3, 1), 12);
     }
 }

@@ -929,24 +929,36 @@ impl TemplateContext {
                         id, bind_type
                     ));
                     self.emit(&format!("{} = __bind_this_{};", transformed, id));
-                } else if let Some((getter, setter)) = split_top_level_comma(&expr.expression) {
-                    let getter = self.transform_expr(&getter);
-                    let setter = self.transform_expr(&setter);
+                } else if let Some((getter, setter)) =
+                    split_top_level_comma(&expr.expression, expr.expression_span)
+                {
+                    let getter_span = getter.span;
+                    let setter_span = setter.span;
+                    let getter = self.transform_expr(&getter.text);
+                    let setter = self.transform_expr(&setter.text);
                     self.expressions.push(TemplateExpression {
                         expression: getter.clone(),
-                        span: expr.expression_span,
+                        span: getter_span,
                         context,
                     });
                     self.expressions.push(TemplateExpression {
                         expression: setter.clone(),
-                        span: expr.expression_span,
+                        span: setter_span,
                         context,
                     });
                     let id = self.next_id();
-                    self.emit(&format!(
-                        "const __bind_pair_{}: [() => any, (value: any) => void] = [{}, {}];",
-                        id, getter, setter
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.output.push_str(&format!(
+                        "const __bind_pair_{}: [() => any, (value: any) => void] = [",
+                        id
                     ));
+                    self.record_mapping_at_current_pos(&getter, getter_span);
+                    self.output.push_str(&getter);
+                    self.output.push_str(", ");
+                    self.record_mapping_at_current_pos(&setter, setter_span);
+                    self.output.push_str(&setter);
+                    self.output.push_str("];\n");
                 } else {
                     // For bindings, check the variable
                     self.emit_expression(&expr.expression, expr.expression_span, context);
@@ -1537,7 +1549,15 @@ fn event_attribute_name(attr_name: &str) -> Option<&str> {
     }
 }
 
-fn split_top_level_comma(expr: &str) -> Option<(String, String)> {
+struct SplitExpression {
+    text: String,
+    span: Span,
+}
+
+fn split_top_level_comma(
+    expr: &str,
+    expr_span: Span,
+) -> Option<(SplitExpression, SplitExpression)> {
     let mut depth = 0usize;
     let mut in_string: Option<char> = None;
     let mut prev_was_escape = false;
@@ -1603,12 +1623,37 @@ fn split_top_level_comma(expr: &str) -> Option<(String, String)> {
                 depth = depth.saturating_sub(1);
             }
             ',' if depth == 0 => {
-                let left = expr[..i].trim();
-                let right = expr[i + 1..].trim();
-                if left.is_empty() || right.is_empty() {
+                let left = &expr[..i];
+                let right = &expr[i + 1..];
+                let left_trimmed = left.trim();
+                let right_trimmed = right.trim();
+                if left_trimmed.is_empty() || right_trimmed.is_empty() {
                     return None;
                 }
-                return Some((left.to_string(), right.to_string()));
+                let left_trim_start = left.len() - left.trim_start().len();
+                let left_trim_end = left_trim_start + left_trimmed.len();
+                let right_trim_start = right.len() - right.trim_start().len();
+                let right_trim_end = right_trim_start + right_trimmed.len();
+
+                let left_span = Span::new(
+                    expr_span.start + ByteOffset::from(left_trim_start as u32),
+                    expr_span.start + ByteOffset::from(left_trim_end as u32),
+                );
+                let right_span = Span::new(
+                    expr_span.start + ByteOffset::from((i + 1 + right_trim_start) as u32),
+                    expr_span.start + ByteOffset::from((i + 1 + right_trim_end) as u32),
+                );
+
+                return Some((
+                    SplitExpression {
+                        text: left_trimmed.to_string(),
+                        span: left_span,
+                    },
+                    SplitExpression {
+                        text: right_trimmed.to_string(),
+                        span: right_span,
+                    },
+                ));
             }
             _ => {}
         }

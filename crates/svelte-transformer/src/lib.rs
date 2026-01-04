@@ -26,12 +26,14 @@
 //! println!("TypeScript output:\n{}", result.tsx_code);
 //! ```
 
+mod module;
 mod props;
 mod runes;
 mod template;
 mod transform;
 mod types;
 
+pub use module::{transform_module, ModuleTransformResult};
 pub use props::{extract_props_info, generate_props_type, PropProperty, PropsInfo};
 pub use runes::{transform_runes, RuneInfo, RuneKind, RuneMapping, RuneTransformResult};
 pub use template::{
