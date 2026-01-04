@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
-assertion_line: 44
+assertion_line: 81
 expression: output
 ---
 === Source (Counter.svelte) ===
@@ -104,4 +104,4 @@ declare const __SvelteComponent_Counter_: __SvelteComponent<__SvelteProps_Counte
 export default __SvelteComponent_Counter_;
 
 
-=== Source Map Mappings: 3 ===
+=== Source Map Mappings: 5 ===

@@ -665,6 +665,63 @@ fn read_import_statement(script: &str, start: usize) -> usize {
     i
 }
 
+/// Emits script content with proper source mappings for rune transformations.
+///
+/// Unlike template expressions where unmapped code is purely generated,
+/// script content has a 1:1 correspondence between original and generated
+/// for non-rune code. This function:
+/// 1. Emits non-rune regions with proper source mapping (add_source)
+/// 2. Emits rune-transformed regions with their original spans (add_transformed)
+fn emit_script_with_rune_mappings(
+    builder: &mut SourceMapBuilder,
+    script_output: &str,
+    base_offset: u32,
+    mappings: &[crate::runes::RuneMapping],
+) {
+    if mappings.is_empty() {
+        // No rune transformations, simple 1:1 mapping
+        builder.add_source(base_offset.into(), script_output);
+        return;
+    }
+
+    // Sort mappings by generated start position
+    let mut sorted_mappings = mappings.to_vec();
+    sorted_mappings.sort_by_key(|m| u32::from(m.generated.start));
+
+    let mut gen_pos: usize = 0; // Position in generated output
+    let mut orig_pos: u32 = 0; // Position in original (relative to script start)
+
+    for mapping in &sorted_mappings {
+        let gen_start: usize = u32::from(mapping.generated.start) as usize;
+        let gen_end: usize = u32::from(mapping.generated.end) as usize;
+
+        // Emit any unmapped code before this mapping with 1:1 source mapping
+        if gen_start > gen_pos {
+            let unmapped = &script_output[gen_pos..gen_start];
+            // Calculate the original offset for this unmapped region
+            let unmapped_orig_offset = base_offset + orig_pos;
+            builder.add_source(unmapped_orig_offset.into(), unmapped);
+        }
+
+        // Emit the rune-transformed expression with its original span
+        if gen_end <= script_output.len() {
+            let expr = &script_output[gen_start..gen_end];
+            builder.add_transformed(mapping.original, expr);
+        }
+
+        gen_pos = gen_end;
+        // Update orig_pos to end of the original span (in file coordinates, minus base_offset)
+        orig_pos = u32::from(mapping.original.end) - base_offset;
+    }
+
+    // Emit any remaining code after the last mapping
+    if gen_pos < script_output.len() {
+        let remaining = &script_output[gen_pos..];
+        let remaining_orig_offset = base_offset + orig_pos;
+        builder.add_source(remaining_orig_offset.into(), remaining);
+    }
+}
+
 /// Emits template code with proper source mappings for expressions.
 ///
 /// This function iterates through the template code, emitting unmapped sections
@@ -775,8 +832,17 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
     builder.add_generated(&imports);
 
     // Add SvelteKit type imports for route files
+    // Use .js extension for NodeNext/Node16 module resolution
     if let Some(props_type) = route_kind.props_type() {
-        let sveltekit_import = format!("import type {{ {} }} from './$types';\n\n", props_type);
+        let types_path = if options.use_nodenext_imports {
+            "./$types.js"
+        } else {
+            "./$types"
+        };
+        let sveltekit_import = format!(
+            "import type {{ {} }} from '{}';\n\n",
+            props_type, types_path
+        );
         output.push_str(&sveltekit_import);
         builder.add_generated(&sveltekit_import);
     } else {
@@ -911,10 +977,13 @@ declare const __svelte_any: any;
         output.push_str(&script_output);
         output.push('\n');
 
-        // Add source mapping for the script content
-        // For now, use simple 1:1 mapping; in a full implementation,
-        // we would incorporate rune_result.mappings for precise rune spans
-        builder.add_source(module.content_span.start, &script_output);
+        // Add source mapping for the script content using rune mappings
+        emit_script_with_rune_mappings(
+            &mut builder,
+            &script_output,
+            base_offset,
+            &rune_result.mappings,
+        );
         builder.add_generated("\n");
     }
 
@@ -990,7 +1059,35 @@ declare const __svelte_any: any;
             output.push_str(&script_body);
             output.push('\n');
 
-            builder.add_source(instance.content_span.start, &script_body);
+            // Adjust rune mappings for the script body (which has imports extracted)
+            // The mappings are based on script_output positions, but we're emitting script_body
+            let import_len = import_block.len();
+            let adjusted_mappings: Vec<crate::runes::RuneMapping> = rune_result
+                .mappings
+                .iter()
+                .filter_map(|m| {
+                    let gen_start = u32::from(m.generated.start) as usize;
+                    let gen_end = u32::from(m.generated.end) as usize;
+                    // Only include mappings that fall after the import block
+                    if gen_start >= import_len {
+                        Some(crate::runes::RuneMapping {
+                            original: m.original,
+                            generated: source_map::Span::new(
+                                (gen_start - import_len) as u32,
+                                (gen_end - import_len) as u32,
+                            ),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            emit_script_with_rune_mappings(
+                &mut builder,
+                &script_body,
+                base_offset + import_len as u32,
+                &adjusted_mappings,
+            );
             builder.add_generated("\n");
 
             if !template_result.code.is_empty() {
@@ -1024,7 +1121,13 @@ declare const __svelte_any: any;
             output.push_str(&script_output);
             output.push('\n');
 
-            builder.add_source(instance.content_span.start, &script_output);
+            // Add source mapping for the script content using rune mappings
+            emit_script_with_rune_mappings(
+                &mut builder,
+                &script_output,
+                base_offset,
+                &rune_result.mappings,
+            );
             builder.add_generated("\n");
         }
     }

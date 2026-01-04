@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
-assertion_line: 44
+assertion_line: 81
 expression: output
 ---
 === Source (Greeting.svelte) ===
@@ -99,4 +99,4 @@ declare const __SvelteComponent_Greeting_: __SvelteComponent<__SvelteProps_Greet
 export default __SvelteComponent_Greeting_;
 
 
-=== Source Map Mappings: 3 ===
+=== Source Map Mappings: 5 ===

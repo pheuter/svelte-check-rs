@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
-assertion_line: 44
+assertion_line: 81
 expression: output
 ---
 === Source (+layout.svelte) ===
@@ -112,4 +112,4 @@ declare const __SvelteComponent_Layout_: __SvelteComponent<__SvelteProps_Layout_
 export default __SvelteComponent_Layout_;
 
 
-=== Source Map Mappings: 5 ===
+=== Source Map Mappings: 7 ===

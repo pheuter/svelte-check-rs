@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
-assertion_line: 44
+assertion_line: 81
 expression: output
 ---
 === Source (LoginForm.svelte) ===
@@ -143,4 +143,4 @@ declare const __SvelteComponent_LoginForm_: __SvelteComponent<__SvelteProps_Logi
 export default __SvelteComponent_LoginForm_;
 
 
-=== Source Map Mappings: 12 ===
+=== Source Map Mappings: 20 ===

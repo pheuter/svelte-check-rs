@@ -12,6 +12,46 @@ use swc_ecma_ast::{
 };
 use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 
+/// The kind of Svelte file being processed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvelteFileKind {
+    /// A `.svelte` component file with HTML template, script, and styles.
+    Component,
+    /// A `.svelte.ts` or `.svelte.js` module file with runes but no template.
+    Module,
+}
+
+impl SvelteFileKind {
+    /// Determines the file kind from a file path.
+    pub fn from_path(path: &Utf8Path) -> Option<Self> {
+        let file_name = path.file_name()?;
+        Self::from_filename(file_name)
+    }
+
+    /// Determines the file kind from a filename.
+    pub fn from_filename(filename: &str) -> Option<Self> {
+        if filename.ends_with(".svelte.ts") || filename.ends_with(".svelte.js") {
+            Some(Self::Module)
+        } else if filename.ends_with(".svelte") {
+            Some(Self::Component)
+        } else {
+            None
+        }
+    }
+
+    /// Returns true if this is a module file (`.svelte.ts` or `.svelte.js`).
+    #[allow(dead_code)]
+    pub fn is_module(&self) -> bool {
+        matches!(self, Self::Module)
+    }
+
+    /// Returns true if this is a component file (`.svelte`).
+    #[allow(dead_code)]
+    pub fn is_component(&self) -> bool {
+        matches!(self, Self::Component)
+    }
+}
+
 /// Svelte project configuration.
 #[derive(Debug, Clone, Default)]
 pub struct SvelteConfig {
@@ -228,9 +268,16 @@ impl SvelteConfig {
     }
 
     /// Returns the default file extensions to process.
+    ///
+    /// By default, processes:
+    /// - `.svelte` - Component files
+    /// - `.svelte.ts` - TypeScript module files with runes
+    /// - `.svelte.js` - JavaScript module files with runes
     pub fn file_extensions(&self) -> Vec<&str> {
         if self.extensions.is_empty() {
-            vec![".svelte"]
+            // Note: Order matters! .svelte.ts/.svelte.js must come before .svelte
+            // to ensure proper matching (longer suffixes first)
+            vec![".svelte.ts", ".svelte.js", ".svelte"]
         } else {
             self.extensions.iter().map(|s| s.as_str()).collect()
         }
@@ -423,7 +470,56 @@ mod tests {
     #[test]
     fn test_default_extensions() {
         let config = SvelteConfig::default();
-        assert_eq!(config.file_extensions(), vec![".svelte"]);
+        assert_eq!(
+            config.file_extensions(),
+            vec![".svelte.ts", ".svelte.js", ".svelte"]
+        );
+    }
+
+    #[test]
+    fn test_svelte_file_kind() {
+        // Component files
+        assert_eq!(
+            SvelteFileKind::from_filename("App.svelte"),
+            Some(SvelteFileKind::Component)
+        );
+        assert_eq!(
+            SvelteFileKind::from_filename("Counter.svelte"),
+            Some(SvelteFileKind::Component)
+        );
+
+        // Module files
+        assert_eq!(
+            SvelteFileKind::from_filename("counter.svelte.ts"),
+            Some(SvelteFileKind::Module)
+        );
+        assert_eq!(
+            SvelteFileKind::from_filename("state.svelte.js"),
+            Some(SvelteFileKind::Module)
+        );
+
+        // Not Svelte files
+        assert_eq!(SvelteFileKind::from_filename("app.ts"), None);
+        assert_eq!(SvelteFileKind::from_filename("app.js"), None);
+        assert_eq!(SvelteFileKind::from_filename("README.md"), None);
+    }
+
+    #[test]
+    fn test_svelte_file_kind_from_path() {
+        use camino::Utf8Path;
+
+        assert_eq!(
+            SvelteFileKind::from_path(Utf8Path::new("src/lib/App.svelte")),
+            Some(SvelteFileKind::Component)
+        );
+        assert_eq!(
+            SvelteFileKind::from_path(Utf8Path::new("src/lib/counter.svelte.ts")),
+            Some(SvelteFileKind::Module)
+        );
+        assert_eq!(
+            SvelteFileKind::from_path(Utf8Path::new("src/lib/utils.ts")),
+            None
+        );
     }
 
     #[test]

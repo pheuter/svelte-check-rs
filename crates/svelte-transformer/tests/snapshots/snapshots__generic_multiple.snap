@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
-assertion_line: 44
+assertion_line: 81
 expression: output
 ---
 === Source (Combobox.svelte) ===
@@ -183,4 +183,4 @@ z_$$bindings?: any;
 export default __SvelteComponent_Combobox_;
 
 
-=== Source Map Mappings: 6 ===
+=== Source Map Mappings: 12 ===

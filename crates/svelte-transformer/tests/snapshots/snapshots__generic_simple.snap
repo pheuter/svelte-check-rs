@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
-assertion_line: 44
+assertion_line: 81
 expression: output
 ---
 === Source (Select.svelte) ===
@@ -125,4 +125,4 @@ z_$$bindings?: any;
 export default __SvelteComponent_Select_;
 
 
-=== Source Map Mappings: 4 ===
+=== Source Map Mappings: 8 ===

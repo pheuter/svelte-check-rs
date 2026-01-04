@@ -1,7 +1,7 @@
 //! Main orchestration logic.
 
 use crate::cli::{Args, TimingFormat};
-use crate::config::{SvelteConfig, TsConfig};
+use crate::config::{SvelteConfig, SvelteFileKind, TsConfig};
 use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 use svelte_diagnostics::{check as check_svelte, DiagnosticOptions, Severity};
 use svelte_parser::parse;
-use svelte_transformer::{transform, TransformOptions};
+use svelte_transformer::{transform, transform_module, TransformOptions};
 use thiserror::Error;
 use tsgo_runner::{
     TransformedFile, TransformedFiles, TsgoCheckOutput, TsgoCheckStats, TsgoDiagnostic, TsgoRunner,
@@ -170,9 +170,15 @@ async fn run_single_check(
         json: Vec<FormattedDiagnostic>,
     }
 
+    // Separate files by kind: components (.svelte) vs modules (.svelte.ts/.svelte.js)
+    let (component_files, module_files): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|f| SvelteFileKind::from_path(f) == Some(SvelteFileKind::Component));
+
     let svelte_start = Instant::now();
-    // Process files in parallel: parse, run Svelte diagnostics, and transform
-    let outputs: Vec<FileOutput> = files
+
+    // Process component files (.svelte) in parallel: parse, run Svelte diagnostics, and transform
+    let component_outputs: Vec<FileOutput> = component_files
         .par_iter()
         .filter_map(|file_path| {
             let source = match fs::read_to_string(file_path) {
@@ -275,7 +281,107 @@ async fn run_single_check(
             }
         })
         .collect();
+
+    // Process module files (.svelte.ts/.svelte.js) in parallel: transform runes only
+    let module_outputs: Vec<FileOutput> = module_files
+        .par_iter()
+        .filter_map(|file_path| {
+            let source = match fs::read_to_string(file_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to read {}: {}", file_path, e);
+                    return None;
+                }
+            };
+
+            // Transform module file (runes only, no template/styles)
+            let transform_result = transform_module(&source, Some(file_path.as_str()));
+
+            // Collect any errors from invalid rune usage (e.g., $props in module files)
+            let mut all_diagnostics: Vec<svelte_diagnostics::Diagnostic> = Vec::new();
+            for error in &transform_result.errors {
+                // Compute byte offset from line/column
+                let offset = line_column_to_offset(&source, error.line, error.column);
+                let span = source_map::Span::new(offset, offset + 1);
+                all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
+                    svelte_diagnostics::DiagnosticCode::ParseError,
+                    error.message.clone(),
+                    span,
+                ));
+            }
+
+            // Transform for TypeScript checking (if JS diagnostics enabled)
+            if args.include_js() {
+                // If emit_ts is enabled, print transformed TypeScript for each file.
+                if args.emit_ts {
+                    let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                    eprintln!(
+                        "=== TypeScript for {} ===\n{}",
+                        relative_path, transform_result.code
+                    );
+                }
+
+                // For module files, we keep the same relative path (they're already .ts/.js)
+                // But we need to write transformed content to the cache
+                let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                let virtual_path = Utf8PathBuf::from(relative_path.as_str());
+
+                let transformed_file = TransformedFile {
+                    original_path: file_path.clone(),
+                    tsx_content: transform_result.code,
+                    source_map: transform_result.source_map,
+                    original_line_index: LineIndex::new(&source),
+                };
+
+                // Add to shared collection
+                if let Ok(mut files) = transformed_files.lock() {
+                    files.add(virtual_path, transformed_file);
+                }
+            }
+
+            // Count errors and warnings
+            for diag in &all_diagnostics {
+                match diag.severity {
+                    Severity::Error => {
+                        error_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Severity::Warning => {
+                        warning_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Severity::Hint => {}
+                }
+            }
+
+            if all_diagnostics.is_empty() {
+                None
+            } else {
+                let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                Some(FileOutput {
+                    text: if output_json {
+                        None
+                    } else {
+                        Some(formatter.format(&all_diagnostics, relative_path, &source))
+                    },
+                    json: if output_json {
+                        Formatter::format_json_diagnostics(&all_diagnostics, relative_path, &source)
+                    } else {
+                        Vec::new()
+                    },
+                })
+            }
+        })
+        .collect();
+
+    // Combine outputs from both component and module files
+    let outputs: Vec<FileOutput> = component_outputs
+        .into_iter()
+        .chain(module_outputs)
+        .collect();
+
     let svelte_time = svelte_start.elapsed();
+
+    // Calculate total file count for summary
+    let total_file_count = component_files.len() + module_files.len();
 
     let mut json_output = Vec::new();
 
@@ -370,7 +476,7 @@ async fn run_single_check(
                 let json = timings_json(
                     file_scan_time,
                     svelte_time,
-                    files.len(),
+                    total_file_count,
                     transformed_count,
                     sveltekit_sync_time,
                     sveltekit_sync_ran,
@@ -383,13 +489,11 @@ async fn run_single_check(
             TimingFormat::Text => {
                 eprintln!("=== svelte-check-rs timings ===");
                 if let Some(scan_time) = file_scan_time {
-                    eprintln!("file scan: {:?} ({} files)", scan_time, files.len());
+                    eprintln!("file scan: {:?} ({} files)", scan_time, total_file_count);
                 }
                 eprintln!(
                     "svelte phase: {:?} ({} files, {} transformed)",
-                    svelte_time,
-                    files.len(),
-                    transformed_count
+                    svelte_time, total_file_count, transformed_count
                 );
                 if let (Some(sync_time), Some(sync_ran)) = (sveltekit_sync_time, sveltekit_sync_ran)
                 {
@@ -439,7 +543,7 @@ async fn run_single_check(
     }
 
     let summary = CheckSummary {
-        file_count: files.len(),
+        file_count: total_file_count,
         error_count: error_count.load(Ordering::Relaxed),
         warning_count: warning_count.load(Ordering::Relaxed),
         fail_on_warnings: args.fail_on_warnings,
@@ -755,11 +859,13 @@ async fn run_watch_mode(
     println!("Watching for changes... (Ctrl+C to stop)\n");
 
     while let Some(event) = rx.recv().await {
-        // Check if any Svelte files changed
-        let svelte_changed = event
-            .paths
-            .iter()
-            .any(|p| p.extension().map(|ext| ext == "svelte").unwrap_or(false));
+        // Check if any Svelte files changed (.svelte, .svelte.ts, .svelte.js)
+        let svelte_changed = event.paths.iter().any(|p| {
+            let path_str = p.to_string_lossy();
+            path_str.ends_with(".svelte")
+                || path_str.ends_with(".svelte.ts")
+                || path_str.ends_with(".svelte.js")
+        });
 
         if svelte_changed {
             if !args.preserve_watch_output {
@@ -786,6 +892,37 @@ async fn run_watch_mode(
     ))
 }
 
+/// Converts a 1-indexed line and column to a byte offset in the source.
+fn line_column_to_offset(source: &str, line: usize, column: usize) -> u32 {
+    let mut current_line = 1;
+    let mut current_offset = 0;
+
+    for (i, ch) in source.char_indices() {
+        if current_line == line {
+            // Found the target line, now count columns
+            let mut col = 1;
+            for (j, c) in source[i..].char_indices() {
+                if col == column {
+                    return (i + j) as u32;
+                }
+                if c == '\n' {
+                    break;
+                }
+                col += 1;
+            }
+            // Column not found, return start of line
+            return i as u32;
+        }
+        if ch == '\n' {
+            current_line += 1;
+        }
+        current_offset = i + ch.len_utf8();
+    }
+
+    // Line not found, return end of file
+    current_offset as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,5 +932,18 @@ mod tests {
         // Test that relative paths are resolved correctly
         let workspace = Utf8PathBuf::from(".");
         assert!(workspace.is_relative());
+    }
+
+    #[test]
+    fn test_line_column_to_offset() {
+        let source = "line1\nline2\nline3";
+        // Line 1, column 1 = offset 0
+        assert_eq!(line_column_to_offset(source, 1, 1), 0);
+        // Line 1, column 3 = offset 2 ('n')
+        assert_eq!(line_column_to_offset(source, 1, 3), 2);
+        // Line 2, column 1 = offset 6 ('l')
+        assert_eq!(line_column_to_offset(source, 2, 1), 6);
+        // Line 3, column 1 = offset 12 ('l')
+        assert_eq!(line_column_to_offset(source, 3, 1), 12);
     }
 }
