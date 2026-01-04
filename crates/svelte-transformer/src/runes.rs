@@ -226,10 +226,25 @@ fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
                         continue;
                     }
 
-                    if next_non_ws != Some('(')
-                        && next_non_ws != Some('<')
-                        && next_non_ws != Some(':')
-                    {
+                    let mut is_rune = matches!(next_non_ws, Some('(') | Some('<') | Some(':'));
+                    if !is_rune && next_non_ws == Some('.') {
+                        let is_dot_rune = match identifier.as_str() {
+                            "derived" => trimmed_rest.starts_with(".by"),
+                            "state" => {
+                                trimmed_rest.starts_with(".raw")
+                                    || trimmed_rest.starts_with(".snapshot")
+                            }
+                            "effect" => {
+                                trimmed_rest.starts_with(".pre")
+                                    || trimmed_rest.starts_with(".root")
+                            }
+                            _ => false,
+                        };
+                        if is_dot_rune {
+                            is_rune = true;
+                        }
+                    }
+                    if !is_rune {
                         store_names.insert(SmolStr::new(&identifier));
                     }
                     continue;
@@ -574,6 +589,25 @@ impl<'a> RuneScanner<'a> {
             }
         }
 
+        // Check $derived.by<Type>() - transforms to (fn)()
+        if remaining.starts_with("$derived.by<") {
+            if let Some((full_end, content, content_span, generic)) =
+                self.find_rune_with_generic(start_pos, "$derived.by<")
+            {
+                return Some(RuneMatch {
+                    kind: RuneKind::DerivedBy,
+                    full_span: Span::new(
+                        self.base_offset + start_pos as u32,
+                        self.base_offset + full_end as u32,
+                    ),
+                    content,
+                    content_span,
+                    pattern_len: 12, // "$derived.by<"
+                    generic: Some(generic),
+                });
+            }
+        }
+
         // Check $props<Type>() - special handling for props
         if remaining.starts_with("$props<") {
             if let Some((full_end, _content, _content_span, generic)) =
@@ -891,6 +925,10 @@ impl<'a> RuneScanner<'a> {
                     self.push_str(content);
                 }
                 self.push_str(")()");
+                if let Some(generic) = rune_match.generic.as_deref() {
+                    self.push_str(" as ");
+                    self.push_str(generic);
+                }
             }
             RuneKind::Effect => {
                 // $effect(fn) → __svelte_effect(fn)
@@ -1155,6 +1193,13 @@ mod tests {
     fn test_transform_derived_by() {
         let result = transform_runes("let value = $derived.by(() => compute());", 0);
         assert_eq!(result.output, "let value = (() => compute())();");
+        assert_eq!(result.runes[0].kind, RuneKind::DerivedBy);
+    }
+
+    #[test]
+    fn test_transform_derived_by_generic() {
+        let result = transform_runes("let value = $derived.by<number>(() => compute());", 0);
+        assert_eq!(result.output, "let value = (() => compute())() as number;");
         assert_eq!(result.runes[0].kind, RuneKind::DerivedBy);
     }
 

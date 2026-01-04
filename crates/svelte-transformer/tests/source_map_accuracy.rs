@@ -337,9 +337,9 @@ fn test_attribute_expression_line_number() {
     Click
 </button>"#;
 
-    // HTML element attributes are emitted as standalone statements
-    verify_line_mapping(source, "className;", 7);
-    verify_line_mapping(source, "!isActive;", 8);
+    // HTML element attributes are emitted inside __svelte_create_element checks
+    verify_line_mapping(source, "class: className", 7);
+    verify_line_mapping(source, "disabled: !isActive", 8);
 }
 
 #[test]

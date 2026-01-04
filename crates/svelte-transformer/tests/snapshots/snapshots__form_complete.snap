@@ -87,18 +87,58 @@ type __SvelteEvent<Target extends EventTarget, E extends Event> = E & {
   target: Target;
 };
 
+// Backwards-compatibility namespace for libraries augmenting `svelteHTML`.
+declare global {
+  namespace svelteHTML {
+    interface HTMLAttributes<T extends EventTarget = any> {}
+  }
+}
+
 // Helper types for element attribute name checking.
 type __SvelteIntrinsicElements = __SvelteHTMLElements;
+type __SvelteHTMLAttributesCompat<T extends EventTarget> =
+  __SvelteHTMLAttributes<T> & svelteHTML.HTMLAttributes<T>;
 type __SvelteEventProps<T> =
   T & { [K in keyof T as K extends `on:${infer E}` ? `on${E}` : never]?: T[K] };
 type __SvelteElementAttributes<K extends string> =
   __SvelteEventProps<
-    K extends keyof __SvelteIntrinsicElements ? __SvelteIntrinsicElements[K] : __SvelteHTMLAttributes<any>
+    K extends keyof __SvelteIntrinsicElements
+      ? __SvelteIntrinsicElements[K] & svelteHTML.HTMLAttributes<any>
+      : __SvelteHTMLAttributesCompat<any>
   >;
+type __SvelteEventHandler<K extends string, E extends string, A = {}> =
+  A extends { [key in `on:${E}`]?: infer H }
+    ? H | undefined
+    : A extends { [key in `on${E}`]?: infer H }
+      ? H | undefined
+      : __SvelteElementAttributes<K> extends { [key in `on:${E}`]?: infer H }
+        ? H | undefined
+        : __SvelteElementAttributes<K> extends { [key in `on${E}`]?: infer H }
+          ? H | undefined
+          : ((e: Event) => void) | null | undefined;
 
-declare function __svelte_check_element<K extends string>(
+type __SvelteActionReturnType = {
+  update?: (parameter: any) => void;
+  destroy?: () => void;
+  $$_attributes?: Record<string, any>;
+} | void;
+declare function __svelte_ensure_action<T extends __SvelteActionReturnType>(
+  actionCall: T
+): T extends { $$_attributes?: any } ? T["$$_attributes"] : {};
+
+declare function __svelte_check_element<K extends string, A = {}>(
   tag: K | undefined | null,
-  attrs: __SvelteElementAttributes<K>
+  attrs: __SvelteElementAttributes<K> & A
+): void;
+
+type __SvelteUnionToIntersection<U> =
+  (U extends any ? (k: U) => void : never) extends (k: infer I) => void ? I : never;
+declare function __svelte_union<T extends any[]>(...args: T): __SvelteUnionToIntersection<T[number]>;
+
+declare function __svelte_create_element<K extends string, T>(
+  tag: K | undefined | null,
+  actionAttrs: T,
+  attrs: __SvelteElementAttributes<K> & T
 ): void;
 
 declare const __svelte_any: any;
@@ -122,26 +162,24 @@ declare const __svelte_any: any;
 // === TEMPLATE TYPE-CHECK BLOCK ===
 // This is never executed, just type-checked
 async function __svelte_template_check__() {
-  __svelte_check_element("form", {
-    onsubmit: __svelte_any,
+  __svelte_create_element("form", {}, {
+    onsubmit: handleSubmit,
   });
-  const __event_0: ((e: __SvelteEvent<HTMLFormElement, SubmitEvent>) => void) | null | undefined = handleSubmit;
-  __svelte_check_element("input", {
-    type: __svelte_any,
+  __svelte_create_element("input", {}, {
+    type: "email",
     "bind:value": __svelte_any,
-    placeholder: __svelte_any,
+    placeholder: "Email",
   });
   email;
-  __svelte_check_element("input", {
-    type: __svelte_any,
+  __svelte_create_element("input", {}, {
+    type: "password",
     "bind:value": __svelte_any,
-    placeholder: __svelte_any,
+    placeholder: "Password",
   });
   password;
-  __svelte_check_element("button", {
-    disabled: __svelte_any,
+  __svelte_create_element("button", {}, {
+    disabled: !isValid,
   });
-  !isValid;
 }
 
 // === COMPONENT TYPE EXPORT ===
@@ -150,4 +188,4 @@ declare const __SvelteComponent_LoginForm_: __SvelteComponent<__SvelteProps_Logi
 export default __SvelteComponent_LoginForm_;
 
 
-=== Source Map Mappings: 20 ===
+=== Source Map Mappings: 21 ===

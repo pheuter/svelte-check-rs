@@ -93,10 +93,24 @@ pub(crate) fn transform_store_subscriptions(expr: &str) -> String {
 
                     // If followed by ( or <, it's a rune - keep the $identifier
                     // If followed by :, it's an object property key (e.g., { $or: ... })
-                    if next_non_ws == Some('(')
+                    let mut is_rune = next_non_ws == Some('(')
                         || next_non_ws == Some('<')
-                        || next_non_ws == Some(':')
-                    {
+                        || next_non_ws == Some(':');
+                    if !is_rune && next_non_ws == Some('.') {
+                        let trimmed = rest.trim_start();
+                        let is_dot_rune = match identifier.as_str() {
+                            "derived" => trimmed.starts_with(".by"),
+                            "state" => {
+                                trimmed.starts_with(".raw") || trimmed.starts_with(".snapshot")
+                            }
+                            "effect" => trimmed.starts_with(".pre") || trimmed.starts_with(".root"),
+                            _ => false,
+                        };
+                        if is_dot_rune {
+                            is_rune = true;
+                        }
+                    }
+                    if is_rune {
                         // Restore typeof if we were tracking it
                         if let Some(ws) = typeof_state.take() {
                             result.push_str("typeof");
@@ -484,6 +498,78 @@ fn format_prop_name(name: &str) -> String {
     }
 }
 
+/// Escapes a string for use in a double-quoted JavaScript string literal.
+fn escape_js_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\u{2028}' => escaped.push_str("\\u2028"),
+            '\u{2029}' => escaped.push_str("\\u2029"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// Returns true if an attribute only accepts numeric values in Svelte's typings.
+fn is_number_only_attribute(name: &str) -> bool {
+    matches!(
+        name,
+        "aria-colcount"
+            | "aria-colindex"
+            | "aria-colspan"
+            | "aria-level"
+            | "aria-posinset"
+            | "aria-rowcount"
+            | "aria-rowindex"
+            | "aria-rowspan"
+            | "aria-setsize"
+            | "aria-valuemax"
+            | "aria-valuemin"
+            | "aria-valuenow"
+            | "results"
+            | "span"
+            | "marginheight"
+            | "marginwidth"
+            | "maxlength"
+            | "minlength"
+            | "currenttime"
+            | "defaultplaybackrate"
+            | "volume"
+            | "high"
+            | "low"
+            | "optimum"
+            | "start"
+            | "size"
+            | "border"
+            | "cols"
+            | "rows"
+            | "colspan"
+            | "rowspan"
+            | "tabindex"
+    )
+}
+
+fn numeric_literal_for_attribute(name: &str, value: &str) -> Option<String> {
+    if !is_number_only_attribute(name) {
+        return None;
+    }
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = trimmed.parse::<f64>().ok()?;
+    if parsed.is_nan() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// Context for template transformation.
 struct TemplateContext {
     output: String,
@@ -709,7 +795,47 @@ impl TemplateContext {
         }
     }
 
-    fn emit_element_attribute_checks(&mut self, element_name: &str, attrs: &[Attribute]) {
+    fn emit_action_attributes(&mut self, element_name: &str, attrs: &[Attribute]) -> Vec<String> {
+        let mut action_vars = Vec::new();
+        for attr in attrs {
+            let Attribute::Directive(d) = attr else {
+                continue;
+            };
+            if d.kind != DirectiveKind::Use {
+                continue;
+            }
+            let id = self.next_id();
+            let var_name = format!("__action_attrs_{}", id);
+            let action_target = action_target_type(element_name);
+            let indent_str = self.indent_str();
+            self.output.push_str(&indent_str);
+            self.output
+                .push_str(&format!("const {} = __svelte_ensure_action(", var_name));
+            self.output
+                .push_str(&format!("{}(null as unknown as {}", d.name, action_target));
+            if let Some(expr) = &d.expression {
+                self.output.push_str(", ");
+                let transformed = self.transform_expr(&expr.expression);
+                self.expressions.push(TemplateExpression {
+                    expression: transformed.clone(),
+                    span: expr.expression_span,
+                    context: ExpressionContext::Attribute,
+                });
+                self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                self.output.push_str(&transformed);
+            }
+            self.output.push_str("));\n");
+            action_vars.push(var_name);
+        }
+        action_vars
+    }
+
+    fn emit_element_attribute_checks(
+        &mut self,
+        element_name: &str,
+        attrs: &[Attribute],
+        action_attrs: &[String],
+    ) {
         // Only check real HTML/SVG elements. Special svelte:* elements have custom attributes.
         if element_name.starts_with("svelte:") {
             return;
@@ -737,17 +863,45 @@ impl TemplateContext {
             return;
         }
 
+        let action_union = if action_attrs.is_empty() {
+            "{}".to_string()
+        } else if action_attrs.len() == 1 {
+            action_attrs[0].clone()
+        } else {
+            format!("__svelte_union({})", action_attrs.join(", "))
+        };
+
         let indent_str = self.indent_str();
         self.output.push_str(&indent_str);
         self.output.push_str(&format!(
-            "__svelte_check_element(\"{}\", {{\n",
-            element_name
+            "__svelte_create_element(\"{}\", {}, {{\n",
+            element_name, action_union
         ));
         self.indent += 1;
 
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {
+                    if event_attribute_name(&a.name).is_some() {
+                        if let AttributeValue::Expression(expr) = &a.value {
+                            let name_span = Span::new(
+                                a.span.start,
+                                a.span.start + ByteOffset::from(a.name.len() as u32),
+                            );
+                            let indent_str = self.indent_str();
+                            self.output.push_str(&indent_str);
+                            self.emit_prop_name_with_mapping(&a.name, name_span);
+                            let transformed = self.track_inline_expression(
+                                &expr.expression,
+                                expr.expression_span,
+                                ExpressionContext::EventHandler,
+                            );
+                            self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                            self.output.push_str(&transformed);
+                            self.output.push_str(",\n");
+                            continue;
+                        }
+                    }
                     let name_span = Span::new(
                         a.span.start,
                         a.span.start + ByteOffset::from(a.name.len() as u32),
@@ -755,13 +909,72 @@ impl TemplateContext {
                     let indent_str = self.indent_str();
                     self.output.push_str(&indent_str);
                     self.emit_prop_name_with_mapping(&a.name, name_span);
-                    self.output.push_str("__svelte_any,\n");
+                    match &a.value {
+                        AttributeValue::Expression(expr) => {
+                            let transformed = self.track_inline_expression(
+                                &expr.expression,
+                                expr.expression_span,
+                                ExpressionContext::Attribute,
+                            );
+                            self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                            self.output.push_str(&transformed);
+                        }
+                        AttributeValue::Text(t) => {
+                            let name = a.name.to_ascii_lowercase();
+                            if let Some(numeric) = numeric_literal_for_attribute(&name, &t.value) {
+                                self.output.push_str(&numeric);
+                            } else {
+                                let escaped = escape_js_string(&t.value);
+                                self.output.push_str(&format!("\"{}\"", escaped));
+                            }
+                        }
+                        AttributeValue::True => {
+                            self.output.push_str("true");
+                        }
+                        AttributeValue::Concat(parts) => {
+                            let mut template = String::from("`");
+                            for part in parts {
+                                match part {
+                                    AttributeValuePart::Text(t) => {
+                                        let escaped = t
+                                            .value
+                                            .replace('\\', "\\\\")
+                                            .replace('`', "\\`")
+                                            .replace("${", "\\${");
+                                        template.push_str(&escaped);
+                                    }
+                                    AttributeValuePart::Expression(expr) => {
+                                        let transformed = self.track_inline_expression(
+                                            &expr.expression,
+                                            expr.expression_span,
+                                            ExpressionContext::Attribute,
+                                        );
+                                        let normalized: String = transformed
+                                            .lines()
+                                            .map(|line| line.trim())
+                                            .collect::<Vec<_>>()
+                                            .join("");
+                                        template.push_str("${");
+                                        template.push_str(&normalized);
+                                        template.push('}');
+                                    }
+                                }
+                            }
+                            template.push('`');
+                            self.output.push_str(&template);
+                        }
+                    }
+                    self.output.push_str(",\n");
                 }
                 Attribute::Shorthand(s) => {
                     let indent_str = self.indent_str();
                     self.output.push_str(&indent_str);
                     self.emit_prop_name_with_mapping(&s.name, s.span);
-                    self.output.push_str("__svelte_any,\n");
+                    let transformed =
+                        self.track_inline_expression(&s.name, s.span, ExpressionContext::Attribute);
+                    self.record_mapping_at_current_pos(&transformed, s.span);
+                    self.output.push_str(&transformed);
+                    self.output.push_str(",\n");
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::On => {
                     let name = format!("on:{}", d.name);
@@ -772,7 +985,18 @@ impl TemplateContext {
                     let indent_str = self.indent_str();
                     self.output.push_str(&indent_str);
                     self.emit_prop_name_with_mapping(&name, name_span);
-                    self.output.push_str("__svelte_any,\n");
+                    if let Some(expr) = &d.expression {
+                        let transformed = self.track_inline_expression(
+                            &expr.expression,
+                            expr.expression_span,
+                            ExpressionContext::EventHandler,
+                        );
+                        self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                        self.output.push_str(&transformed);
+                    } else {
+                        self.output.push_str("__svelte_any");
+                    }
+                    self.output.push_str(",\n");
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::Bind => {
                     if d.name == "this" {
@@ -797,32 +1021,32 @@ impl TemplateContext {
     }
 
     fn generate_element_attributes(&mut self, element_name: &str, attrs: &[Attribute]) {
-        self.emit_element_attribute_checks(element_name, attrs);
+        let action_attrs = self.emit_action_attributes(element_name, attrs);
+        let action_attrs_type = if action_attrs.is_empty() {
+            None
+        } else {
+            Some(
+                action_attrs
+                    .iter()
+                    .map(|name| format!("typeof {}", name))
+                    .collect::<Vec<_>>()
+                    .join(" & "),
+            )
+        };
+
+        self.emit_element_attribute_checks(element_name, attrs, &action_attrs);
 
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {
-                    if let Some(event_name) = event_attribute_name(&a.name) {
-                        if let AttributeValue::Expression(expr) = &a.value {
-                            let context = ExpressionContext::EventHandler;
-                            let event_type = get_event_type(element_name, event_name);
-                            let id = self.next_id();
-                            let transformed = self.transform_expr(&expr.expression);
-                            self.expressions.push(TemplateExpression {
-                                expression: transformed.clone(),
-                                span: expr.expression_span,
-                                context,
-                            });
-                            self.emit(&format!(
-                                "const __event_{}: ((e: {}) => void) | null | undefined = {};",
-                                id, event_type, transformed
-                            ));
-                        } else {
-                            self.generate_attribute_value(&a.value);
-                        }
-                    } else {
-                        self.generate_attribute_value(&a.value);
+                    if event_attribute_name(&a.name).is_some()
+                        && matches!(a.value, AttributeValue::Expression(_))
+                    {
+                        // Event handlers are type-checked in the attribute check object.
+                        continue;
                     }
+                    // Attribute values are type-checked in the attribute check object.
+                    continue;
                 }
                 Attribute::Spread(s) => {
                     self.emit_expression(
@@ -831,12 +1055,15 @@ impl TemplateContext {
                         ExpressionContext::Spread,
                     );
                 }
-                Attribute::Directive(d) => {
-                    self.generate_directive(element_name, d);
+                Attribute::Directive(d) if d.kind == DirectiveKind::On => {
+                    // Event handlers are type-checked in the attribute check object.
                 }
-                Attribute::Shorthand(s) => {
-                    // {name} is shorthand for name={name}
-                    self.emit_expression(s.name.as_ref(), s.span, ExpressionContext::Attribute);
+                Attribute::Directive(d) => {
+                    self.generate_directive(element_name, d, action_attrs_type.as_deref());
+                }
+                Attribute::Shorthand(_) => {
+                    // Shorthand values are type-checked in the attribute check object.
+                    continue;
                 }
                 Attribute::Attach(a) => {
                     // {@attach expr} => [Symbol("@attach")]: expr
@@ -850,33 +1077,15 @@ impl TemplateContext {
         }
     }
 
-    fn generate_attribute_value(&mut self, value: &AttributeValue) {
-        match value {
-            AttributeValue::Expression(expr) => {
-                self.emit_expression(
-                    &expr.expression,
-                    expr.expression_span,
-                    ExpressionContext::Attribute,
-                );
-            }
-            AttributeValue::Concat(parts) => {
-                for part in parts {
-                    if let AttributeValuePart::Expression(expr) = part {
-                        self.emit_expression(
-                            &expr.expression,
-                            expr.expression_span,
-                            ExpressionContext::Attribute,
-                        );
-                    }
-                }
-            }
-            AttributeValue::Text(_) | AttributeValue::True => {
-                // No expression to type-check
-            }
+    fn generate_directive(
+        &mut self,
+        element_name: &str,
+        directive: &Directive,
+        action_attrs_type: Option<&str>,
+    ) {
+        if directive.kind == DirectiveKind::Use {
+            return;
         }
-    }
-
-    fn generate_directive(&mut self, element_name: &str, directive: &Directive) {
         if let Some(expr) = &directive.expression {
             let context = match directive.kind {
                 DirectiveKind::On => ExpressionContext::EventHandler,
@@ -886,7 +1095,17 @@ impl TemplateContext {
 
             // For event handlers, we can add type annotations
             if directive.kind == DirectiveKind::On {
-                let event_type = get_event_type(element_name, &directive.name);
+                let event_type = if let Some(action_type) = action_attrs_type {
+                    format!(
+                        "__SvelteEventHandler<\"{}\", \"{}\", {}>",
+                        element_name, directive.name, action_type
+                    )
+                } else {
+                    format!(
+                        "__SvelteEventHandler<\"{}\", \"{}\">",
+                        element_name, directive.name
+                    )
+                };
                 let id = self.next_id();
                 let transformed = self.transform_expr(&expr.expression);
                 self.expressions.push(TemplateExpression {
@@ -896,7 +1115,7 @@ impl TemplateContext {
                 });
                 // Generate typed event handler check
                 self.emit(&format!(
-                    "const __event_{}: ((e: {}) => void) | null | undefined = {};",
+                    "const __event_{}: {} = {};",
                     id, event_type, transformed
                 ));
             } else if directive.kind == DirectiveKind::Use {
@@ -1039,7 +1258,8 @@ impl TemplateContext {
                             let indent_str = self.indent_str();
                             self.output.push_str(&indent_str);
                             self.emit_prop_name_with_mapping(&a.name, name_span);
-                            self.output.push_str(&format!("\"{}\",\n", t.value));
+                            let escaped = escape_js_string(&t.value);
+                            self.output.push_str(&format!("\"{}\",\n", escaped));
                         }
                         AttributeValue::True => {
                             let indent_str = self.indent_str();
@@ -1054,8 +1274,11 @@ impl TemplateContext {
                                 match part {
                                     AttributeValuePart::Text(t) => {
                                         // Escape backticks and ${ in text
-                                        let escaped =
-                                            t.value.replace('`', "\\`").replace("${", "\\${");
+                                        let escaped = t
+                                            .value
+                                            .replace('\\', "\\\\")
+                                            .replace('`', "\\`")
+                                            .replace("${", "\\${");
                                         template.push_str(&escaped);
                                     }
                                     AttributeValuePart::Expression(expr) => {
@@ -1198,7 +1421,7 @@ impl TemplateContext {
         // Second pass: handle directives separately (bindings, events, etc.)
         for attr in attrs {
             if let Attribute::Directive(d) = attr {
-                self.generate_directive(name, d);
+                self.generate_directive(name, d, None);
             }
         }
 
@@ -1424,116 +1647,6 @@ impl TemplateContext {
         self.emit("return __svelte_snippet_return;");
         self.indent -= 1;
         self.emit("}");
-    }
-}
-
-/// Get the TypeScript event type for a given element and event name.
-fn is_component_tag(element: &str) -> bool {
-    element
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase())
-        || element.contains('.')
-}
-
-fn event_target_type(element: &str) -> Option<&'static str> {
-    match element {
-        "input" => Some("HTMLInputElement"),
-        "textarea" => Some("HTMLTextAreaElement"),
-        "select" => Some("HTMLSelectElement"),
-        "option" => Some("HTMLOptionElement"),
-        "button" => Some("HTMLButtonElement"),
-        "form" => Some("HTMLFormElement"),
-        "a" => Some("HTMLAnchorElement"),
-        "img" => Some("HTMLImageElement"),
-        "video" => Some("HTMLVideoElement"),
-        "audio" => Some("HTMLAudioElement"),
-        "canvas" => Some("HTMLCanvasElement"),
-        "svg" => Some("SVGElement"),
-        "svelte:window" => Some("Window"),
-        "svelte:document" => Some("Document"),
-        "svelte:body" => Some("HTMLElement"),
-        "svelte:element" => Some("HTMLElement"),
-        _ => {
-            if is_component_tag(element) {
-                None
-            } else {
-                Some("HTMLElement")
-            }
-        }
-    }
-}
-
-/// Get the TypeScript event type for a given element and event name.
-fn get_event_type(element: &str, event: &str) -> String {
-    let base = match (element, event) {
-        // Mouse events
-        (_, "click" | "dblclick" | "contextmenu") => "MouseEvent",
-        (
-            _,
-            "mousedown" | "mouseup" | "mouseenter" | "mouseleave" | "mousemove" | "mouseover"
-            | "mouseout",
-        ) => "MouseEvent",
-
-        // Keyboard events
-        (_, "keydown" | "keyup" | "keypress") => "KeyboardEvent",
-
-        // Input events
-        ("input" | "textarea", "input") => "InputEvent",
-        ("input" | "textarea" | "select", "change") => "Event",
-        (_, "input") => "InputEvent",
-
-        // Focus events
-        (_, "focus" | "blur" | "focusin" | "focusout") => "FocusEvent",
-
-        // Form events
-        ("form", "submit") => "SubmitEvent",
-        ("form", "reset") => "Event",
-
-        // Drag events
-        (_, "drag" | "dragstart" | "dragend" | "dragover" | "dragenter" | "dragleave" | "drop") => {
-            "DragEvent"
-        }
-
-        // Touch events
-        (_, "touchstart" | "touchend" | "touchmove" | "touchcancel") => "TouchEvent",
-
-        // Wheel events
-        (_, "wheel") => "WheelEvent",
-
-        // Animation events
-        (_, "animationstart" | "animationend" | "animationiteration") => "AnimationEvent",
-
-        // Transition events
-        (_, "transitionstart" | "transitionend" | "transitionrun" | "transitioncancel") => {
-            "TransitionEvent"
-        }
-
-        // Pointer events
-        (
-            _,
-            "pointerdown" | "pointerup" | "pointermove" | "pointerenter" | "pointerleave"
-            | "pointerover" | "pointerout" | "pointercancel",
-        ) => "PointerEvent",
-
-        // Clipboard events
-        (_, "copy" | "cut" | "paste") => "ClipboardEvent",
-
-        // Media events
-        (
-            "audio" | "video",
-            "play" | "pause" | "ended" | "volumechange" | "timeupdate" | "seeking" | "seeked",
-        ) => "Event",
-        ("audio" | "video", "error") => "ErrorEvent",
-
-        // Default
-        _ => "Event",
-    };
-
-    if let Some(target) = event_target_type(element) {
-        format!("__SvelteEvent<{}, {}>", target, base)
-    } else {
-        base.to_string()
     }
 }
 
@@ -1771,7 +1884,7 @@ mod tests {
     fn test_event_handler_typed() {
         let result = parse("<button on:click={handleClick}>Click</button>");
         let output = generate_template_check(&result.document.fragment);
-        assert!(output.contains("MouseEvent"));
+        assert!(output.contains("\"on:click\""));
         assert!(output.contains("handleClick"));
     }
 

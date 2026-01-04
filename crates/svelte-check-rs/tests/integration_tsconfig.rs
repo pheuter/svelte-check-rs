@@ -308,6 +308,18 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2322",
             message_contains: "invalid",
         },
+        ExpectedError {
+            filename: "src/routes/attribute-typing/+page.svelte",
+            line: 1,
+            code: "TS2322",
+            message_contains: "boolean",
+        },
+        ExpectedError {
+            filename: "src/routes/action-attribute/+page.svelte",
+            line: 11,
+            code: "TS2561",
+            message_contains: "options",
+        },
     ]
 }
 
@@ -416,6 +428,8 @@ fn test_bundler_no_errors_in_valid_files() {
 
     // These files should have NO errors
     assert_no_errors_in_file(&diagnostics, "src/lib/components/Button.svelte");
+    assert_no_errors_in_file(&diagnostics, "src/lib/components/CustomEventDemo.svelte");
+    assert_no_errors_in_file(&diagnostics, "src/hooks.server.ts");
     assert_no_errors_in_file(&diagnostics, "src/routes/+page.server.ts");
     assert_no_errors_in_file(&diagnostics, "src/routes/+layout.svelte");
 }
@@ -778,7 +792,7 @@ fn test_all_configs_have_expected_error_counts() {
         .filter(|d| d.diagnostic_type == "Error")
         .count();
 
-    assert_eq!(bundler_errors, 4, "Bundler should have exactly 4 errors");
+    assert_eq!(bundler_errors, 6, "Bundler should have exactly 6 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"
