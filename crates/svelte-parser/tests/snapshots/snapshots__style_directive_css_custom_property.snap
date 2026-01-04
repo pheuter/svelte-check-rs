@@ -1,0 +1,98 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<svg style:--icon-compensate={compensate === 0 ? null : `${compensate}px`}><path d=""/></svg>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 93,
+                    },
+                    name: "svg",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 74,
+                                },
+                                kind: StyleDirective,
+                                name: "--icon-compensate",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 5,
+                                            end: 74,
+                                        },
+                                        expression_span: Span {
+                                            start: 30,
+                                            end: 73,
+                                        },
+                                        expression: "compensate === 0 ? null : `${compensate}px`",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Element(
+                            Element {
+                                span: Span {
+                                    start: 75,
+                                    end: 87,
+                                },
+                                name: "path",
+                                attributes: [
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 81,
+                                                end: 85,
+                                            },
+                                            name: "d",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 84,
+                                                        end: 84,
+                                                    },
+                                                    value: "",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ],
+                                children: [],
+                                self_closing: true,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 93,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 93,
+    },
+}

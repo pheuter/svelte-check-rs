@@ -1006,8 +1006,9 @@ impl<'src> Parser<'src> {
                     || self.check(TokenKind::NamespacedIdent)
                     || self.check(TokenKind::Text) // For !, [, ], etc.
                     || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
-                    || self.check(TokenKind::Number))
-            // For sizes: [100px], grid-cols-2
+                    || self.check(TokenKind::Number) // For sizes: [100px], grid-cols-2
+                    || self.check(TokenKind::Minus))
+            // For CSS custom properties: style:--my-var
             {
                 full_name.push_str(self.current_text());
                 prev_end = self.current().span.end;
@@ -1044,6 +1045,16 @@ impl<'src> Parser<'src> {
                 .map(|s| SmolStr::new(*s))
                 .collect();
 
+            // Error if directive name is empty (e.g., style:, on:, bind:)
+            if remaining.is_empty() {
+                self.errors.push(ParseError::new(
+                    ParseErrorKind::InvalidDirective {
+                        message: format!("`{}:` name cannot be empty", directive_name),
+                    },
+                    Span::new(start, self.current().span.end),
+                ));
+            }
+
             // Parse value - directives can have expression or quoted string values
             let expression = if self.eat(TokenKind::Eq) {
                 if self.check(TokenKind::LBrace) {
@@ -1059,6 +1070,7 @@ impl<'src> Parser<'src> {
                         span: Span::new(start, end),
                         expression_span: expr_span,
                         expression: expr,
+                        is_quoted: false,
                     })
                 } else if self.check(TokenKind::DoubleQuote) || self.check(TokenKind::SingleQuote) {
                     // Handle quoted string values like style:color="red"
@@ -1082,6 +1094,7 @@ impl<'src> Parser<'src> {
                         span: Span::new(quote_start, end),
                         expression_span: text_span,
                         expression: text,
+                        is_quoted: true,
                     })
                 } else {
                     None
@@ -1148,6 +1161,7 @@ impl<'src> Parser<'src> {
                 span: Span::new(start, end),
                 expression_span: expr_span,
                 expression: expr,
+                is_quoted: false,
             })
         } else {
             AttributeValue::True
@@ -1229,6 +1243,7 @@ impl<'src> Parser<'src> {
                     span: full_expr_span,
                     expression_span: expr_span,
                     expression,
+                    is_quoted: false,
                 }));
 
                 pos = end;

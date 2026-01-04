@@ -320,6 +320,35 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2561",
             message_contains: "options",
         },
+        // Style directive type errors (Issue #9)
+        // Line 17: style:color={undefinedVariable}
+        ExpectedError {
+            filename: "src/routes/style-directives/+page.svelte",
+            line: 17,
+            code: "TS2552", // "Did you mean 'undefinedVar'?"
+            message_contains: "undefinedVariable",
+        },
+        // Line 20: style:opacity={width > 100 ? 'invalid' : wrongVar}
+        ExpectedError {
+            filename: "src/routes/style-directives/+page.svelte",
+            line: 20,
+            code: "TS2304",
+            message_contains: "wrongVar",
+        },
+        // Line 23: style:--icon-compensate={nonExistentVar === 0 ? null : `${nonExistentVar}px`}
+        // Two errors because nonExistentVar is used twice in the expression
+        ExpectedError {
+            filename: "src/routes/style-directives/+page.svelte",
+            line: 23,
+            code: "TS2304",
+            message_contains: "nonExistentVar",
+        },
+        ExpectedError {
+            filename: "src/routes/style-directives/+page.svelte",
+            line: 23,
+            code: "TS2304",
+            message_contains: "nonExistentVar",
+        },
     ]
 }
 
@@ -792,7 +821,7 @@ fn test_all_configs_have_expected_error_counts() {
         .filter(|d| d.diagnostic_type == "Error")
         .count();
 
-    assert_eq!(bundler_errors, 6, "Bundler should have exactly 6 errors");
+    assert_eq!(bundler_errors, 10, "Bundler should have exactly 10 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"
@@ -1048,5 +1077,97 @@ fn test_modules_page_imports_work() {
         page_errors.is_empty(),
         "+page.svelte should have no errors (imports from .svelte.ts modules should work), but found:\n{:#?}",
         page_errors
+    );
+}
+
+// ============================================================================
+// STYLE DIRECTIVE TESTS (Issue #9)
+// ============================================================================
+
+#[test]
+#[serial]
+fn test_style_directive_type_errors_detected() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Verify style directive errors are detected
+    let style_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.filename == "src/routes/style-directives/+page.svelte")
+        .collect();
+
+    assert!(
+        !style_errors.is_empty(),
+        "Expected style directive type errors to be detected"
+    );
+}
+
+#[test]
+#[serial]
+fn test_style_directive_error_line_numbers() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Check error for undefinedVariable on line 17
+    let undefined_var_error = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/style-directives/+page.svelte"
+            && d.message.contains("undefinedVariable")
+    });
+
+    assert!(
+        undefined_var_error.is_some(),
+        "Expected error for 'undefinedVariable' in style directive"
+    );
+
+    let error = undefined_var_error.unwrap();
+    assert_eq!(
+        error.start.line, 17,
+        "Expected 'undefinedVariable' error on line 17, found on line {}",
+        error.start.line
+    );
+}
+
+#[test]
+#[serial]
+fn test_style_directive_css_custom_property_error_line() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Check error for nonExistentVar in CSS custom property on line 23
+    let css_var_error = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/style-directives/+page.svelte"
+            && d.message.contains("nonExistentVar")
+    });
+
+    assert!(
+        css_var_error.is_some(),
+        "Expected error for 'nonExistentVar' in style:--icon-compensate directive"
+    );
+
+    let error = css_var_error.unwrap();
+    assert_eq!(
+        error.start.line, 23,
+        "Expected 'nonExistentVar' error on line 23 (CSS custom property style directive), found on line {}",
+        error.start.line
+    );
+}
+
+#[test]
+#[serial]
+fn test_style_directive_ternary_expression_error() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Check error for wrongVar in ternary expression on line 20
+    let ternary_error = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/style-directives/+page.svelte" && d.message.contains("wrongVar")
+    });
+
+    assert!(
+        ternary_error.is_some(),
+        "Expected error for 'wrongVar' in style directive ternary expression"
+    );
+
+    let error = ternary_error.unwrap();
+    assert_eq!(
+        error.start.line, 20,
+        "Expected 'wrongVar' error on line 20, found on line {}",
+        error.start.line
     );
 }

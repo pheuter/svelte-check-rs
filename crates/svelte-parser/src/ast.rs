@@ -476,12 +476,15 @@ pub struct TextValue {
 /// An expression value in an attribute.
 #[derive(Debug, Clone)]
 pub struct ExpressionValue {
-    /// The span of the expression (including braces).
+    /// The span of the expression (including braces/quotes).
     pub span: Span,
-    /// The span of just the expression.
+    /// The span of just the expression content.
     pub expression_span: Span,
     /// The raw expression text.
     pub expression: String,
+    /// Whether the expression was a quoted string literal (e.g., style:color="red").
+    /// If true, the transformer should emit the expression as a string literal.
+    pub is_quoted: bool,
 }
 
 /// A spread attribute `{...obj}`.

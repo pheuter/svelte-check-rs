@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
-assertion_line: 11
+assertion_line: 9
 expression: output
 ---
 Source:
@@ -62,6 +62,7 @@ SvelteDocument {
                                             end: 78,
                                         },
                                         expression: "() => count++",
+                                        is_quoted: false,
                                     },
                                 ),
                             },

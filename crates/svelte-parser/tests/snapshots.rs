@@ -223,3 +223,38 @@ fn test_snapshot_attach_self_closing() {
         r#"<input type="text" {@attach myAttachment} />"#,
     );
 }
+
+// === Style Directive Snapshots ===
+
+#[test]
+fn test_snapshot_style_directive_basic() {
+    parse_snapshot(
+        "style_directive_basic",
+        r#"<div style:color="red" style:width={width} style:opacity>Styled</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_style_directive_css_custom_property() {
+    // Issue #9: CSS custom properties starting with --
+    parse_snapshot(
+        "style_directive_css_custom_property",
+        r#"<svg style:--icon-compensate={compensate === 0 ? null : `${compensate}px`}><path d=""/></svg>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_style_directive_important() {
+    parse_snapshot(
+        "style_directive_important",
+        r#"<div style:color|important="red" style:--theme|important={theme}>Important</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_style_directive_with_style_attr() {
+    parse_snapshot(
+        "style_directive_with_style_attr",
+        r#"<div style="font-size: 16px" style:color="red" style:--spacing={spacing}>Mixed</div>"#,
+    );
+}

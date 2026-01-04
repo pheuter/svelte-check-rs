@@ -1,0 +1,106 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div style:color|important="red" style:--theme|important={theme}>Important</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 80,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 32,
+                                },
+                                kind: StyleDirective,
+                                name: "color",
+                                modifiers: [
+                                    "important",
+                                ],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 27,
+                                            end: 32,
+                                        },
+                                        expression_span: Span {
+                                            start: 28,
+                                            end: 31,
+                                        },
+                                        expression: "red",
+                                        is_quoted: true,
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 33,
+                                    end: 64,
+                                },
+                                kind: StyleDirective,
+                                name: "--theme",
+                                modifiers: [
+                                    "important",
+                                ],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 33,
+                                            end: 64,
+                                        },
+                                        expression_span: Span {
+                                            start: 58,
+                                            end: 63,
+                                        },
+                                        expression: "theme",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 65,
+                                    end: 74,
+                                },
+                                data: "Important",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 80,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 80,
+    },
+}

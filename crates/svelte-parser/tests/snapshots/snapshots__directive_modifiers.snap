@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
-assertion_line: 11
+assertion_line: 9
 expression: output
 ---
 Source:
@@ -46,6 +46,7 @@ SvelteDocument {
                                             end: 56,
                                         },
                                         expression: "handler",
+                                        is_quoted: false,
                                     },
                                 ),
                             },

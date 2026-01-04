@@ -1020,3 +1020,102 @@ fn test_attach_source_mapping() {
 <div {@attach myAttach}></div>"#,
     );
 }
+
+// ============================================================================
+// STYLE DIRECTIVE TESTS (Issue #9)
+// ============================================================================
+
+#[test]
+fn test_style_directive_string_value() {
+    transform_snapshot(
+        "style_directive_string",
+        r#"<div style:color="red" style:background-color="blue">Styled</div>"#,
+    );
+}
+
+#[test]
+fn test_style_directive_expression_value() {
+    transform_snapshot(
+        "style_directive_expression",
+        r#"<script lang="ts">
+    let myColor = $state('red');
+    let width = $state(100);
+</script>
+
+<div style:color={myColor} style:width={`${width}px`}>Styled</div>"#,
+    );
+}
+
+#[test]
+fn test_style_directive_shorthand() {
+    transform_snapshot(
+        "style_directive_shorthand",
+        r#"<script lang="ts">
+    let color = $state('red');
+    let opacity = $state(0.5);
+</script>
+
+<div style:color style:opacity>Styled</div>"#,
+    );
+}
+
+#[test]
+fn test_style_directive_css_custom_property() {
+    // Issue #9: CSS custom properties (variables) starting with --
+    transform_snapshot_with_source_map(
+        "style_directive_css_custom_property",
+        r#"<script lang="ts">
+    let compensate = $state(0);
+    let theme = $state('dark');
+</script>
+
+<svg style:--icon-compensate={compensate === 0 ? null : `${compensate}px`}>
+    <path d=""/>
+</svg>
+<div style:--theme={theme} style:--spacing="8px">Content</div>"#,
+    );
+}
+
+#[test]
+fn test_style_directive_important_modifier() {
+    transform_snapshot(
+        "style_directive_important",
+        r#"<script lang="ts">
+    let color = $state('red');
+</script>
+
+<div style:color|important="red" style:--theme|important={color}>Important</div>"#,
+    );
+}
+
+#[test]
+fn test_style_directive_with_style_attribute() {
+    transform_snapshot(
+        "style_directive_with_attr",
+        r#"<script lang="ts">
+    let color = $state('red');
+</script>
+
+<div style="font-size: 16px" style:color={color} style:--spacing="8px">Mixed</div>"#,
+    );
+}
+
+#[test]
+fn test_style_directive_multiple_on_element() {
+    transform_snapshot(
+        "style_directive_multiple",
+        r#"<script lang="ts">
+    let darkMode = $state(false);
+</script>
+
+<div
+    style:color
+    style:width="12rem"
+    style:background-color={darkMode ? 'black' : 'white'}
+    style:--primary="blue"
+    style:opacity|important={darkMode ? 0.8 : 1}
+>
+    Multiple styles
+</div>"#,
+    );
+}
