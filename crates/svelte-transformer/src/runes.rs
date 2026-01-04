@@ -1204,6 +1204,23 @@ mod tests {
     }
 
     #[test]
+    fn test_transform_derived_by_multiline() {
+        let input = r#"let total = $derived.by(() => {
+        let sum = 0;
+        for (const n of numbers) {
+            sum += n;
+        }
+        return sum;
+    });"#;
+        let result = transform_runes(input, 0);
+        // Should wrap function in parens and invoke it
+        assert!(result.output.starts_with("let total = (() => {"));
+        assert!(result.output.ends_with("})();"));
+        assert!(!result.output.contains("$derived"));
+        assert_eq!(result.runes[0].kind, RuneKind::DerivedBy);
+    }
+
+    #[test]
     fn test_transform_effect() {
         let result = transform_runes("$effect(() => console.log(count));", 0);
         assert_eq!(result.output, "__svelte_effect(() => console.log(count));");
