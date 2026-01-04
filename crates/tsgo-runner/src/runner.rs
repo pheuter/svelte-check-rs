@@ -106,11 +106,6 @@ declare global {
     actionCall: T
   ): T extends { $$_attributes?: any } ? T["$$_attributes"] : {};
 
-  declare function __svelte_check_element<K extends string, A = {}>(
-    tag: K | undefined | null,
-    attrs: __SvelteElementAttributes<K> & A
-  ): void;
-
   type __SvelteUnionToIntersection<U> =
     (U extends any ? (k: U) => void : never) extends (k: infer I) => void ? I : never;
   declare function __svelte_union<T extends any[]>(...args: T): __SvelteUnionToIntersection<T[number]>;
