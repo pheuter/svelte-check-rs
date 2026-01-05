@@ -1499,3 +1499,154 @@ fn test_special_tags_on_same_line_as_elements() {
     verify_line_mapping(source, "html;", 6);
     verify_line_mapping(source, "count;", 7);
 }
+
+// ============================================================================
+// USE DIRECTIVE SOURCE MAP TESTS (Issue #7)
+// ============================================================================
+// These tests verify that use directives with member access (dot notation)
+// correctly map back to their original source positions for accurate
+// error reporting.
+
+#[test]
+fn test_use_directive_basic_line_number() {
+    let source = r#"<script>
+    function myTooltip(node) {
+        return { destroy() {} };
+    }
+</script>
+
+<div use:myTooltip>Hover</div>"#;
+
+    // The use:myTooltip directive is on line 7
+    // Use unique name "myTooltip" to avoid matching function definition
+    verify_line_mapping(source, "myTooltip(null", 7);
+}
+
+#[test]
+fn test_use_directive_with_parameter_line_number() {
+    let source = r#"<script>
+    function myAction(node, content) {
+        return { destroy() {} };
+    }
+    let message = "Hello";
+</script>
+
+<div use:myAction={message}>Hover</div>"#;
+
+    // The use directive and parameter are on line 8
+    verify_line_mapping(source, "myAction(null", 8);
+    verify_line_mapping(source, "message)", 8);
+}
+
+#[test]
+fn test_use_directive_member_access_line_number() {
+    // Issue #7: Use directive with member access (dot notation)
+    let source = r#"<script>
+    const formSelect = {
+        enhance: (node) => ({ destroy() {} })
+    };
+</script>
+
+<form use:formSelect.enhance>
+    <button>Submit</button>
+</form>"#;
+
+    // The use:formSelect.enhance directive is on line 7
+    verify_line_mapping(source, "formSelect.enhance(null", 7);
+}
+
+#[test]
+fn test_use_directive_member_access_with_parameter_line_number() {
+    let source = r#"<script>
+    const actions = {
+        tooltip: {
+            show: (node, opts) => ({ destroy() {} })
+        }
+    };
+    let options = { content: "Tooltip text" };
+</script>
+
+<div use:actions.tooltip.show={options}>Hover</div>"#;
+
+    // The use directive and its parameter are on line 10
+    verify_line_mapping(source, "actions.tooltip.show(null", 10);
+    verify_line_mapping(source, "options)", 10);
+}
+
+#[test]
+fn test_use_directive_deep_member_access_line_number() {
+    let source = r#"<script>
+    const lib = {
+        ui: {
+            actions: {
+                draggable: (node) => ({ destroy() {} })
+            }
+        }
+    };
+</script>
+
+<div use:lib.ui.actions.draggable>Drag me</div>"#;
+
+    // The deeply nested use directive is on line 11
+    verify_line_mapping(source, "lib.ui.actions.draggable(null", 11);
+}
+
+#[test]
+fn test_use_directive_inside_each_block_line_number() {
+    let source = r#"<script>
+    const formActions = {
+        enhance: (node) => ({ destroy() {} })
+    };
+    let items = [1, 2, 3];
+</script>
+
+{#each items as item}
+    <form use:formActions.enhance>
+        <input value={item} />
+    </form>
+{/each}"#;
+
+    // The use directive inside each block is on line 9
+    verify_line_mapping(source, "formActions.enhance(null", 9);
+}
+
+#[test]
+fn test_use_directive_inside_if_block_line_number() {
+    let source = r#"<script>
+    const tooltipAction = {
+        init: (node) => ({ destroy() {} })
+    };
+    let showTooltip = true;
+</script>
+
+{#if showTooltip}
+    <span use:tooltipAction.init>Hover me</span>
+{/if}"#;
+
+    // The use directive inside if block is on line 9
+    verify_line_mapping(source, "tooltipAction.init(null", 9);
+}
+
+#[test]
+fn test_use_directive_sveltekit_form_pattern() {
+    // Real-world SvelteKit form action pattern from issue #7
+    let source = r#"<script>
+    import { enhance } from '$app/forms';
+    const formSelect = {
+        enhance: (node) => {
+            return enhance(node, {
+                onSubmit() {},
+                onResult() {}
+            });
+        }
+    };
+</script>
+
+<form method="POST" action="?/select" use:formSelect.enhance>
+    <input name="value" />
+    <button type="submit">Submit</button>
+</form>"#;
+
+    // The form with use directive is on line 13
+    verify_line_mapping(source, "formSelect.enhance(null", 13);
+}

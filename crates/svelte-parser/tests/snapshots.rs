@@ -258,3 +258,65 @@ fn test_snapshot_style_directive_with_style_attr() {
         r#"<div style="font-size: 16px" style:color="red" style:--spacing={spacing}>Mixed</div>"#,
     );
 }
+
+// === Use Directive Snapshots ===
+
+#[test]
+fn test_snapshot_use_directive_basic() {
+    // Basic use directive with simple identifier
+    parse_snapshot("use_directive_basic", r#"<div use:tooltip>Hover me</div>"#);
+}
+
+#[test]
+fn test_snapshot_use_directive_with_value() {
+    // Use directive with expression value
+    parse_snapshot(
+        "use_directive_with_value",
+        r#"<div use:tooltip={content}>Hover me</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_member_access() {
+    // Issue #7: Use directive with member access (dot notation)
+    parse_snapshot(
+        "use_directive_member_access",
+        r#"<form method="POST" action="?/select" use:formSelect.enhance>Submit</form>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_member_access_with_value() {
+    // Use directive with member access and expression value
+    parse_snapshot(
+        "use_directive_member_access_with_value",
+        r#"<form use:enhance.submit={options}>Submit</form>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_deep_member_access() {
+    // Use directive with deeply nested member access
+    parse_snapshot(
+        "use_directive_deep_member_access",
+        r#"<div use:actions.tooltip.show={config}>Content</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_multiple() {
+    // Multiple use directives including member access
+    parse_snapshot(
+        "use_directive_multiple",
+        r#"<div use:tooltip use:draggable.handle use:resizable={options}>Draggable</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_with_modifiers() {
+    // Use directive with member access and modifiers (if supported)
+    parse_snapshot(
+        "use_directive_with_modifiers",
+        r#"<div use:action.method|once|capture={handler}>Content</div>"#,
+    );
+}

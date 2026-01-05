@@ -1010,6 +1010,7 @@ impl<'src> Parser<'src> {
                     || self.check(TokenKind::Pipe)
                     || self.check(TokenKind::Colon)
                     || self.check(TokenKind::NamespacedIdent)
+                    || self.check(TokenKind::Dot) // For member access: use:form.enhance
                     || self.check(TokenKind::Text) // For !, [, ], etc.
                     || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
                     || self.check(TokenKind::Number) // For sizes: [100px], grid-cols-2

@@ -1,0 +1,100 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<form method="POST" action="?/select" use:formSelect.enhance>Submit</form>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 74,
+                    },
+                    name: "form",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 6,
+                                    end: 19,
+                                },
+                                name: "method",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 14,
+                                            end: 18,
+                                        },
+                                        value: "POST",
+                                    },
+                                ),
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 20,
+                                    end: 37,
+                                },
+                                name: "action",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 28,
+                                            end: 36,
+                                        },
+                                        value: "?/select",
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 38,
+                                    end: 60,
+                                },
+                                kind: Use,
+                                name: "formSelect.enhance",
+                                modifiers: [],
+                                expression: None,
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 61,
+                                    end: 67,
+                                },
+                                data: "Submit",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 74,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 74,
+    },
+}

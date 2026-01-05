@@ -1119,3 +1119,133 @@ fn test_style_directive_multiple_on_element() {
 </div>"#,
     );
 }
+
+// ============================================================================
+// USE DIRECTIVE TESTS (Issue #7)
+// ============================================================================
+
+#[test]
+fn test_use_directive_basic() {
+    transform_snapshot(
+        "use_directive_basic",
+        r#"<script lang="ts">
+    function tooltip(node: HTMLElement) {
+        return { destroy() {} };
+    }
+</script>
+
+<div use:tooltip>Hover me</div>"#,
+    );
+}
+
+#[test]
+fn test_use_directive_with_parameter() {
+    transform_snapshot(
+        "use_directive_with_parameter",
+        r#"<script lang="ts">
+    function tooltip(node: HTMLElement, content: string) {
+        return { destroy() {} };
+    }
+    let content = $state("Hello");
+</script>
+
+<div use:tooltip={content}>Hover me</div>"#,
+    );
+}
+
+#[test]
+fn test_use_directive_member_access() {
+    // Issue #7: Use directive with member access (dot notation)
+    transform_snapshot(
+        "use_directive_member_access",
+        r#"<script lang="ts">
+    const formSelect = {
+        enhance: (node: HTMLFormElement) => {
+            return { destroy() {} };
+        }
+    };
+</script>
+
+<form method="POST" action="?/select" use:formSelect.enhance>
+    <button type="submit">Submit</button>
+</form>"#,
+    );
+}
+
+#[test]
+fn test_use_directive_member_access_with_parameter() {
+    transform_snapshot(
+        "use_directive_member_access_with_parameter",
+        r#"<script lang="ts">
+    const actions = {
+        tooltip: {
+            show: (node: HTMLElement, options: { content: string }) => {
+                return { destroy() {} };
+            }
+        }
+    };
+    let options = $state({ content: "Tooltip text" });
+</script>
+
+<div use:actions.tooltip.show={options}>Hover me</div>"#,
+    );
+}
+
+#[test]
+fn test_use_directive_deep_member_access() {
+    transform_snapshot(
+        "use_directive_deep_member_access",
+        r#"<script lang="ts">
+    const lib = {
+        ui: {
+            actions: {
+                draggable: (node: HTMLElement) => {
+                    return { destroy() {} };
+                }
+            }
+        }
+    };
+</script>
+
+<div use:lib.ui.actions.draggable>Drag me</div>"#,
+    );
+}
+
+#[test]
+fn test_use_directive_multiple_with_member_access() {
+    transform_snapshot(
+        "use_directive_multiple_with_member_access",
+        r#"<script lang="ts">
+    function tooltip(node: HTMLElement) {
+        return { destroy() {} };
+    }
+    const draggable = {
+        handle: (node: HTMLElement) => {
+            return { destroy() {} };
+        }
+    };
+    let opts = $state({});
+</script>
+
+<div use:tooltip use:draggable.handle use:tooltip={opts}>Interactive</div>"#,
+    );
+}
+
+#[test]
+fn test_use_directive_source_mapping() {
+    // Verify source mappings for use directive with member access
+    transform_snapshot_with_source_map(
+        "use_directive_source_mapping",
+        r#"<script lang="ts">
+    const form = {
+        enhance: (node: HTMLFormElement) => {
+            return { destroy() {} };
+        }
+    };
+</script>
+
+<form use:form.enhance>
+    <button>Submit</button>
+</form>"#,
+    );
+}

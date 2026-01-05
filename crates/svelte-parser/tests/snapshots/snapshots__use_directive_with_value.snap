@@ -1,0 +1,77 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div use:tooltip={content}>Hover me</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 41,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 26,
+                                },
+                                kind: Use,
+                                name: "tooltip",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 5,
+                                            end: 26,
+                                        },
+                                        expression_span: Span {
+                                            start: 18,
+                                            end: 25,
+                                        },
+                                        expression: "content",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 27,
+                                    end: 35,
+                                },
+                                data: "Hoverme",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 41,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 41,
+    },
+}

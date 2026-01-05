@@ -1,0 +1,77 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<form use:enhance.submit={options}>Submit</form>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 48,
+                    },
+                    name: "form",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 6,
+                                    end: 34,
+                                },
+                                kind: Use,
+                                name: "enhance.submit",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 6,
+                                            end: 34,
+                                        },
+                                        expression_span: Span {
+                                            start: 26,
+                                            end: 33,
+                                        },
+                                        expression: "options",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 35,
+                                    end: 41,
+                                },
+                                data: "Submit",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 48,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 48,
+    },
+}
