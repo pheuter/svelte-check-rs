@@ -272,7 +272,7 @@ impl CheckSummary {
         };
 
         format!(
-            "====================================\nsvelte-check found {} {} and {} {} in {} {}",
+            "====================================\nsvelte-check-rs found {} {} and {} {} in {} {}",
             self.error_count,
             error_word,
             self.warning_count,
