@@ -750,6 +750,20 @@ impl TemplateContext {
             TemplateNode::ConstTag(tag) => {
                 // @const creates a local binding - emit as-is (with store transformation)
                 let transformed = self.transform_expr(&tag.declaration);
+
+                // Record source mapping for the const declaration
+                // Format: "const <declaration>;" - we map the declaration part
+                let indent_str = self.indent_str();
+                let const_prefix = "const ";
+                let generated_start = self.output.len() + indent_str.len() + const_prefix.len();
+                let generated_end = generated_start + transformed.len();
+
+                self.mappings.push(GeneratedMapping {
+                    generated_start,
+                    generated_end,
+                    original_span: tag.declaration_span,
+                });
+
                 self.emit(&format!("const {};", transformed));
             }
             TemplateNode::DebugTag(tag) => {
@@ -760,6 +774,18 @@ impl TemplateContext {
                         span: tag.span,
                         context: ExpressionContext::DebugTag,
                     });
+
+                    // Record source mapping for each debug identifier
+                    let indent_str = self.indent_str();
+                    let generated_start = self.output.len() + indent_str.len();
+                    let generated_end = generated_start + transformed.len();
+
+                    self.mappings.push(GeneratedMapping {
+                        generated_start,
+                        generated_end,
+                        original_span: tag.span,
+                    });
+
                     self.emit(&format!("{};", transformed));
                 }
             }

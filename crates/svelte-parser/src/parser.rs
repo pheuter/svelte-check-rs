@@ -963,6 +963,7 @@ impl<'src> Parser<'src> {
 
         // Check for identifier (normal attribute or directive)
         // Also accept keyword tokens that can be valid HTML attribute names
+        // This includes block keywords (if, else, each, etc.) and tag keywords (html, const, etc.)
         let is_keyword_as_attr = matches!(
             self.current_kind(),
             TokenKind::Style
@@ -975,6 +976,11 @@ impl<'src> Parser<'src> {
                 | TokenKind::Then
                 | TokenKind::Catch
                 | TokenKind::As
+                | TokenKind::Snippet
+                | TokenKind::Html
+                | TokenKind::Const
+                | TokenKind::Debug
+                | TokenKind::Render
         );
 
         if !self.check(TokenKind::Ident)
@@ -2543,5 +2549,329 @@ mod tests {
         )
         .parse();
         assert!(result.errors.is_empty());
+    }
+
+    // ==========================================
+    // Tests for keywords as attribute names
+    // Issue #5: https://github.com/pheuter/svelte-check-rs/issues/5
+    // ==========================================
+
+    #[test]
+    fn test_html_as_attribute_name() {
+        // Issue #5: html should be allowed as a prop name
+        let result = Parser::new(r#"<Other html="test" />"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "html should be valid as an attribute name, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name, "html");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_const_as_attribute_name() {
+        let result = Parser::new(r#"<Other const="value" />"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "const should be valid as an attribute name, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name, "const");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_debug_as_attribute_name() {
+        let result = Parser::new(r#"<Other debug="true" />"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "debug should be valid as an attribute name, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name, "debug");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_render_as_attribute_name() {
+        let result = Parser::new(r#"<Other render="lazy" />"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "render should be valid as an attribute name, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name, "render");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_snippet_as_attribute_name() {
+        let result = Parser::new(r#"<Other snippet="code" />"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "snippet should be valid as an attribute name, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name, "snippet");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_multiple_keyword_attributes() {
+        // Test multiple keywords used as attributes on the same element
+        let result = Parser::new(
+            r#"<Other html="escaped" const="fixed" debug="on" />"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Multiple keyword attributes should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 3);
+            let names: Vec<_> = comp
+                .attributes
+                .iter()
+                .filter_map(|a| {
+                    if let Attribute::Normal(attr) = a {
+                        Some(attr.name.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(names, vec!["html", "const", "debug"]);
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_keyword_attributes_on_html_elements() {
+        // Keywords should also work as attributes on regular HTML elements
+        let result = Parser::new(
+            r#"<div html="test" data-if="cond" />"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Keyword attributes on HTML elements should work, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_keyword_attributes_with_expressions() {
+        // Keywords as attributes with expression values
+        let result = Parser::new(
+            r#"<Other html={content} const={value} />"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Keyword attributes with expressions should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 2);
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name, "html");
+                assert!(matches!(attr.value, AttributeValue::Expression(_)));
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_keyword_attributes_boolean() {
+        // Keywords as boolean attributes (no value)
+        let result = Parser::new(r#"<Other html debug />"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Keyword boolean attributes should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 2);
+            for attr in &comp.attributes {
+                if let Attribute::Normal(a) = attr {
+                    assert!(matches!(a.value, AttributeValue::True));
+                }
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_all_block_keywords_as_attributes() {
+        // Test all block keywords (if, else, each, key, await, then, catch) as attributes
+        let keywords = [
+            ("if", r#"<Other if="condition" />"#),
+            ("else", r#"<Other else="fallback" />"#),
+            ("each", r#"<Other each="items" />"#),
+            ("key", r#"<Other key="id" />"#),
+            ("await", r#"<Other await="promise" />"#),
+            ("then", r#"<Other then="callback" />"#),
+            ("catch", r#"<Other catch="handler" />"#),
+            ("as", r#"<Other as="alias" />"#),
+            ("style", r#"<Other style="color: red" />"#),
+            ("script", r#"<Other script="src.js" />"#),
+        ];
+
+        for (keyword, code) in keywords {
+            let result = Parser::new(code, ParseOptions::default()).parse();
+            assert!(
+                result.errors.is_empty(),
+                "{} should be valid as an attribute name, code: {}, errors: {:?}",
+                keyword,
+                code,
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn test_html_special_tag_still_works() {
+        // Ensure {@html} special tag still works after the fix
+        let result = Parser::new(r#"{@html content}"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "{{@html}} should still work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::HtmlTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.expression.trim(), "content");
+        } else {
+            panic!(
+                "Expected HtmlTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_const_special_tag_still_works() {
+        // Ensure {@const} special tag still works after the fix
+        let result = Parser::new(
+            r#"{#if true}{@const x = 1}{x}{/if}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "{{@const}} should still work, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_debug_special_tag_still_works() {
+        // Ensure {@debug} special tag still works after the fix
+        let result = Parser::new(r#"{@debug foo}"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "{{@debug}} should still work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::DebugTag(tag) = &result.document.fragment.nodes[0] {
+            assert!(!tag.identifiers.is_empty());
+        } else {
+            panic!("Expected DebugTag");
+        }
+    }
+
+    #[test]
+    fn test_render_special_tag_still_works() {
+        // Ensure {@render} special tag still works after the fix
+        let result = Parser::new(r#"{@render children()}"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "{{@render}} should still work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::RenderTag(tag) = &result.document.fragment.nodes[0] {
+            assert!(tag.expression.contains("children"));
+        } else {
+            panic!("Expected RenderTag");
+        }
+    }
+
+    #[test]
+    fn test_snippet_block_still_works() {
+        // Ensure {#snippet} block still works after the fix
+        let result = Parser::new(
+            r#"{#snippet mySnippet(param)}<div>{param}</div>{/snippet}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "{{#snippet}} should still work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::SnippetBlock(block) = &result.document.fragment.nodes[0] {
+            assert_eq!(block.name, "mySnippet");
+        } else {
+            panic!("Expected SnippetBlock");
+        }
     }
 }

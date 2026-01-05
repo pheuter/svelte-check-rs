@@ -887,3 +887,615 @@ fn test_prop_name_in_large_file() {
     verify_line_mapping(&source, "myOptions:", options_line);
     verify_line_mapping(&source, "selectedItem:", bind_line);
 }
+
+// ============================================================================
+// SPECIAL TAG SOURCE MAP TESTS
+// Issue #5 related: Comprehensive tests for @html, @const, @debug, @render
+// These tests ensure TypeScript errors in special tag expressions are reported
+// on the correct lines and columns.
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// @html Tag Tests
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_html_tag_simple_expression_line_number() {
+    let source = r#"<script>
+    let content = "<strong>Bold</strong>";
+</script>
+
+{@html content}"#;
+
+    // The expression in {@html} is on line 5
+    verify_line_mapping(source, "content;", 5);
+}
+
+#[test]
+fn test_html_tag_method_call_line_number() {
+    let source = r#"<script>
+    let rawHtml = "<p>text</p>";
+</script>
+
+{@html rawHtml.trim()}"#;
+
+    verify_line_mapping(source, "rawHtml.trim()", 5);
+}
+
+#[test]
+fn test_html_tag_property_access_line_number() {
+    let source = r#"<script>
+    let data = { html: "<div>content</div>" };
+</script>
+
+{@html data.html}"#;
+
+    verify_line_mapping(source, "data.html", 5);
+}
+
+#[test]
+fn test_html_tag_inside_if_block_line_number() {
+    let source = r#"<script>
+    let showHtml = true;
+    let content = "<p>HTML</p>";
+</script>
+
+{#if showHtml}
+    {@html content}
+{/if}"#;
+
+    // The {@html} expression is on line 7
+    verify_line_mapping(source, "content;", 7);
+}
+
+#[test]
+fn test_html_tag_inside_each_block_line_number() {
+    let source = r#"<script>
+    let items = [
+        { html: "<p>One</p>" },
+        { html: "<p>Two</p>" }
+    ];
+</script>
+
+{#each items as item}
+    {@html item.html}
+{/each}"#;
+
+    // The {@html} expression is on line 9
+    verify_line_mapping(source, "item.html", 9);
+}
+
+#[test]
+fn test_html_tag_complex_expression_line_number() {
+    let source = r#"<script>
+    function sanitize(html: string) { return html; }
+    let userContent = "<script>alert('xss')</script>";
+</script>
+
+{@html sanitize(userContent)}"#;
+
+    verify_line_mapping(source, "sanitize(userContent)", 6);
+}
+
+#[test]
+fn test_multiple_html_tags_line_numbers() {
+    let source = r#"<script>
+    let header = "<h1>Title</h1>";
+    let body = "<p>Body text</p>";
+    let footer = "<small>Footer</small>";
+</script>
+
+<header>{@html header}</header>
+<main>{@html body}</main>
+<footer>{@html footer}</footer>"#;
+
+    verify_line_mapping(source, "header;", 7);
+    verify_line_mapping(source, "body;", 8);
+    verify_line_mapping(source, "footer;", 9);
+}
+
+// ----------------------------------------------------------------------------
+// @const Tag Tests
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_const_tag_simple_assignment_line_number() {
+    let source = r#"<script>
+    let items = [1, 2, 3];
+</script>
+
+{#each items as item}
+    {@const doubled = item * 2}
+    <span>{doubled}</span>
+{/each}"#;
+
+    // The const declaration is on line 6
+    verify_line_mapping(source, "doubled = item * 2", 6);
+}
+
+#[test]
+fn test_const_tag_with_method_call_line_number() {
+    let source = r#"<script>
+    let users = [{ name: "Alice" }, { name: "Bob" }];
+</script>
+
+{#each users as user}
+    {@const upperName = user.name.toUpperCase()}
+    <span>{upperName}</span>
+{/each}"#;
+
+    verify_line_mapping(source, "upperName = user.name.toUpperCase()", 6);
+}
+
+#[test]
+fn test_const_tag_with_object_destructuring_line_number() {
+    let source = r#"<script>
+    let data = [
+        { user: { profile: { age: 25 } } }
+    ];
+</script>
+
+{#each data as item}
+    {@const age = item.user.profile.age}
+    <span>Age: {age}</span>
+{/each}"#;
+
+    verify_line_mapping(source, "age = item.user.profile.age", 8);
+}
+
+#[test]
+fn test_const_tag_inside_if_block_line_number() {
+    let source = r#"<script>
+    let value = 10;
+    let multiplier = 5;
+</script>
+
+{#if value > 0}
+    {@const result = value * multiplier}
+    <span>Result: {result}</span>
+{/if}"#;
+
+    verify_line_mapping(source, "result = value * multiplier", 7);
+}
+
+#[test]
+fn test_const_tag_with_function_call_line_number() {
+    let source = r#"<script>
+    function calculate(x: number) { return x * x; }
+    let numbers = [1, 2, 3];
+</script>
+
+{#each numbers as n}
+    {@const squared = calculate(n)}
+    <span>{squared}</span>
+{/each}"#;
+
+    verify_line_mapping(source, "squared = calculate(n)", 7);
+}
+
+#[test]
+fn test_const_tag_with_template_literal_line_number() {
+    let source = r#"<script>
+    let items = ["apple", "banana"];
+</script>
+
+{#each items as fruit, i}
+    {@const label = `${i + 1}. ${fruit}`}
+    <li>{label}</li>
+{/each}"#;
+
+    verify_line_mapping(source, "label = `${i + 1}. ${fruit}`", 6);
+}
+
+#[test]
+fn test_multiple_const_tags_line_numbers() {
+    let source = r#"<script>
+    let data = [{ x: 1, y: 2 }];
+</script>
+
+{#each data as point}
+    {@const sum = point.x + point.y}
+    {@const product = point.x * point.y}
+    {@const diff = point.x - point.y}
+    <div>{sum}, {product}, {diff}</div>
+{/each}"#;
+
+    verify_line_mapping(source, "sum = point.x + point.y", 6);
+    verify_line_mapping(source, "product = point.x * point.y", 7);
+    verify_line_mapping(source, "diff = point.x - point.y", 8);
+}
+
+#[test]
+fn test_const_tag_nested_blocks_line_number() {
+    let source = r#"<script>
+    let matrix = [[1, 2], [3, 4]];
+</script>
+
+{#each matrix as row, i}
+    {#each row as cell, j}
+        {@const position = `[${i},${j}]`}
+        {@const value = cell * 10}
+        <span>{position}: {value}</span>
+    {/each}
+{/each}"#;
+
+    verify_line_mapping(source, "position = `[${i},${j}]`", 7);
+    verify_line_mapping(source, "value = cell * 10", 8);
+}
+
+// ----------------------------------------------------------------------------
+// @debug Tag Tests
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_debug_tag_single_identifier_line_number() {
+    let source = r#"<script>
+    let count = 0;
+</script>
+
+{@debug count}
+<span>{count}</span>"#;
+
+    // The debug tag is on line 5
+    verify_line_mapping(source, "count;", 5);
+}
+
+#[test]
+fn test_debug_tag_multiple_identifiers_line_number() {
+    // Use unique variable names to avoid matching in script section
+    let source = r#"<script>
+    let debugVarA = 1;
+    let debugVarB = 2;
+    let debugVarC = 3;
+</script>
+
+{@debug debugVarA, debugVarB, debugVarC}
+<span>{debugVarA + debugVarB + debugVarC}</span>"#;
+
+    // All identifiers on line 7 should map correctly
+    // The transformer emits each identifier separately
+    // Look for the pattern in template check section (after script variables)
+    verify_line_mapping(source, "debugVarA;", 7);
+    verify_line_mapping(source, "debugVarB;", 7);
+    verify_line_mapping(source, "debugVarC;", 7);
+}
+
+#[test]
+fn test_debug_tag_inside_if_block_line_number() {
+    let source = r#"<script>
+    let enabled = true;
+    let value = 42;
+</script>
+
+{#if enabled}
+    {@debug value}
+    <span>{value}</span>
+{/if}"#;
+
+    verify_line_mapping(source, "value;", 7);
+}
+
+#[test]
+fn test_debug_tag_inside_each_block_line_number() {
+    let source = r#"<script>
+    let items = [1, 2, 3];
+</script>
+
+{#each items as item, index}
+    {@debug item, index}
+    <li>{item}</li>
+{/each}"#;
+
+    verify_line_mapping(source, "item;", 6);
+    verify_line_mapping(source, "index;", 6);
+}
+
+#[test]
+fn test_multiple_debug_tags_line_numbers() {
+    let source = r#"<script>
+    let a = 1;
+    let b = 2;
+    let c = 3;
+</script>
+
+{@debug a}
+{@debug b}
+{@debug c}"#;
+
+    verify_line_mapping(source, "a;", 7);
+    verify_line_mapping(source, "b;", 8);
+    verify_line_mapping(source, "c;", 9);
+}
+
+// ----------------------------------------------------------------------------
+// @render Tag Tests
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_render_tag_simple_call_line_number() {
+    let source = r#"<script>
+</script>
+
+{#snippet greeting(name)}
+    <p>Hello, {name}!</p>
+{/snippet}
+
+{@render greeting("World")}"#;
+
+    // The render call is on line 8
+    verify_line_mapping(source, "greeting(\"World\")", 8);
+}
+
+#[test]
+fn test_render_tag_with_variable_arg_line_number() {
+    let source = r#"<script>
+    let userName = "Alice";
+</script>
+
+{#snippet greeting(name)}
+    <p>Hello, {name}!</p>
+{/snippet}
+
+{@render greeting(userName)}"#;
+
+    verify_line_mapping(source, "greeting(userName)", 9);
+}
+
+#[test]
+fn test_render_tag_with_expression_arg_line_number() {
+    let source = r#"<script>
+    let items = [1, 2, 3];
+</script>
+
+{#snippet list(data)}
+    {#each data as item}
+        <li>{item}</li>
+    {/each}
+{/snippet}
+
+{@render list(items.filter(x => x > 1))}"#;
+
+    verify_line_mapping(source, "list(items.filter(x => x > 1))", 11);
+}
+
+#[test]
+fn test_render_tag_inside_each_block_line_number() {
+    let source = r#"<script>
+    let options = ["a", "b", "c"];
+</script>
+
+{#snippet option(value)}
+    <option>{value}</option>
+{/snippet}
+
+{#each options as opt}
+    {@render option(opt)}
+{/each}"#;
+
+    verify_line_mapping(source, "option(opt)", 10);
+}
+
+#[test]
+fn test_render_tag_with_object_property_line_number() {
+    let source = r#"<script>
+    let config = { renderer: (x: string) => x };
+</script>
+
+{#snippet item(text)}
+    <span>{text}</span>
+{/snippet}
+
+{@render item(config.renderer("test"))}"#;
+
+    verify_line_mapping(source, "item(config.renderer(\"test\"))", 9);
+}
+
+#[test]
+fn test_render_tag_children_pattern_line_number() {
+    // Common pattern: rendering children prop
+    let source = r#"<script>
+    import type { Snippet } from 'svelte';
+    let { children }: { children: Snippet } = $props();
+</script>
+
+<div class="wrapper">
+    {@render children()}
+</div>"#;
+
+    verify_line_mapping(source, "children()", 7);
+}
+
+#[test]
+fn test_render_tag_optional_chaining_line_number() {
+    let source = r#"<script>
+    import type { Snippet } from 'svelte';
+    let { header }: { header?: Snippet } = $props();
+</script>
+
+<div>
+    {#if header}
+        {@render header()}
+    {/if}
+</div>"#;
+
+    verify_line_mapping(source, "header()", 8);
+}
+
+#[test]
+fn test_multiple_render_tags_line_numbers() {
+    // Use unique snippet names to avoid matching generated helper function names
+    let source = r#"<script>
+</script>
+
+{#snippet renderHeader()}
+    <h1>Header</h1>
+{/snippet}
+
+{#snippet renderBody()}
+    <p>Body</p>
+{/snippet}
+
+{#snippet renderFooter()}
+    <small>Footer</small>
+{/snippet}
+
+{@render renderHeader()}
+{@render renderBody()}
+{@render renderFooter()}"#;
+
+    // The render calls are emitted as function calls with semicolons
+    verify_line_mapping(source, "renderHeader();", 16);
+    verify_line_mapping(source, "renderBody();", 17);
+    verify_line_mapping(source, "renderFooter();", 18);
+}
+
+// ----------------------------------------------------------------------------
+// Mixed Special Tags Tests
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_mixed_special_tags_line_numbers() {
+    let source = r#"<script>
+    let items = [{ name: "A", html: "<b>A</b>" }];
+</script>
+
+{#snippet item(data)}
+    {@const upper = data.name.toUpperCase()}
+    {@debug upper}
+    {@html data.html}
+    <span>{upper}</span>
+{/snippet}
+
+{#each items as i}
+    {@render item(i)}
+{/each}"#;
+
+    verify_line_mapping(source, "upper = data.name.toUpperCase()", 6);
+    verify_line_mapping(source, "upper;", 7);
+    verify_line_mapping(source, "data.html", 8);
+    verify_line_mapping(source, "item(i)", 13);
+}
+
+#[test]
+fn test_special_tags_deeply_nested_line_numbers() {
+    let source = r#"<script>
+    let matrix = [[{ value: 1 }]];
+    let showDebug = true;
+</script>
+
+{#if matrix.length > 0}
+    {#each matrix as row, i}
+        {#each row as cell, j}
+            {@const coords = `${i},${j}`}
+            {@const doubled = cell.value * 2}
+            {#if showDebug}
+                {@debug coords, doubled}
+            {/if}
+            <span>{coords}: {doubled}</span>
+        {/each}
+    {/each}
+{/if}"#;
+
+    verify_line_mapping(source, "coords = `${i},${j}`", 9);
+    verify_line_mapping(source, "doubled = cell.value * 2", 10);
+    verify_line_mapping(source, "coords;", 12);
+    verify_line_mapping(source, "doubled;", 12);
+}
+
+#[test]
+fn test_special_tags_with_await_block_line_numbers() {
+    let source = r#"<script>
+    async function fetchData() { return { html: "<p>data</p>" }; }
+    let promise = fetchData();
+</script>
+
+{#await promise}
+    <p>Loading...</p>
+{:then data}
+    {@const processed = data.html.trim()}
+    {@html processed}
+    {@debug data}
+{:catch error}
+    {@debug error}
+    <p>Error: {error.message}</p>
+{/await}"#;
+
+    verify_line_mapping(source, "processed = data.html.trim()", 9);
+    verify_line_mapping(source, "processed;", 10);
+    verify_line_mapping(source, "data;", 11);
+    verify_line_mapping(source, "error;", 13);
+}
+
+// ----------------------------------------------------------------------------
+// Edge Cases for Special Tags
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_html_tag_with_ternary_expression_line_number() {
+    let source = r#"<script>
+    let useRich = true;
+    let plain = "text";
+    let rich = "<b>text</b>";
+</script>
+
+{@html useRich ? rich : plain}"#;
+
+    verify_line_mapping(source, "useRich ? rich : plain", 7);
+}
+
+#[test]
+fn test_const_tag_with_nullish_coalescing_line_number() {
+    let source = r#"<script>
+    let items = [{ value: null }];
+</script>
+
+{#each items as item}
+    {@const safeValue = item.value ?? "default"}
+    <span>{safeValue}</span>
+{/each}"#;
+
+    verify_line_mapping(source, "safeValue = item.value ?? \"default\"", 6);
+}
+
+#[test]
+fn test_const_tag_with_optional_chaining_line_number() {
+    let source = r#"<script>
+    let items = [{ nested: { deep: { value: 1 } } }];
+</script>
+
+{#each items as item}
+    {@const maybeValue = item.nested?.deep?.value}
+    <span>{maybeValue}</span>
+{/each}"#;
+
+    verify_line_mapping(source, "maybeValue = item.nested?.deep?.value", 6);
+}
+
+#[test]
+fn test_render_tag_with_spread_args_line_number() {
+    let source = r#"<script>
+    let args = ["hello", "world"];
+</script>
+
+{#snippet greet(a, b)}
+    <p>{a} {b}</p>
+{/snippet}
+
+{@render greet(...args)}"#;
+
+    verify_line_mapping(source, "greet(...args)", 9);
+}
+
+#[test]
+fn test_special_tags_on_same_line_as_elements() {
+    let source = r#"<script>
+    let html = "<b>bold</b>";
+    let count = 5;
+</script>
+
+<div>{@html html}</div>
+<span>{@debug count}{count}</span>"#;
+
+    verify_line_mapping(source, "html;", 6);
+    verify_line_mapping(source, "count;", 7);
+}
