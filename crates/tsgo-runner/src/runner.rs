@@ -989,11 +989,28 @@ impl TsgoRunner {
                     continue;
                 }
 
-                // Skip if target already exists (transformed file takes precedence)
+                // Check if target already exists
                 if target.exists() {
-                    stats.source_existing_skipped += 1;
-                    cache_files.insert(target);
-                    continue;
+                    // Check if source is newer than cached copy (stale cache detection)
+                    let source_modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+                    let target_modified =
+                        std::fs::metadata(&target).and_then(|m| m.modified()).ok();
+
+                    let is_stale = match (source_modified, target_modified) {
+                        (Some(src), Some(tgt)) => src > tgt,
+                        // If we can't determine timestamps, assume stale to be safe
+                        _ => true,
+                    };
+
+                    if !is_stale {
+                        stats.source_existing_skipped += 1;
+                        cache_files.insert(target);
+                        continue;
+                    }
+
+                    // Source is newer - remove stale cache entry
+                    let _ = std::fs::remove_file(&target);
+                    stats.stale_removed += 1;
                 }
 
                 if apply_tsgo_fixes && is_ts_like_file(path) {
