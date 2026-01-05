@@ -183,6 +183,10 @@ pub enum TokenKind {
     #[token("/", priority = 10)]
     Slash,
 
+    /// `-` - Used for CSS custom properties like `style:--my-var`
+    #[token("-", priority = 10)]
+    Minus,
+
     /// Text content - used sparingly, most text is handled by read_until
     /// Only matches specific punctuation that appears in text content
     #[regex(r"[!?;#@$%^&*\[\]~`]+", priority = 1)]
@@ -244,6 +248,7 @@ impl TokenKind {
             TokenKind::NamespacedIdent => "namespaced identifier",
             TokenKind::Number => "number",
             TokenKind::Slash => "'/'",
+            TokenKind::Minus => "'-'",
             TokenKind::Text => "text",
             TokenKind::Eof => "end of file",
             TokenKind::Error => "invalid token",
@@ -666,6 +671,49 @@ mod tests {
                 TokenKind::NamespacedIdent,
                 TokenKind::NamespacedIdent,
                 TokenKind::Ident
+            ]
+        );
+    }
+
+    #[test]
+    fn test_minus_token() {
+        let tokens = tokenize("a - b");
+        assert_eq!(
+            tokens,
+            vec![TokenKind::Ident, TokenKind::Minus, TokenKind::Ident]
+        );
+    }
+
+    #[test]
+    fn test_css_custom_property_style_directive() {
+        // style:--icon-compensate - CSS custom property in style directive
+        let tokens = tokenize("style:--icon-compensate");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::NamespacedIdent, // style:
+                TokenKind::Minus,           // -
+                TokenKind::Minus,           // -
+                TokenKind::Ident            // icon-compensate
+            ]
+        );
+    }
+
+    #[test]
+    fn test_css_custom_property_with_value() {
+        // style:--my-var={value}
+        let tokens = tokenize("style:--my-var={x}");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::NamespacedIdent, // style:
+                TokenKind::Minus,           // -
+                TokenKind::Minus,           // -
+                TokenKind::Ident,           // my-var
+                TokenKind::Eq,              // =
+                TokenKind::LBrace,          // {
+                TokenKind::Ident,           // x
+                TokenKind::RBrace           // }
             ]
         );
     }

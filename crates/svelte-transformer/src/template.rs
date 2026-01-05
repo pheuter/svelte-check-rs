@@ -1183,7 +1183,17 @@ impl TemplateContext {
                     self.emit_expression(&expr.expression, expr.expression_span, context);
                 }
             } else {
-                self.emit_expression(&expr.expression, expr.expression_span, context);
+                // For style directives and other directives, emit the expression
+                // If the expression is a quoted string literal, wrap it in quotes
+                if expr.is_quoted {
+                    let quoted = format!(
+                        "\"{}\"",
+                        expr.expression.replace('\\', "\\\\").replace('"', "\\\"")
+                    );
+                    self.emit_expression(&quoted, expr.expression_span, context);
+                } else {
+                    self.emit_expression(&expr.expression, expr.expression_span, context);
+                }
             }
         } else if directive.kind == DirectiveKind::Use {
             let id = self.next_id();

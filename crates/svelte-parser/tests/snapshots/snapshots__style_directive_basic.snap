@@ -1,0 +1,114 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div style:color="red" style:width={width} style:opacity>Styled</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 69,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 22,
+                                },
+                                kind: StyleDirective,
+                                name: "color",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 17,
+                                            end: 22,
+                                        },
+                                        expression_span: Span {
+                                            start: 18,
+                                            end: 21,
+                                        },
+                                        expression: "red",
+                                        is_quoted: true,
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 23,
+                                    end: 42,
+                                },
+                                kind: StyleDirective,
+                                name: "width",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 23,
+                                            end: 42,
+                                        },
+                                        expression_span: Span {
+                                            start: 36,
+                                            end: 41,
+                                        },
+                                        expression: "width",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 43,
+                                    end: 56,
+                                },
+                                kind: StyleDirective,
+                                name: "opacity",
+                                modifiers: [],
+                                expression: None,
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 57,
+                                    end: 63,
+                                },
+                                data: "Styled",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 69,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 69,
+    },
+}

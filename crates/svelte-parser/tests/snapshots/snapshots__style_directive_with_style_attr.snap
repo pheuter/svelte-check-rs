@@ -1,0 +1,120 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div style="font-size: 16px" style:color="red" style:--spacing={spacing}>Mixed</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 84,
+                    },
+                    name: "div",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 28,
+                                },
+                                name: "style",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 12,
+                                            end: 27,
+                                        },
+                                        value: "font-size: 16px",
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 29,
+                                    end: 46,
+                                },
+                                kind: StyleDirective,
+                                name: "color",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 41,
+                                            end: 46,
+                                        },
+                                        expression_span: Span {
+                                            start: 42,
+                                            end: 45,
+                                        },
+                                        expression: "red",
+                                        is_quoted: true,
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 47,
+                                    end: 72,
+                                },
+                                kind: StyleDirective,
+                                name: "--spacing",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 47,
+                                            end: 72,
+                                        },
+                                        expression_span: Span {
+                                            start: 64,
+                                            end: 71,
+                                        },
+                                        expression: "spacing",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 73,
+                                    end: 78,
+                                },
+                                data: "Mixed",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 84,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 84,
+    },
+}

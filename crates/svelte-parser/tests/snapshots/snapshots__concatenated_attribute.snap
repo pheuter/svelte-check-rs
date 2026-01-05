@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
-assertion_line: 11
+assertion_line: 9
 expression: output
 ---
 Source:
@@ -52,6 +52,7 @@ SvelteDocument {
                                                     end: 26,
                                                 },
                                                 expression: "middle",
+                                                is_quoted: false,
                                             },
                                         ),
                                         Text(
@@ -96,6 +97,7 @@ SvelteDocument {
                                                     end: 51,
                                                 },
                                                 expression: "id",
+                                                is_quoted: false,
                                             },
                                         ),
                                     ],
