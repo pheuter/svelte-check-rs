@@ -10,8 +10,7 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell", "npm"]
 # Target platforms to build apps for (Rust target-triple syntax)
-# Note: aarch64-unknown-linux-gnu removed (private repos don't support ARM runners)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Publish to npm during releases
 publish-jobs = ["npm"]
 
@@ -20,3 +19,7 @@ publish-jobs = ["npm"]
 # Vercel, and most modern Linux distributions
 [dist.github-custom-runners.x86_64-unknown-linux-gnu]
 container = "quay.io/pypa/manylinux_2_28_x86_64"
+
+[dist.github-custom-runners.aarch64-unknown-linux-gnu]
+runner = "ubuntu-24.04-arm"
+container = "quay.io/pypa/manylinux_2_28_aarch64"
