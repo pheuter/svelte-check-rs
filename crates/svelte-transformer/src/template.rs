@@ -833,12 +833,25 @@ impl TemplateContext {
             let id = self.next_id();
             let var_name = format!("__action_attrs_{}", id);
             let action_target = action_target_type(element_name);
+
+            // Calculate name span for the action identifier (skip "use:" prefix)
+            let name_offset = 4u32; // "use:"
+            let name_span = Span::new(
+                d.span.start + ByteOffset::from(name_offset),
+                d.span.start + ByteOffset::from(name_offset + d.name.len() as u32),
+            );
+
             let indent_str = self.indent_str();
             self.output.push_str(&indent_str);
             self.output
                 .push_str(&format!("const {} = __svelte_ensure_action(", var_name));
+
+            // Map the action name (e.g., "tooltip" or "formSelect.enhance")
+            self.record_mapping_at_current_pos(&d.name, name_span);
+            self.output.push_str(&d.name);
             self.output
-                .push_str(&format!("{}(null as unknown as {}", d.name, action_target));
+                .push_str(&format!("(null as unknown as {}", action_target));
+
             if let Some(expr) = &d.expression {
                 self.output.push_str(", ");
                 let transformed = self.transform_expr(&expr.expression);
@@ -1153,11 +1166,28 @@ impl TemplateContext {
                     span: expr.expression_span,
                     context,
                 });
+                // Calculate name span for the action identifier (skip "use:" prefix)
+                let name_offset = 4u32; // "use:"
+                let name_span = Span::new(
+                    directive.span.start + ByteOffset::from(name_offset),
+                    directive.span.start
+                        + ByteOffset::from(name_offset + directive.name.len() as u32),
+                );
                 // Call the action with a typed element to contextually type the parameter.
-                self.emit(&format!(
-                    "const __action_result_{} = {}(null as unknown as {}, {});",
-                    id, directive.name, action_target, transformed
-                ));
+                // Use manual output to record source mappings for both action name and parameter.
+                let indent_str = self.indent_str();
+                self.output.push_str(&indent_str);
+                self.output
+                    .push_str(&format!("const __action_result_{} = ", id));
+                // Map the action name (e.g., "formSelect.enhance")
+                self.record_mapping_at_current_pos(&directive.name, name_span);
+                self.output.push_str(&directive.name);
+                self.output
+                    .push_str(&format!("(null as unknown as {}, ", action_target));
+                // Map the parameter expression
+                self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                self.output.push_str(&transformed);
+                self.output.push_str(");\n");
                 self.emit(&format!("void __action_result_{};", id));
             } else if directive.kind == DirectiveKind::Bind {
                 if directive.name == "this" {
@@ -1224,11 +1254,23 @@ impl TemplateContext {
         } else if directive.kind == DirectiveKind::Use {
             let id = self.next_id();
             let action_target = action_target_type(element_name);
+            // Calculate name span for the action identifier (skip "use:" prefix)
+            let name_offset = 4u32; // "use:"
+            let name_span = Span::new(
+                directive.span.start + ByteOffset::from(name_offset),
+                directive.span.start + ByteOffset::from(name_offset + directive.name.len() as u32),
+            );
             // Call the action with only the element when no parameter is provided.
-            self.emit(&format!(
-                "const __action_result_{} = {}(null as unknown as {});",
-                id, directive.name, action_target
-            ));
+            // Use manual output to record source mapping for the action name.
+            let indent_str = self.indent_str();
+            self.output.push_str(&indent_str);
+            self.output
+                .push_str(&format!("const __action_result_{} = ", id));
+            // Map the action name (e.g., "tooltip" or "formSelect.enhance")
+            self.record_mapping_at_current_pos(&directive.name, name_span);
+            self.output.push_str(&directive.name);
+            self.output
+                .push_str(&format!("(null as unknown as {});\n", action_target));
             self.emit(&format!("void __action_result_{};", id));
         }
     }

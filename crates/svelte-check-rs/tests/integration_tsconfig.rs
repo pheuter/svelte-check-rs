@@ -349,6 +349,28 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2304",
             message_contains: "nonExistentVar",
         },
+        // Use directive type errors (Issue #7)
+        // Line 89: use:invalidActions.enhance - 'enhance' doesn't exist on invalidActions
+        ExpectedError {
+            filename: "src/routes/use-directives/+page.svelte",
+            line: 89,
+            code: "TS2339",
+            message_contains: "enhance",
+        },
+        // Line 94: use:formActions.validate={wrongType} - wrong parameter type
+        ExpectedError {
+            filename: "src/routes/use-directives/+page.svelte",
+            line: 94,
+            code: "TS2345",
+            message_contains: "string",
+        },
+        // Line 99: use:ui.actions.nonExistent - property doesn't exist
+        ExpectedError {
+            filename: "src/routes/use-directives/+page.svelte",
+            line: 99,
+            code: "TS2339",
+            message_contains: "nonExistent",
+        },
     ]
 }
 
@@ -821,7 +843,8 @@ fn test_all_configs_have_expected_error_counts() {
         .filter(|d| d.diagnostic_type == "Error")
         .count();
 
-    assert_eq!(bundler_errors, 10, "Bundler should have exactly 10 errors");
+    // Bundler: 10 original + 3 use directive errors = 13
+    assert_eq!(bundler_errors, 13, "Bundler should have exactly 13 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"
@@ -1169,5 +1192,164 @@ fn test_style_directive_ternary_expression_error() {
         error.start.line, 20,
         "Expected 'wrongVar' error on line 20, found on line {}",
         error.start.line
+    );
+}
+
+// ============================================================================
+// USE DIRECTIVE TESTS (Issue #7)
+// ============================================================================
+// These tests verify that use directives with member access (dot notation)
+// are correctly parsed, transformed, and type-checked.
+
+#[test]
+#[serial]
+fn test_use_directive_no_parse_errors() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Should not have any parse errors for use directives
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename == "src/routes/use-directives/+page.svelte" && d.code == "parse-error"
+        })
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "use:formSelect.enhance syntax should parse without errors (Issue #7).\n\
+         Found parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+#[test]
+#[serial]
+fn test_use_directive_member_access_type_errors_detected() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Should detect type errors in use directives with member access
+    let use_directive_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.filename == "src/routes/use-directives/+page.svelte")
+        .collect();
+
+    assert!(
+        !use_directive_errors.is_empty(),
+        "Expected type errors in use directive test file"
+    );
+}
+
+#[test]
+#[serial]
+fn test_use_directive_nonexistent_property_error() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Line 89: use:invalidActions.enhance - 'enhance' doesn't exist
+    let enhance_error = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/use-directives/+page.svelte"
+            && d.message.contains("enhance")
+            && d.code == "TS2339"
+    });
+
+    assert!(
+        enhance_error.is_some(),
+        "Expected error for non-existent property 'enhance' on invalidActions"
+    );
+
+    let error = enhance_error.unwrap();
+    assert_eq!(
+        error.start.line, 89,
+        "Expected 'enhance' property error on line 89, found on line {}",
+        error.start.line
+    );
+}
+
+#[test]
+#[serial]
+fn test_use_directive_wrong_parameter_type_error() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Line 94: use:formActions.validate={wrongType} - wrong parameter type
+    let type_error = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/use-directives/+page.svelte"
+            && (d.message.contains("string") || d.message.contains("String"))
+            && d.code == "TS2345"
+    });
+
+    assert!(
+        type_error.is_some(),
+        "Expected type error for wrong parameter type on use directive"
+    );
+
+    let error = type_error.unwrap();
+    assert_eq!(
+        error.start.line, 94,
+        "Expected type mismatch error on line 94, found on line {}",
+        error.start.line
+    );
+}
+
+#[test]
+#[serial]
+fn test_use_directive_deep_member_access_error() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Line 99: use:ui.actions.nonExistent - property doesn't exist
+    let nonexistent_error = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/use-directives/+page.svelte"
+            && d.message.contains("nonExistent")
+            && d.code == "TS2339"
+    });
+
+    assert!(
+        nonexistent_error.is_some(),
+        "Expected error for non-existent nested property 'nonExistent'"
+    );
+
+    let error = nonexistent_error.unwrap();
+    assert_eq!(
+        error.start.line, 99,
+        "Expected 'nonExistent' property error on line 99, found on line {}",
+        error.start.line
+    );
+}
+
+/// This is the specific regression test for GitHub issue #7.
+/// Previously, use directives with member access (dot notation) would
+/// fail to parse with "expected '>', found '.'" error.
+#[test]
+#[serial]
+fn test_issue_7_use_directive_member_access() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // The key assertion: use:formSelect.enhance should NOT cause a parse error
+    let parse_error = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/use-directives/+page.svelte"
+            && d.code == "parse-error"
+            && d.message.contains("expected '>'")
+    });
+
+    assert!(
+        parse_error.is_none(),
+        "REGRESSION (issue #7): use:formSelect.enhance should not cause parse error.\n\
+         Found error: {:?}",
+        parse_error
+    );
+
+    // Additionally verify that type checking works correctly
+    // by checking that we DO get the expected type errors (not parse errors)
+    let type_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename == "src/routes/use-directives/+page.svelte"
+                && d.diagnostic_type == "Error"
+                && d.code.starts_with("TS")
+        })
+        .collect();
+
+    assert!(
+        !type_errors.is_empty(),
+        "REGRESSION (issue #7): Type checking should work for use directives with member access.\n\
+         Expected TypeScript errors for intentional type mismatches."
     );
 }

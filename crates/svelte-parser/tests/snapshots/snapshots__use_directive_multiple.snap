@@ -1,0 +1,101 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div use:tooltip use:draggable.handle use:resizable={options}>Draggable</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 77,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 16,
+                                },
+                                kind: Use,
+                                name: "tooltip",
+                                modifiers: [],
+                                expression: None,
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 17,
+                                    end: 37,
+                                },
+                                kind: Use,
+                                name: "draggable.handle",
+                                modifiers: [],
+                                expression: None,
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 38,
+                                    end: 61,
+                                },
+                                kind: Use,
+                                name: "resizable",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 38,
+                                            end: 61,
+                                        },
+                                        expression_span: Span {
+                                            start: 53,
+                                            end: 60,
+                                        },
+                                        expression: "options",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 62,
+                                    end: 71,
+                                },
+                                data: "Draggable",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 77,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 77,
+    },
+}

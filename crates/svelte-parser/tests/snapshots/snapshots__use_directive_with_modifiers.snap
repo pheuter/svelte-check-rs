@@ -1,0 +1,80 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div use:action.method|once|capture={handler}>Content</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 59,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 45,
+                                },
+                                kind: Use,
+                                name: "action.method",
+                                modifiers: [
+                                    "once",
+                                    "capture",
+                                ],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 5,
+                                            end: 45,
+                                        },
+                                        expression_span: Span {
+                                            start: 37,
+                                            end: 44,
+                                        },
+                                        expression: "handler",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 46,
+                                    end: 53,
+                                },
+                                data: "Content",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 59,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 59,
+    },
+}

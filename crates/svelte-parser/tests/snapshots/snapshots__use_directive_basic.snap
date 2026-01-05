@@ -1,0 +1,64 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div use:tooltip>Hover me</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 31,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 16,
+                                },
+                                kind: Use,
+                                name: "tooltip",
+                                modifiers: [],
+                                expression: None,
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 17,
+                                    end: 25,
+                                },
+                                data: "Hoverme",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 31,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 31,
+    },
+}
