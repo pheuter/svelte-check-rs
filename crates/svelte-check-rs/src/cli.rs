@@ -79,6 +79,35 @@ pub struct Args {
     /// Show resolved paths for package manager, tsgo, and svelte-kit binaries
     #[arg(long = "debug-paths")]
     pub debug_paths: bool,
+
+    // === Debug flags for development ===
+    /// List files that would be checked, then exit (useful for debugging file discovery)
+    #[arg(long = "list-files")]
+    pub list_files: bool,
+
+    /// Skip TypeScript type-checking (tsgo), only run Svelte diagnostics (a11y, CSS, component)
+    #[arg(long = "skip-tsgo")]
+    pub skip_tsgo: bool,
+
+    /// Process only a single file (useful for isolating issues)
+    #[arg(long = "single-file")]
+    pub single_file: Option<Utf8PathBuf>,
+
+    /// Output parsed AST as JSON (for debugging parser issues)
+    #[arg(long = "emit-ast")]
+    pub emit_ast: bool,
+
+    /// Show resolved configuration (tsconfig, svelte.config.js, excludes)
+    #[arg(long = "show-config")]
+    pub show_config: bool,
+
+    /// Show source map mappings when using --emit-ts (for debugging position mapping)
+    #[arg(long = "emit-source-map")]
+    pub emit_source_map: bool,
+
+    /// Show cache statistics (files written/skipped to .svelte-check-rs/)
+    #[arg(long = "cache-stats")]
+    pub cache_stats: bool,
 }
 
 /// Output format options.
@@ -181,5 +210,59 @@ mod tests {
         assert!(args.include_js());
         assert!(args.include_svelte());
         assert!(!args.include_css());
+    }
+
+    #[test]
+    fn test_debug_flags() {
+        // Test --list-files
+        let args = Args::parse_from(["svelte-check-rs", "--list-files"]);
+        assert!(args.list_files);
+
+        // Test --skip-tsgo
+        let args = Args::parse_from(["svelte-check-rs", "--skip-tsgo"]);
+        assert!(args.skip_tsgo);
+
+        // Test --single-file
+        let args = Args::parse_from(["svelte-check-rs", "--single-file", "src/App.svelte"]);
+        assert_eq!(
+            args.single_file.as_ref().map(|p| p.as_str()),
+            Some("src/App.svelte")
+        );
+
+        // Test --emit-ast
+        let args = Args::parse_from(["svelte-check-rs", "--emit-ast"]);
+        assert!(args.emit_ast);
+
+        // Test --show-config
+        let args = Args::parse_from(["svelte-check-rs", "--show-config"]);
+        assert!(args.show_config);
+
+        // Test --emit-source-map
+        let args = Args::parse_from(["svelte-check-rs", "--emit-source-map"]);
+        assert!(args.emit_source_map);
+
+        // Test --cache-stats
+        let args = Args::parse_from(["svelte-check-rs", "--cache-stats"]);
+        assert!(args.cache_stats);
+    }
+
+    #[test]
+    fn test_combined_debug_flags() {
+        // Test combining multiple debug flags
+        let args = Args::parse_from([
+            "svelte-check-rs",
+            "--emit-ts",
+            "--emit-source-map",
+            "--skip-tsgo",
+            "--single-file",
+            "test.svelte",
+        ]);
+        assert!(args.emit_ts);
+        assert!(args.emit_source_map);
+        assert!(args.skip_tsgo);
+        assert_eq!(
+            args.single_file.as_ref().map(|p| p.as_str()),
+            Some("test.svelte")
+        );
     }
 }
