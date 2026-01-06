@@ -19,6 +19,16 @@ A high-performance, Rust-powered diagnostic engine designed as a drop-in replace
 npm install -D svelte-check-rs
 ```
 
+Postinstall downloads the binary. If lifecycle scripts are blocked, trust the package:
+
+```bash
+# pnpm
+pnpm --config.ignore-scripts=false i -D svelte-check-rs
+
+# bun
+bun pm trust svelte-check-rs
+```
+
 Then add to your package.json scripts:
 
 ```json
@@ -76,7 +86,7 @@ svelte-check-rs --output human-verbose
 | `--watch` | Watch mode |
 | `--preserveWatchOutput` | Don't clear screen in watch mode |
 | `--fail-on-warnings` | Exit with error on warnings |
-| `--diagnostic-sources <LIST>` | Which diagnostics: `js`, `svelte`, `css` |
+| `--diagnostic-sources <LIST>` | Which diagnostics: `js`, `svelte` |
 | `--ignore <PATTERNS>` | Glob patterns to ignore |
 
 ## Project Structure

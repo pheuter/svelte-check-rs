@@ -918,6 +918,12 @@ code {
   letter-spacing: 0.05em;
 }
 
+.install-note {
+  margin: 12px 0 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
 .code-block {
   display: block;
   padding: 16px 20px;

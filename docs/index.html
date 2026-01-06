@@ -270,51 +270,23 @@
                   </svg>
                 </button>
               </code>
-            </div>
-            <div class="install-block full">
-              <div class="install-label">macOS / Linux</div>
-              <code class="install-cmd" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh">
-                <span class="prompt">$</span><span class="install-text">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</span>
-                <button class="copy-btn" aria-label="Copy to clipboard">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
-              </code>
-            </div>
-            <div class="install-block full">
-              <div class="install-label">Windows (PowerShell)</div>
-              <code class="install-cmd" data-copy="irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex">
-                <span class="prompt">></span><span class="install-text">irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex</span>
-                <button class="copy-btn" aria-label="Copy to clipboard">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
-              </code>
+              <p class="install-note">
+                Postinstall downloads the binary. If lifecycle scripts are blocked, trust the package:
+              </p>
+              <code class="code-block"><span class="dim">// pnpm</span>
+pnpm --config.ignore-scripts=false i -D svelte-check-rs
+
+<span class="dim">// bun</span>
+bun pm trust svelte-check-rs</code>
             </div>
             <div class="install-block full">
               <div class="install-label">Replace existing scripts</div>
-              <code class="code-block code-block-copyable" data-copy='{"scripts":{"check":"svelte-check-rs"}}'><span class="dim">// package.json</span>
+              <code class="code-block"><span class="dim">// package.json</span>
 {
   "scripts": {
     "check": "svelte-check-rs"
   }
-}<button class="copy-btn" aria-label="Copy to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></code>
-            </div>
-            <div class="install-block full">
-              <div class="install-label">Or alias for zero-config switch</div>
-              <code class="install-cmd" data-copy="alias svelte-check=svelte-check-rs">
-                <span class="prompt">$</span><span class="install-text">alias svelte-check=svelte-check-rs</span>
-                <button class="copy-btn" aria-label="Copy to clipboard">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
-              </code>
+}</code>
             </div>
           </div>
         </div>
@@ -350,7 +322,7 @@
               <div class="cli-table">
                 <div class="cli-row">
                   <code>--diagnostic-sources</code>
-                  <span>js,svelte,css</span>
+                  <span>js,svelte</span>
                 </div>
                 <div class="cli-row">
                   <code>--threshold</code>
@@ -364,14 +336,10 @@
                   <code>--ignore &lt;glob&gt;</code>
                   <span>Skip matching files</span>
                 </div>
-                <div class="cli-row">
-                  <code>--debug-paths</code>
-                  <span>Show resolved binaries</span>
-                </div>
               </div>
             </div>
             <div class="cli-group">
-              <h3>Performance</h3>
+              <h3>Debug</h3>
               <div class="cli-table">
                 <div class="cli-row">
                   <code>--timings</code>
@@ -382,8 +350,12 @@
                   <span>text | json</span>
                 </div>
                 <div class="cli-row">
+                  <code>--debug-paths</code>
+                  <span>Show resolved binaries</span>
+                </div>
+                <div class="cli-row">
                   <code>--emit-ts</code>
-                  <span>Debug: print transformed TS</span>
+                  <span>Print transformed TS</span>
                 </div>
               </div>
             </div>
