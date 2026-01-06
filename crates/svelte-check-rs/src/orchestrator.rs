@@ -171,15 +171,59 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     let svelte_config = SvelteConfig::load(&workspace);
 
     // Load tsconfig to detect module resolution strategy
-    let ts_config = if let Some(ref custom_path) = args.tsconfig {
-        TsConfig::load(custom_path)
+    let ts_config_path = if let Some(ref custom_path) = args.tsconfig {
+        Some(custom_path.clone())
     } else {
-        TsConfig::find(&workspace).map(|(_, config)| config)
+        TsConfig::find(&workspace).map(|(path, _)| path)
     };
+    let ts_config = ts_config_path.as_ref().and_then(|p| TsConfig::load(p));
     let use_nodenext_imports = ts_config
         .as_ref()
         .map(|c| c.compiler_options.requires_explicit_extensions())
         .unwrap_or(false);
+
+    // Handle --show-config flag
+    if args.show_config {
+        eprintln!("=== svelte-check-rs configuration ===");
+        eprintln!("workspace: {}", workspace);
+        eprintln!();
+        eprintln!("=== svelte.config.js ===");
+        eprintln!("file_extensions: {:?}", svelte_config.file_extensions());
+        eprintln!("kit.alias: {:?}", svelte_config.kit.alias);
+        eprintln!();
+        eprintln!("=== tsconfig.json ===");
+        if let Some(ref path) = ts_config_path {
+            eprintln!("path: {}", path);
+        } else {
+            eprintln!("path: (not found)");
+        }
+        if let Some(ref config) = ts_config {
+            eprintln!("module: {:?}", config.compiler_options.module);
+            eprintln!(
+                "moduleResolution: {:?}",
+                config.compiler_options.module_resolution
+            );
+            eprintln!("target: {:?}", config.compiler_options.target);
+            eprintln!("strict: {:?}", config.compiler_options.strict);
+            eprintln!("baseUrl: {:?}", config.compiler_options.base_url);
+            eprintln!("paths: {:?}", config.compiler_options.paths);
+            eprintln!("exclude: {:?}", config.exclude);
+            eprintln!("requires_explicit_extensions: {}", use_nodenext_imports);
+        } else if ts_config_path.is_some() {
+            eprintln!("(failed to parse tsconfig)");
+        }
+        eprintln!();
+        eprintln!("=== CLI overrides ===");
+        eprintln!("ignore patterns: {:?}", args.ignore);
+        eprintln!("diagnostic_sources: {:?}", args.diagnostic_sources);
+        eprintln!("threshold: {:?}", args.threshold);
+        return Ok(CheckSummary {
+            file_count: 0,
+            error_count: 0,
+            warning_count: 0,
+            fail_on_warnings: false,
+        });
+    }
 
     let timings_enabled = args.timings
         || args.timings_format == TimingFormat::Json
@@ -244,6 +288,40 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     } else {
         None
     };
+
+    // Handle --single-file flag: filter to just the specified file
+    let files = if let Some(ref single_file) = args.single_file {
+        let target = if single_file.is_relative() {
+            workspace.join(single_file)
+        } else {
+            single_file.clone()
+        };
+        let matched: Vec<_> = files.into_iter().filter(|f| f == &target).collect();
+        if matched.is_empty() {
+            eprintln!(
+                "Warning: --single-file '{}' not found in discovered files. Check if path is correct.",
+                single_file
+            );
+        }
+        matched
+    } else {
+        files
+    };
+
+    // Handle --list-files flag: print files and exit
+    if args.list_files {
+        eprintln!("=== Files to check ({}) ===", files.len());
+        for file in &files {
+            let relative = file.strip_prefix(&workspace).unwrap_or(file);
+            println!("{}", relative);
+        }
+        return Ok(CheckSummary {
+            file_count: files.len(),
+            error_count: 0,
+            warning_count: 0,
+            fail_on_warnings: false,
+        });
+    }
 
     if args.watch {
         run_watch_mode(
@@ -321,6 +399,20 @@ async fn run_single_check(
             // Parse the file
             let parse_result = parse(&source);
 
+            // If emit_ast is enabled, print parsed AST for each file
+            if args.emit_ast {
+                let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                eprintln!("=== AST for {} ===", relative_path);
+                eprintln!("{:#?}", parse_result.document);
+                if !parse_result.errors.is_empty() {
+                    eprintln!("=== Parse errors ===");
+                    for error in &parse_result.errors {
+                        eprintln!("  {:?}", error);
+                    }
+                }
+                eprintln!();
+            }
+
             // Collect parse errors
             let mut all_diagnostics = Vec::new();
 
@@ -342,8 +434,11 @@ async fn run_single_check(
 
             all_diagnostics.retain(|diag| include_svelte_severity(diag.severity, args.threshold));
 
-            // Transform for TypeScript checking (if JS diagnostics enabled)
-            if args.include_js() {
+            // Transform for TypeScript checking (if JS diagnostics enabled and not skipping tsgo)
+            // Also transform if emit_ts or emit_source_map is enabled (for debugging)
+            let should_transform =
+                (args.include_js() && !args.skip_tsgo) || args.emit_ts || args.emit_source_map;
+            if should_transform {
                 let virtual_path = virtual_path_for(file_path, workspace, true);
                 let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
                 let transform_options = TransformOptions {
@@ -364,19 +459,43 @@ async fn run_single_check(
                     );
                 }
 
-                // Create the virtual path (original.svelte -> original.svelte.ts)
-                let virtual_path = virtual_path_for(file_path, workspace, true);
+                // If emit_source_map is enabled, print source map mappings
+                if args.emit_source_map {
+                    let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
+                    eprintln!(
+                        "=== Source Map for {} ({} mappings) ===",
+                        relative_path,
+                        transform_result.source_map.len()
+                    );
+                    for (i, mapping) in transform_result.source_map.mappings().enumerate() {
+                        eprintln!(
+                            "  {}: generated {}..{} -> original {}..{}",
+                            i,
+                            u32::from(mapping.generated.start),
+                            u32::from(mapping.generated.end),
+                            u32::from(mapping.original.start),
+                            u32::from(mapping.original.end)
+                        );
+                    }
+                    eprintln!();
+                }
 
-                let transformed_file = TransformedFile {
-                    original_path: file_path.clone(),
-                    tsx_content: transform_result.tsx_code,
-                    source_map: transform_result.source_map,
-                    original_line_index: LineIndex::new(&source),
-                };
+                // Only add to transformed files collection if we're going to run tsgo
+                if args.include_js() && !args.skip_tsgo {
+                    // Create the virtual path (original.svelte -> original.svelte.ts)
+                    let virtual_path = virtual_path_for(file_path, workspace, true);
 
-                // Add to shared collection
-                if let Ok(mut files) = transformed_files.lock() {
-                    files.add(virtual_path, transformed_file);
+                    let transformed_file = TransformedFile {
+                        original_path: file_path.clone(),
+                        tsx_content: transform_result.tsx_code,
+                        source_map: transform_result.source_map,
+                        original_line_index: LineIndex::new(&source),
+                    };
+
+                    // Add to shared collection
+                    if let Ok(mut files) = transformed_files.lock() {
+                        files.add(virtual_path, transformed_file);
+                    }
                 }
             }
 
@@ -537,8 +656,8 @@ async fn run_single_check(
     let mut sveltekit_sync_time = None;
     let mut sveltekit_sync_ran = None;
 
-    // Run TypeScript type-checking if JS diagnostics are enabled
-    if args.include_js() {
+    // Run TypeScript type-checking if JS diagnostics are enabled and not skipping tsgo
+    if args.include_js() && !args.skip_tsgo {
         let transformed = transformed_files.into_inner().unwrap_or_default();
         transformed_count = transformed.files.len();
 
@@ -672,6 +791,55 @@ async fn run_single_check(
                 }
                 eprintln!("total: {:?}", total_start.elapsed());
             }
+        }
+    }
+
+    // Print cache stats if requested (separate from timings)
+    if args.cache_stats && !timings_enabled {
+        if let Some(stats) = &tsgo_stats {
+            eprintln!("=== svelte-check-rs cache stats ===");
+            eprintln!(
+                "TSX files:     {} written, {} skipped (unchanged)",
+                stats.cache.tsx_written, stats.cache.tsx_skipped
+            );
+            eprintln!(
+                "Stub files:    {} written, {} skipped",
+                stats.cache.stub_written, stats.cache.stub_skipped
+            );
+            eprintln!(
+                "Shim files:    {} written, {} skipped",
+                stats.cache.shim_written, stats.cache.shim_skipped
+            );
+            eprintln!(
+                "Kit files:     {} written, {} skipped",
+                stats.cache.kit_written, stats.cache.kit_skipped
+            );
+            eprintln!(
+                "Patched files: {} written, {} skipped",
+                stats.cache.patched_written, stats.cache.patched_skipped
+            );
+            eprintln!(
+                "TSConfig:      {} written, {} skipped",
+                stats.cache.tsconfig_written, stats.cache.tsconfig_skipped
+            );
+            eprintln!();
+            eprintln!("Source tree:");
+            eprintln!("  entries:          {}", stats.cache.source_entries);
+            eprintln!("  files:            {}", stats.cache.source_files);
+            eprintln!("  directories:      {}", stats.cache.source_dirs);
+            eprintln!("  svelte skipped:   {}", stats.cache.source_svelte_skipped);
+            eprintln!(
+                "  existing skipped: {}",
+                stats.cache.source_existing_skipped
+            );
+            eprintln!("  symlinked:        {}", stats.cache.source_linked);
+            eprintln!("  copied:           {}", stats.cache.source_copied);
+        } else if args.skip_tsgo {
+            eprintln!("=== svelte-check-rs cache stats ===");
+            eprintln!("(tsgo was skipped, no cache stats available)");
+        } else {
+            eprintln!("=== svelte-check-rs cache stats ===");
+            eprintln!("(no files were transformed)");
         }
     }
 
