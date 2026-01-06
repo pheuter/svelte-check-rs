@@ -7,6 +7,7 @@ pub mod aria_data;
 pub mod rules;
 
 use crate::{Diagnostic, DiagnosticCode};
+use std::collections::HashSet;
 use svelte_parser::{Attribute, Element, SvelteDocument, TemplateNode};
 
 /// Runs all a11y checks on a document.
@@ -17,23 +18,90 @@ pub fn check(doc: &SvelteDocument) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// Parses a svelte-ignore comment and extracts the ignored codes.
+///
+/// Returns None if this is not a svelte-ignore comment.
+/// Returns Some(codes) with a set of code strings that should be ignored.
+fn parse_svelte_ignore_comment(comment_data: &str) -> Option<HashSet<String>> {
+    let trimmed = comment_data.trim();
+    let content = trimmed.strip_prefix("svelte-ignore")?;
+
+    // Parse the codes after "svelte-ignore"
+    let codes: HashSet<String> = content.split_whitespace().map(|s| s.to_string()).collect();
+
+    Some(codes)
+}
+
+/// Checks if a diagnostic code should be ignored based on svelte-ignore codes.
+fn should_ignore_diagnostic(code: &DiagnosticCode, ignored_codes: &HashSet<String>) -> bool {
+    // Convert the diagnostic code to its string representation
+    let code_str = code.as_str();
+
+    // Check for exact match
+    if ignored_codes.contains(code_str) {
+        return true;
+    }
+
+    // Check for underscore variant (svelte-ignore uses underscores)
+    let underscore_variant = code_str.replace('-', "_");
+    if ignored_codes.contains(&underscore_variant) {
+        return true;
+    }
+
+    // Check for wildcard patterns like "a11y_*" or "a11y-*"
+    for ignored in ignored_codes {
+        if ignored.ends_with('*') {
+            let prefix = &ignored[..ignored.len() - 1];
+            if code_str.starts_with(prefix) || underscore_variant.starts_with(prefix) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Recursively checks template nodes.
 fn check_fragment(
     nodes: &[TemplateNode],
     diagnostics: &mut Vec<Diagnostic>,
     heading_levels: &mut Vec<(u8, source_map::Span)>,
 ) {
+    // Track svelte-ignore codes from the previous comment
+    let mut pending_ignore_codes: Option<HashSet<String>> = None;
+
     for node in nodes {
         match node {
+            TemplateNode::Comment(comment) => {
+                // Check if this is a svelte-ignore comment
+                if let Some(codes) = parse_svelte_ignore_comment(&comment.data) {
+                    pending_ignore_codes = Some(codes);
+                }
+            }
+            TemplateNode::Text(text) => {
+                // Whitespace-only text nodes don't reset the ignore codes
+                // This allows comments followed by whitespace then element to work
+                if !text.is_whitespace {
+                    pending_ignore_codes = None;
+                }
+            }
             TemplateNode::Element(el) => {
-                check_element(el, diagnostics, heading_levels);
+                check_element_with_ignores(
+                    el,
+                    diagnostics,
+                    heading_levels,
+                    pending_ignore_codes.as_ref(),
+                );
                 check_fragment(&el.children, diagnostics, heading_levels);
+                pending_ignore_codes = None;
             }
             TemplateNode::Component(comp) => {
                 check_fragment(&comp.children, diagnostics, heading_levels);
+                pending_ignore_codes = None;
             }
             TemplateNode::SvelteElement(el) => {
                 check_fragment(&el.children, diagnostics, heading_levels);
+                pending_ignore_codes = None;
             }
             TemplateNode::IfBlock(block) => {
                 check_fragment(&block.consequent.nodes, diagnostics, heading_levels);
@@ -47,12 +115,14 @@ fn check_fragment(
                         }
                     }
                 }
+                pending_ignore_codes = None;
             }
             TemplateNode::EachBlock(block) => {
                 check_fragment(&block.body.nodes, diagnostics, heading_levels);
                 if let Some(fallback) = &block.fallback {
                     check_fragment(&fallback.nodes, diagnostics, heading_levels);
                 }
+                pending_ignore_codes = None;
             }
             TemplateNode::AwaitBlock(block) => {
                 if let Some(pending) = &block.pending {
@@ -64,15 +134,43 @@ fn check_fragment(
                 if let Some(catch) = &block.catch {
                     check_fragment(&catch.body.nodes, diagnostics, heading_levels);
                 }
+                pending_ignore_codes = None;
             }
             TemplateNode::KeyBlock(block) => {
                 check_fragment(&block.body.nodes, diagnostics, heading_levels);
+                pending_ignore_codes = None;
             }
             TemplateNode::SnippetBlock(block) => {
                 check_fragment(&block.body.nodes, diagnostics, heading_levels);
+                pending_ignore_codes = None;
             }
-            _ => {}
+            _ => {
+                pending_ignore_codes = None;
+            }
         }
+    }
+}
+
+/// Checks an element and filters diagnostics based on svelte-ignore directives.
+fn check_element_with_ignores(
+    el: &Element,
+    diagnostics: &mut Vec<Diagnostic>,
+    heading_levels: &mut Vec<(u8, source_map::Span)>,
+    ignore_codes: Option<&HashSet<String>>,
+) {
+    // Collect diagnostics for this element
+    let mut element_diagnostics = Vec::new();
+    check_element(el, &mut element_diagnostics, heading_levels);
+
+    // Filter out ignored diagnostics
+    if let Some(ignored) = ignore_codes {
+        for diag in element_diagnostics {
+            if !should_ignore_diagnostic(&diag.code, ignored) {
+                diagnostics.push(diag);
+            }
+        }
+    } else {
+        diagnostics.extend(element_diagnostics);
     }
 }
 
@@ -639,5 +737,142 @@ mod tests {
                 .any(|d| matches!(d.code, DiagnosticCode::A11yNoNoninteractiveTabindex)),
             "Should NOT trigger noninteractive-tabindex when element has interactive role"
         );
+    }
+
+    // === svelte-ignore pragma tests ===
+
+    #[test]
+    fn test_svelte_ignore_suppresses_warning() {
+        // Issue #20: svelte-ignore should suppress warnings
+        let doc = parse(
+            r#"<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div tabindex="0">has pragma</div>"#,
+        )
+        .document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yNoNoninteractiveTabindex)),
+            "svelte-ignore should suppress a11y_no_noninteractive_tabindex warning"
+        );
+    }
+
+    #[test]
+    fn test_svelte_ignore_with_hyphen_variant() {
+        // svelte-ignore should work with hyphen variant too
+        let doc = parse(
+            r#"<!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+<div tabindex="0">has pragma</div>"#,
+        )
+        .document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yNoNoninteractiveTabindex)),
+            "svelte-ignore should work with hyphen variant"
+        );
+    }
+
+    #[test]
+    fn test_no_svelte_ignore_produces_warning() {
+        // Without svelte-ignore, warnings should be produced
+        let doc = parse(r#"<div tabindex="0">no pragma</div>"#).document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yNoNoninteractiveTabindex)),
+            "Without svelte-ignore, warning should be produced"
+        );
+    }
+
+    #[test]
+    fn test_svelte_ignore_multiple_codes() {
+        // svelte-ignore can suppress multiple codes
+        let doc = parse(
+            r#"<!-- svelte-ignore a11y_autofocus a11y_accesskey -->
+<input autofocus accesskey="s">"#,
+        )
+        .document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yAutofocus)),
+            "svelte-ignore should suppress autofocus warning"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yAccesskey)),
+            "svelte-ignore should suppress accesskey warning"
+        );
+    }
+
+    #[test]
+    fn test_svelte_ignore_only_affects_next_element() {
+        // svelte-ignore should only affect the immediately following element
+        let doc = parse(
+            r#"<!-- svelte-ignore a11y_autofocus -->
+<input autofocus>
+<input autofocus>"#,
+        )
+        .document;
+        let diagnostics = check(&doc);
+
+        // Should have exactly one autofocus warning (for the second input)
+        let autofocus_count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.code, DiagnosticCode::A11yAutofocus))
+            .count();
+
+        assert_eq!(
+            autofocus_count, 1,
+            "svelte-ignore should only affect the next element, got {} warnings",
+            autofocus_count
+        );
+    }
+
+    #[test]
+    fn test_svelte_ignore_with_whitespace() {
+        // svelte-ignore should work with whitespace between comment and element
+        let doc = parse(
+            r#"<!-- svelte-ignore a11y_autofocus -->
+
+<input autofocus>"#,
+        )
+        .document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yAutofocus)),
+            "svelte-ignore should work with whitespace between comment and element"
+        );
+    }
+
+    #[test]
+    fn test_parse_svelte_ignore_comment() {
+        use super::parse_svelte_ignore_comment;
+
+        // Basic case
+        let codes = parse_svelte_ignore_comment(" svelte-ignore a11y_autofocus ").unwrap();
+        assert!(codes.contains("a11y_autofocus"));
+
+        // Multiple codes
+        let codes =
+            parse_svelte_ignore_comment("svelte-ignore a11y_autofocus a11y_accesskey").unwrap();
+        assert!(codes.contains("a11y_autofocus"));
+        assert!(codes.contains("a11y_accesskey"));
+
+        // Not a svelte-ignore comment
+        assert!(parse_svelte_ignore_comment("This is a regular comment").is_none());
     }
 }

@@ -98,6 +98,43 @@ fn helpers_import_path_for(virtual_path: &Utf8Path, use_nodenext_imports: bool) 
     path
 }
 
+/// Normalizes a tsconfig exclude pattern to work with globset.
+///
+/// tsconfig patterns like "src/excluded/**" need to be normalized to match
+/// how globset interprets them against relative paths.
+fn normalize_tsconfig_pattern(pattern: &str) -> String {
+    let pattern = pattern.trim();
+
+    // If pattern already starts with ** or *, it's likely a rooted pattern
+    if pattern.starts_with("**") || pattern.starts_with('*') {
+        return pattern.to_string();
+    }
+
+    // If pattern starts with ./, remove it (relative to project root)
+    let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
+
+    // If the pattern doesn't contain **, it might need it for matching
+    // e.g., "src/excluded" should match "src/excluded" and "src/excluded/**"
+    if !pattern.contains("**") {
+        // Check if it ends with a path separator or already has a glob
+        if pattern.ends_with('/') || pattern.ends_with("/*") {
+            pattern.to_string()
+        } else {
+            // Pattern like "src/excluded" - could be a directory
+            // We want to match both "src/excluded" exactly and "src/excluded/**"
+            // Return as-is and let globset handle it, or make it match the directory and all contents
+            if pattern.contains('*') {
+                pattern.to_string()
+            } else {
+                // Treat as directory pattern - match the path and everything under it
+                format!("{}/**", pattern)
+            }
+        }
+    } else {
+        pattern.to_string()
+    }
+}
+
 /// Orchestration errors.
 #[derive(Debug, Error)]
 pub enum OrchestratorError {
@@ -164,6 +201,20 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     ] {
         if let Ok(glob) = Glob::new(pattern) {
             ignore_builder.add(glob);
+        }
+    }
+
+    // Add tsconfig exclude patterns (Issue #19)
+    // These patterns should exclude files from both TypeScript AND Svelte diagnostics
+    if let Some(ref config) = ts_config {
+        for pattern in &config.exclude {
+            // Convert tsconfig glob patterns to globset patterns
+            // tsconfig uses patterns like "src/excluded/**" or "**/*.test.ts"
+            // Make sure patterns work with both relative paths we use
+            let normalized = normalize_tsconfig_pattern(pattern);
+            if let Ok(glob) = Glob::new(&normalized) {
+                ignore_builder.add(glob);
+            }
         }
     }
 
@@ -1027,5 +1078,56 @@ mod tests {
         assert_eq!(line_column_to_offset(source, 2, 1), 6);
         // Line 3, column 1 = offset 12 ('l')
         assert_eq!(line_column_to_offset(source, 3, 1), 12);
+    }
+
+    #[test]
+    fn test_normalize_tsconfig_pattern() {
+        // Issue #19: tsconfig exclude patterns should be properly normalized
+
+        // Directory pattern without glob should get /** appended
+        assert_eq!(
+            normalize_tsconfig_pattern("src/excluded"),
+            "src/excluded/**"
+        );
+
+        // Pattern already with ** should be unchanged
+        assert_eq!(
+            normalize_tsconfig_pattern("src/excluded/**"),
+            "src/excluded/**"
+        );
+
+        // Leading ./ should be stripped
+        assert_eq!(
+            normalize_tsconfig_pattern("./src/excluded"),
+            "src/excluded/**"
+        );
+
+        // Patterns starting with ** should be unchanged
+        assert_eq!(normalize_tsconfig_pattern("**/*.test.ts"), "**/*.test.ts");
+
+        // Patterns with * but no ** should be unchanged
+        assert_eq!(normalize_tsconfig_pattern("src/*.test.ts"), "src/*.test.ts");
+    }
+
+    #[test]
+    fn test_tsconfig_pattern_matching() {
+        // Test that normalized patterns work with globset
+        use globset::GlobBuilder;
+
+        // Simulate the exclude pattern "src/excluded/**" matching
+        let pattern = normalize_tsconfig_pattern("src/excluded");
+        let glob = GlobBuilder::new(&pattern)
+            .literal_separator(false)
+            .build()
+            .unwrap()
+            .compile_matcher();
+
+        // Should match files in the excluded directory
+        assert!(glob.is_match("src/excluded/Test.svelte"));
+        assert!(glob.is_match("src/excluded/nested/File.svelte"));
+
+        // Should not match files outside the excluded directory
+        assert!(!glob.is_match("src/routes/Page.svelte"));
+        assert!(!glob.is_match("src/lib/Component.svelte"));
     }
 }

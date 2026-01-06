@@ -1062,12 +1062,86 @@ impl<'a> RuneScanner<'a> {
         let before_equals = &output[..equals_pos];
 
         // Find the colon that starts the type annotation.
-        // We only accept a `:` at top-level (not inside braces/paren/brackets).
+        // We only accept a `:` at top-level (not inside braces/paren/brackets/strings).
+        // When iterating backwards, we need to track string context properly.
         let mut type_start = None;
         let mut brace_depth = 0;
         let mut paren_depth = 0;
         let mut bracket_depth = 0;
-        for (idx, ch) in before_equals.char_indices().rev() {
+        let mut in_string: Option<char> = None;
+
+        // Iterate backwards through characters
+        let chars: Vec<(usize, char)> = before_equals.char_indices().collect();
+        let mut i = chars.len();
+        while i > 0 {
+            i -= 1;
+            let (idx, ch) = chars[i];
+
+            // When iterating backwards through strings, we need to detect string boundaries
+            // and skip their contents. A quote at position i closes a string (when going backwards),
+            // and we need to find the opening quote.
+            if in_string.is_some() {
+                // We're inside a string (going backwards), look for the opening quote
+                if let Some(quote) = in_string {
+                    if ch == quote {
+                        // Check if this quote is escaped
+                        let mut escape_count = 0;
+                        let mut j = i;
+                        while j > 0 && chars[j - 1].1 == '\\' {
+                            escape_count += 1;
+                            j -= 1;
+                        }
+                        // If even number of escapes (including 0), this is the opening quote
+                        if escape_count % 2 == 0 {
+                            in_string = None;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Check if we're entering a string (going backwards means we hit a closing quote)
+            if ch == '\'' || ch == '"' || ch == '`' {
+                in_string = Some(ch);
+                continue;
+            }
+
+            // Handle regex literals: when we see '/' going backwards, check if it's a regex
+            // A closing '/' of a regex is typically followed by flags (gimsuvy) or operators
+            // We simplify by treating any '/' followed by a valid regex flag as potentially a regex
+            if ch == '/' {
+                // Check if this could be a regex literal (going backwards)
+                // Look for the opening '/' by scanning backwards
+                let mut regex_start = None;
+                let mut j = i;
+                while j > 0 {
+                    j -= 1;
+                    let prev_ch = chars[j].1;
+                    if prev_ch == '/' {
+                        // Check if it's escaped
+                        let mut escape_count = 0;
+                        let mut k = j;
+                        while k > 0 && chars[k - 1].1 == '\\' {
+                            escape_count += 1;
+                            k -= 1;
+                        }
+                        if escape_count % 2 == 0 {
+                            regex_start = Some(j);
+                            break;
+                        }
+                    }
+                    // If we hit a newline, it's not a regex
+                    if prev_ch == '\n' {
+                        break;
+                    }
+                }
+                if let Some(start) = regex_start {
+                    // Skip past this regex literal
+                    i = start;
+                    continue;
+                }
+            }
+
             match ch {
                 '}' => brace_depth += 1,
                 '{' => {
@@ -1506,5 +1580,49 @@ function updateEndTime() {
             result.output
         );
         assert!(result.store_names.contains("formData"));
+    }
+
+    #[test]
+    fn test_props_with_colon_in_import() {
+        // Test that colons inside import strings don't interfere with $props() transformation
+        // This was issue #21 - imports like 'virtual:something' caused parsing errors
+        let result = transform_runes(
+            r#"import 'virtual:something';
+
+let { children } = $props();"#,
+            0,
+        );
+        // The output should NOT contain the import string as part of the type
+        assert!(
+            !result.output.contains("__SvelteLoosen<something"),
+            "Colon in import string was incorrectly parsed as type annotation: {}",
+            result.output
+        );
+        // Should use the default fallback type
+        assert!(
+            result
+                .output
+                .contains("__SvelteLoosen<Record<string, unknown>>"),
+            "Expected fallback type for $props() but got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_props_with_various_string_patterns() {
+        // Test various string patterns with colons that should be skipped
+        let result = transform_runes(
+            r#"const url = "http://example.com";
+const regex = /foo:bar/;
+let { data } = $props();"#,
+            0,
+        );
+        assert!(
+            result
+                .output
+                .contains("__SvelteLoosen<Record<string, unknown>>"),
+            "Expected fallback type but got:\n{}",
+            result.output
+        );
     }
 }
