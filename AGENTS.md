@@ -169,7 +169,3 @@ gh run watch
 
 **Important**: Do NOT manually create GitHub releases. Monitor with: `gh run list` or `gh run watch`
 
-## References
-
-- [Svelte 5 Docs](https://svelte.dev/docs)
-- [svelte-check source](https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check)
