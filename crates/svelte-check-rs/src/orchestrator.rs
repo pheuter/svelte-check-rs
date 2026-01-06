@@ -9,7 +9,6 @@ use rayon::prelude::*;
 use source_map::LineIndex;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use std::time::Instant;
 use svelte_diagnostics::{check as check_svelte, DiagnosticOptions, Severity};
 use svelte_parser::parse;
@@ -133,6 +132,17 @@ fn normalize_tsconfig_pattern(pattern: &str) -> String {
     } else {
         pattern.to_string()
     }
+}
+
+fn is_ignored_dir(ignore_set: &globset::GlobSet, relative: &Utf8Path) -> bool {
+    let rel = relative.as_str();
+    if ignore_set.is_match(rel) {
+        return true;
+    }
+    let mut rel_slash = String::with_capacity(rel.len() + 1);
+    rel_slash.push_str(rel);
+    rel_slash.push('/');
+    ignore_set.is_match(&rel_slash)
 }
 
 /// Orchestration errors.
@@ -271,6 +281,20 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     let extensions = svelte_config.file_extensions();
     let files: Vec<Utf8PathBuf> = WalkDir::new(&workspace)
         .into_iter()
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if !entry.file_type().is_dir() {
+                return true;
+            }
+            let path = match Utf8Path::from_path(entry.path()) {
+                Some(path) => path,
+                None => return true,
+            };
+            let relative = path.strip_prefix(&workspace).unwrap_or(path);
+            !is_ignored_dir(&ignore_set, relative)
+        })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter_map(|e| Utf8PathBuf::try_from(e.into_path()).ok())
@@ -369,12 +393,14 @@ async fn run_single_check(
         filename: None,
     };
 
-    // Shared container for transformed files (thread-safe)
-    let transformed_files = Mutex::new(TransformedFiles::new());
-
     struct FileOutput {
         text: Option<String>,
         json: Vec<FormattedDiagnostic>,
+    }
+
+    struct FileResult {
+        output: Option<FileOutput>,
+        transformed: Option<(Utf8PathBuf, TransformedFile)>,
     }
 
     // Separate files by kind: components (.svelte) vs modules (.svelte.ts/.svelte.js)
@@ -385,14 +411,17 @@ async fn run_single_check(
     let svelte_start = Instant::now();
 
     // Process component files (.svelte) in parallel: parse, run Svelte diagnostics, and transform
-    let component_outputs: Vec<FileOutput> = component_files
+    let component_results: Vec<FileResult> = component_files
         .par_iter()
-        .filter_map(|file_path| {
+        .map(|file_path| {
             let source = match fs::read_to_string(file_path) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to read {}: {}", file_path, e);
-                    return None;
+                    return FileResult {
+                        output: None,
+                        transformed: None,
+                    };
                 }
             };
 
@@ -436,6 +465,7 @@ async fn run_single_check(
 
             // Transform for TypeScript checking (if JS diagnostics enabled and not skipping tsgo)
             // Also transform if emit_ts or emit_source_map is enabled (for debugging)
+            let mut transformed = None;
             let should_transform =
                 (args.include_js() && !args.skip_tsgo) || args.emit_ts || args.emit_source_map;
             if should_transform {
@@ -485,17 +515,16 @@ async fn run_single_check(
                     // Create the virtual path (original.svelte -> original.svelte.ts)
                     let virtual_path = virtual_path_for(file_path, workspace, true);
 
+                    let tsx_code = transform_result.tsx_code;
                     let transformed_file = TransformedFile {
                         original_path: file_path.clone(),
-                        tsx_content: transform_result.tsx_code,
+                        generated_line_index: LineIndex::new(&tsx_code),
+                        tsx_content: tsx_code,
                         source_map: transform_result.source_map,
                         original_line_index: LineIndex::new(&source),
                     };
 
-                    // Add to shared collection
-                    if let Ok(mut files) = transformed_files.lock() {
-                        files.add(virtual_path, transformed_file);
-                    }
+                    transformed = Some((virtual_path, transformed_file));
                 }
             }
 
@@ -512,7 +541,7 @@ async fn run_single_check(
                 }
             }
 
-            if all_diagnostics.is_empty() {
+            let output = if all_diagnostics.is_empty() {
                 None
             } else {
                 let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
@@ -528,19 +557,27 @@ async fn run_single_check(
                         Vec::new()
                     },
                 })
+            };
+
+            FileResult {
+                output,
+                transformed,
             }
         })
         .collect();
 
     // Process module files (.svelte.ts/.svelte.js) in parallel: transform runes only
-    let module_outputs: Vec<FileOutput> = module_files
+    let module_results: Vec<FileResult> = module_files
         .par_iter()
-        .filter_map(|file_path| {
+        .map(|file_path| {
             let source = match fs::read_to_string(file_path) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to read {}: {}", file_path, e);
-                    return None;
+                    return FileResult {
+                        output: None,
+                        transformed: None,
+                    };
                 }
             };
 
@@ -564,6 +601,7 @@ async fn run_single_check(
             }
 
             // Transform for TypeScript checking (if JS diagnostics enabled)
+            let mut transformed = None;
             if args.include_js() {
                 // If emit_ts is enabled, print transformed TypeScript for each file.
                 if args.emit_ts {
@@ -578,17 +616,16 @@ async fn run_single_check(
                 // But we need to write transformed content to the cache
                 let virtual_path = virtual_path_for(file_path, workspace, false);
 
+                let tsx_code = transform_result.code;
                 let transformed_file = TransformedFile {
                     original_path: file_path.clone(),
-                    tsx_content: transform_result.code,
+                    generated_line_index: LineIndex::new(&tsx_code),
+                    tsx_content: tsx_code,
                     source_map: transform_result.source_map,
                     original_line_index: LineIndex::new(&source),
                 };
 
-                // Add to shared collection
-                if let Ok(mut files) = transformed_files.lock() {
-                    files.add(virtual_path, transformed_file);
-                }
+                transformed = Some((virtual_path, transformed_file));
             }
 
             // Count errors and warnings
@@ -604,7 +641,7 @@ async fn run_single_check(
                 }
             }
 
-            if all_diagnostics.is_empty() {
+            let output = if all_diagnostics.is_empty() {
                 None
             } else {
                 let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
@@ -620,15 +657,29 @@ async fn run_single_check(
                         Vec::new()
                     },
                 })
+            };
+
+            FileResult {
+                output,
+                transformed,
             }
         })
         .collect();
 
-    // Combine outputs from both component and module files
-    let outputs: Vec<FileOutput> = component_outputs
+    // Combine outputs and transformed files from both component and module files
+    let mut outputs: Vec<FileOutput> = Vec::new();
+    let mut transformed_files = TransformedFiles::new();
+    for result in component_results
         .into_iter()
-        .chain(module_outputs)
-        .collect();
+        .chain(module_results.into_iter())
+    {
+        if let Some(output) = result.output {
+            outputs.push(output);
+        }
+        if let Some((virtual_path, transformed_file)) = result.transformed {
+            transformed_files.add(virtual_path, transformed_file);
+        }
+    }
 
     let svelte_time = svelte_start.elapsed();
 
@@ -658,7 +709,7 @@ async fn run_single_check(
 
     // Run TypeScript type-checking if JS diagnostics are enabled and not skipping tsgo
     if args.include_js() && !args.skip_tsgo {
-        let transformed = transformed_files.into_inner().unwrap_or_default();
+        let transformed = transformed_files;
         transformed_count = transformed.files.len();
 
         if !transformed.files.is_empty() {

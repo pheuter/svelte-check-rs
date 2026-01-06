@@ -3,7 +3,7 @@
 use crate::runner::{TransformedFiles, TsgoError};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
-use source_map::{LineCol, LineIndex};
+use source_map::LineCol;
 
 /// A diagnostic from tsgo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +138,13 @@ fn map_to_original(
     // The file_path may include temp directory prefixes (e.g., /tmp/.../src/App.svelte.ts)
     // We need to match against our virtual paths which are relative (e.g., src/App.svelte.ts)
 
+    // Fast path: tsgo outputs absolute paths under .svelte-check-rs/cache
+    if let Some(rel) = strip_cache_prefix(file_path) {
+        if let Some(file) = files.get(camino::Utf8Path::new(&rel)) {
+            return do_source_mapping(file, line, column);
+        }
+    }
+
     // First try direct lookup
     let virtual_path = camino::Utf8Path::new(file_path);
     if let Some(file) = files.get(virtual_path) {
@@ -177,11 +184,8 @@ fn do_source_mapping(
     line: u32,
     column: u32,
 ) -> (String, u32, u32) {
-    // Create a line index for the generated content
-    let generated_line_index = LineIndex::new(&file.tsx_content);
-
     // Convert line/column to byte offset (tsgo uses 1-indexed)
-    if let Some(generated_offset) = generated_line_index.offset(LineCol {
+    if let Some(generated_offset) = file.generated_line_index.offset(LineCol {
         line: line.saturating_sub(1),
         col: column.saturating_sub(1),
     }) {
@@ -201,6 +205,18 @@ fn do_source_mapping(
 
     // Fallback: return original file but keep generated position
     (file.original_path.to_string(), line, column)
+}
+
+fn strip_cache_prefix(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let marker = "/.svelte-check-rs/cache/";
+    let idx = normalized.find(marker)?;
+    let rel = &normalized[idx + marker.len()..];
+    if rel.is_empty() {
+        None
+    } else {
+        Some(rel.to_string())
+    }
 }
 
 #[cfg(test)]

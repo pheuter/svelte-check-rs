@@ -2,15 +2,14 @@
 
 use crate::kit;
 use crate::parser::{parse_tsgo_output, TsgoDiagnostic};
+use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use source_map::SourceMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
-use std::time::{Duration, Instant, SystemTime};
-use swc_common::{FileName, SourceMap as SwcSourceMap};
-use swc_ecma_ast::{Decl, ExportDecl, FnDecl, Module, ModuleDecl, ModuleItem, Pat};
-use swc_ecma_parser::{EsSyntax, Parser, StringInput, Syntax, TsSyntax};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::process::Command;
 use walkdir::WalkDir;
@@ -299,6 +298,16 @@ pub struct TsgoCheckOutput {
     pub stats: TsgoCheckStats,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SvelteKitFileStamp {
+    hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct SvelteKitSyncManifest {
+    files: BTreeMap<String, SvelteKitFileStamp>,
+}
+
 impl TsgoRunner {
     /// Creates a new tsgo runner.
     pub fn new(
@@ -481,48 +490,34 @@ impl TsgoRunner {
             return Ok(false);
         }
 
-        let signature = Self::compute_sveltekit_sync_signature(project_root);
-        if let Some(signature) = signature {
-            let state_path = project_root.join(".svelte-check-rs/kit-sync.sig");
-            if let Some(previous) = read_signature(&state_path) {
-                if previous == signature {
-                    return Ok(false);
-                }
+        let state_path = project_root.join(".svelte-check-rs/kit-sync.manifest.json");
+        let previous = read_sync_manifest(&state_path);
+        let manifest = match Self::compute_sveltekit_sync_manifest(project_root) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                eprintln!("Warning: failed to compute svelte-kit sync manifest: {err}");
+                // Fall back to running sync to avoid stale types.
+                return Self::run_sveltekit_sync(project_root, None).await;
             }
+        };
 
-            // Find svelte-kit binary in node_modules
-            let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
-
-            // Run svelte-kit sync
-            let output = Command::new(&svelte_kit_bin)
-                .arg("sync")
-                .current_dir(project_root)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| TsgoError::SvelteKitSyncFailed(format!("failed to run: {e}")))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(TsgoError::SvelteKitSyncFailed(format!(
-                    "exited with code {}: {}",
-                    output.status.code().unwrap_or(-1),
-                    stderr
-                )));
+        if let Some(previous) = &previous {
+            if previous == &manifest {
+                return Ok(false);
             }
-
-            write_signature(&state_path, &signature)?;
-            return Ok(true);
         }
 
-        // Avoid re-running sync when no route/config inputs changed.
-        if !Self::sveltekit_sync_needed(project_root) {
-            return Ok(false);
-        }
+        Self::run_sveltekit_sync(project_root, Some((&state_path, &manifest))).await
+    }
+
+    async fn run_sveltekit_sync(
+        project_root: &Utf8Path,
+        manifest: Option<(&Utf8Path, &SvelteKitSyncManifest)>,
+    ) -> Result<bool, TsgoError> {
+        // Find svelte-kit binary in node_modules
+        let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
 
         // Run svelte-kit sync
-        let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
         let output = Command::new(&svelte_kit_bin)
             .arg("sync")
             .current_dir(project_root)
@@ -541,7 +536,118 @@ impl TsgoRunner {
             )));
         }
 
+        if let Some((path, manifest)) = manifest {
+            write_sync_manifest(path, manifest)?;
+        }
+
         Ok(true)
+    }
+
+    fn compute_sveltekit_sync_manifest(
+        project_root: &Utf8Path,
+    ) -> Result<SvelteKitSyncManifest, TsgoError> {
+        let mut files = BTreeMap::new();
+
+        for path in Self::collect_sveltekit_sync_files(project_root) {
+            let rel = path.strip_prefix(project_root).unwrap_or(&path).to_string();
+            let stamp = file_hash(&path)?;
+            files.insert(rel, stamp);
+        }
+
+        Ok(SvelteKitSyncManifest { files })
+    }
+
+    fn collect_sveltekit_sync_files(project_root: &Utf8Path) -> Vec<Utf8PathBuf> {
+        let mut files = Vec::new();
+
+        let config_candidates = [
+            "svelte.config.js",
+            "svelte.config.cjs",
+            "svelte.config.mjs",
+            "svelte.config.ts",
+        ];
+        for name in config_candidates {
+            let path = project_root.join(name);
+            if path.exists() {
+                files.push(path);
+            }
+        }
+
+        let hooks_dir = project_root.join("src");
+        if hooks_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(hooks_dir.as_std_path()) {
+                for entry in entries.flatten() {
+                    let path = Utf8Path::from_path(&entry.path()).map(Utf8Path::to_owned);
+                    let Some(path) = path else { continue };
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let file_name = match path.file_name() {
+                        Some(name) => name,
+                        None => continue,
+                    };
+                    if !file_name.starts_with("hooks.") {
+                        continue;
+                    }
+                    if !matches!(path.extension(), Some("ts" | "js")) {
+                        continue;
+                    }
+                    files.push(path);
+                }
+            }
+        }
+
+        let params_dir = project_root.join("src/params");
+        if params_dir.exists() {
+            for entry in WalkDir::new(&params_dir).follow_links(false) {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = match Utf8Path::from_path(entry.path()) {
+                    Some(path) => path,
+                    None => continue,
+                };
+                let file_name = match path.file_name() {
+                    Some(file_name) => file_name,
+                    None => continue,
+                };
+                if file_name.contains(".test") || file_name.contains(".spec") {
+                    continue;
+                }
+                if !matches!(path.extension(), Some("ts" | "js")) {
+                    continue;
+                }
+                files.push(path.to_owned());
+            }
+        }
+
+        let routes_dir = project_root.join("src/routes");
+        if routes_dir.exists() {
+            for entry in WalkDir::new(&routes_dir).follow_links(false) {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = match Utf8Path::from_path(entry.path()) {
+                    Some(path) => path,
+                    None => continue,
+                };
+                if route_signature_kind(path).is_some() {
+                    files.push(path.to_owned());
+                }
+            }
+        }
+
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Checks if this is a SvelteKit project by searching for @sveltejs/kit
@@ -584,186 +690,6 @@ impl TsgoRunner {
         Err(TsgoError::SvelteKitSyncFailed(
             "svelte-kit binary not found in node_modules (searched parent directories)".into(),
         ))
-    }
-
-    fn sveltekit_sync_needed(project_root: &Utf8Path) -> bool {
-        let kit_tsconfig = project_root.join(".svelte-kit/tsconfig.json");
-        let baseline = match std::fs::metadata(&kit_tsconfig).and_then(|m| m.modified()) {
-            Ok(time) => time,
-            Err(_) => return true,
-        };
-
-        let config_candidates = [
-            "svelte.config.js",
-            "svelte.config.cjs",
-            "svelte.config.mjs",
-            "svelte.config.ts",
-        ];
-        for name in config_candidates {
-            let path = project_root.join(name);
-            if is_newer_than(&path, baseline) {
-                return true;
-            }
-        }
-
-        let hooks_dir = project_root.join("src");
-        if hooks_dir.exists() && src_hooks_changed(&hooks_dir, baseline) {
-            return true;
-        }
-
-        let params_dir = project_root.join("src/params");
-        if params_dir.exists() && dir_has_newer_mtime(&params_dir, baseline) {
-            return true;
-        }
-
-        let routes_dir = project_root.join("src/routes");
-        if routes_dir.exists() && routes_changed(&routes_dir, baseline) {
-            return true;
-        }
-
-        false
-    }
-
-    fn compute_sveltekit_sync_signature(project_root: &Utf8Path) -> Option<String> {
-        let mut signature = String::new();
-        signature.push_str("v1\n");
-
-        let config_candidates = [
-            "svelte.config.js",
-            "svelte.config.cjs",
-            "svelte.config.mjs",
-            "svelte.config.ts",
-        ];
-        for name in config_candidates {
-            let path = project_root.join(name);
-            if path.exists() {
-                let content = std::fs::read_to_string(&path).ok()?;
-                signature.push_str("config:");
-                signature.push_str(name);
-                signature.push('\n');
-                signature.push_str(&content);
-                signature.push_str("\n--\n");
-            }
-        }
-
-        let hooks_dir = project_root.join("src");
-        if hooks_dir.exists() {
-            let mut hook_entries: Vec<(String, Vec<String>)> = Vec::new();
-            let entries = std::fs::read_dir(hooks_dir.as_std_path()).ok()?;
-            for entry in entries {
-                let entry = entry.ok()?;
-                let path_buf = entry.path();
-                let path = Utf8Path::from_path(&path_buf)?;
-                if !path.is_file() {
-                    continue;
-                }
-                let file_name = match path.file_name() {
-                    Some(name) => name,
-                    None => continue,
-                };
-                if !file_name.starts_with("hooks.") {
-                    continue;
-                }
-                if !matches!(path.extension(), Some("ts" | "js")) {
-                    continue;
-                }
-                let source = std::fs::read_to_string(path).ok()?;
-                let exports = extract_relevant_exports(path, &source, is_relevant_hook_export)?;
-                let rel = path.strip_prefix(project_root).unwrap_or(path).to_string();
-                hook_entries.push((rel, exports));
-            }
-            hook_entries.sort_by(|a, b| a.0.cmp(&b.0));
-            for (rel, exports) in hook_entries {
-                signature.push_str("hook:");
-                signature.push_str(&rel);
-                signature.push('|');
-                signature.push_str(&exports.join(","));
-                signature.push('\n');
-            }
-        }
-
-        let params_dir = project_root.join("src/params");
-        if params_dir.exists() {
-            let mut params: Vec<String> = Vec::new();
-            for entry in WalkDir::new(&params_dir).follow_links(false) {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(_) => continue,
-                };
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let path = match Utf8Path::from_path(entry.path()) {
-                    Some(path) => path,
-                    None => continue,
-                };
-                let file_name = match path.file_name() {
-                    Some(file_name) => file_name,
-                    None => continue,
-                };
-                if file_name.contains(".test") || file_name.contains(".spec") {
-                    continue;
-                }
-                if !matches!(path.extension(), Some("ts" | "js")) {
-                    continue;
-                }
-                let rel = path.strip_prefix(project_root).unwrap_or(path).to_string();
-                params.push(rel);
-            }
-            params.sort();
-            for rel in params {
-                signature.push_str("param:");
-                signature.push_str(&rel);
-                signature.push('\n');
-            }
-        }
-
-        let routes_dir = project_root.join("src/routes");
-        if routes_dir.exists() {
-            struct RouteEntry {
-                rel: String,
-                detail: String,
-            }
-            let mut routes: Vec<RouteEntry> = Vec::new();
-            for entry in WalkDir::new(&routes_dir).follow_links(false) {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(_) => continue,
-                };
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let path = match Utf8Path::from_path(entry.path()) {
-                    Some(path) => path,
-                    None => continue,
-                };
-                let kind = match route_signature_kind(path) {
-                    Some(kind) => kind,
-                    None => continue,
-                };
-                let rel = path.strip_prefix(project_root).unwrap_or(path).to_string();
-                let detail = match kind {
-                    RouteSignatureKind::Svelte => "svelte".to_string(),
-                    RouteSignatureKind::Script => {
-                        let source = std::fs::read_to_string(path).ok()?;
-                        let exports =
-                            extract_relevant_exports(path, &source, is_relevant_route_export)?;
-                        format!("exports:{}", exports.join(","))
-                    }
-                };
-                routes.push(RouteEntry { rel, detail });
-            }
-            routes.sort_by(|a, b| a.rel.cmp(&b.rel));
-            for entry in routes {
-                signature.push_str("route:");
-                signature.push_str(&entry.rel);
-                signature.push('|');
-                signature.push_str(&entry.detail);
-                signature.push('\n');
-            }
-        }
-
-        Some(signature)
     }
 
     /// Finds tsgo or installs it if not found.
@@ -1412,16 +1338,19 @@ fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<b
     Ok(true)
 }
 
-fn read_signature(path: &Utf8Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+fn read_sync_manifest(path: &Utf8Path) -> Option<SvelteKitSyncManifest> {
+    let contents = std::fs::read(path).ok()?;
+    serde_json::from_slice(&contents).ok()
 }
 
-fn write_signature(path: &Utf8Path, signature: &str) -> Result<(), TsgoError> {
+fn write_sync_manifest(path: &Utf8Path, manifest: &SvelteKitSyncManifest) -> Result<(), TsgoError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| TsgoError::TempFileFailed(format!("create sync dir: {e}")))?;
     }
-    let _ = write_if_changed(path, signature.as_bytes(), "write kit sync signature")?;
+    let contents =
+        serde_json::to_vec(manifest).map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+    let _ = write_if_changed(path, &contents, "write kit sync manifest")?;
     Ok(())
 }
 
@@ -1506,6 +1435,16 @@ fn sync_sveltekit_cache(source: &Utf8Path, target: &Utf8Path) -> Result<(), Tsgo
     Ok(())
 }
 
+fn file_hash(path: &Utf8Path) -> Result<SvelteKitFileStamp, TsgoError> {
+    let contents = std::fs::read(path).map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+    let hash = Hasher::new()
+        .update(&contents)
+        .finalize()
+        .to_hex()
+        .to_string();
+    Ok(SvelteKitFileStamp { hash })
+}
+
 fn extract_tsgo_diagnostics(stdout: &str) -> Option<String> {
     let mut collected = Vec::new();
     let mut found = false;
@@ -1524,68 +1463,6 @@ fn extract_tsgo_diagnostics(stdout: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-fn is_newer_than(path: &Utf8Path, baseline: SystemTime) -> bool {
-    if !path.exists() {
-        return false;
-    }
-
-    match std::fs::metadata(path).and_then(|m| m.modified()) {
-        Ok(modified) => modified > baseline,
-        Err(_) => true,
-    }
-}
-
-fn src_hooks_changed(src_dir: &Utf8Path, baseline: SystemTime) -> bool {
-    let entries = match std::fs::read_dir(src_dir.as_std_path()) {
-        Ok(entries) => entries,
-        Err(_) => return true,
-    };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => return true,
-        };
-        let path_buf = entry.path();
-        let path = match Utf8Path::from_path(&path_buf) {
-            Some(path) => path,
-            None => continue,
-        };
-        if let Some(file_name) = path.file_name() {
-            if file_name.starts_with("hooks.") && is_newer_than(path, baseline) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-fn routes_changed(routes_dir: &Utf8Path, baseline: SystemTime) -> bool {
-    for entry in WalkDir::new(routes_dir).follow_links(false) {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => return true,
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = match Utf8Path::from_path(entry.path()) {
-            Some(path) => path,
-            None => continue,
-        };
-        let file_name = match path.file_name() {
-            Some(file_name) => file_name,
-            None => continue,
-        };
-        if is_route_sync_file(file_name) && is_newer_than(path, baseline) {
-            return true;
-        }
-    }
-
-    false
 }
 
 #[derive(Clone, Copy)]
@@ -1621,129 +1498,6 @@ fn route_base_name(file_name: &str) -> Option<&str> {
     } else {
         Some(stem)
     }
-}
-
-fn extract_relevant_exports(
-    path: &Utf8Path,
-    source: &str,
-    is_relevant: fn(&str) -> bool,
-) -> Option<Vec<String>> {
-    let is_ts = matches!(path.extension(), Some("ts" | "mts" | "cts"));
-    let module = parse_module_for_exports(path, source, is_ts)?;
-    let mut exports = collect_export_names(&module);
-    exports.retain(|name| is_relevant(name));
-    exports.sort();
-    exports.dedup();
-    Some(exports)
-}
-
-fn parse_module_for_exports(path: &Utf8Path, source: &str, is_ts: bool) -> Option<Module> {
-    let cm: SwcSourceMap = Default::default();
-    let fm = cm.new_source_file(
-        FileName::Custom(path.to_string()).into(),
-        source.to_string(),
-    );
-    let syntax = if is_ts {
-        Syntax::Typescript(TsSyntax {
-            tsx: false,
-            ..Default::default()
-        })
-    } else {
-        Syntax::Es(EsSyntax {
-            jsx: false,
-            ..Default::default()
-        })
-    };
-    let mut parser = Parser::new(syntax, StringInput::from(&*fm), None);
-    parser.parse_module().ok()
-}
-
-fn collect_export_names(module: &Module) -> Vec<String> {
-    let mut names = Vec::new();
-    for item in &module.body {
-        let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl { decl, .. })) = item else {
-            continue;
-        };
-        match decl {
-            Decl::Fn(FnDecl { ident, .. }) => names.push(ident.sym.to_string()),
-            Decl::Var(var) => {
-                for decl in &var.decls {
-                    if let Pat::Ident(ident) = &decl.name {
-                        names.push(ident.id.sym.to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    names
-}
-
-fn is_relevant_route_export(name: &str) -> bool {
-    matches!(
-        name,
-        "load"
-            | "actions"
-            | "entries"
-            | "prerender"
-            | "trailingSlash"
-            | "ssr"
-            | "csr"
-            | "GET"
-            | "PUT"
-            | "POST"
-            | "PATCH"
-            | "DELETE"
-            | "OPTIONS"
-            | "HEAD"
-            | "fallback"
-    )
-}
-
-fn is_relevant_hook_export(name: &str) -> bool {
-    matches!(name, "handle" | "handleFetch" | "handleError" | "reroute")
-}
-
-fn is_route_sync_file(file_name: &str) -> bool {
-    let (stem, ext) = match file_name.rsplit_once('.') {
-        Some((stem, ext)) => (stem, ext),
-        None => return false,
-    };
-    if !matches!(ext, "ts" | "js") {
-        return false;
-    }
-    let base = if let Some((base, _)) = stem.split_once('@') {
-        base
-    } else {
-        stem
-    };
-    matches!(
-        base,
-        "+page" | "+page.server" | "+layout" | "+layout.server" | "+server"
-    )
-}
-
-fn dir_has_newer_mtime(dir: &Utf8Path, baseline: SystemTime) -> bool {
-    for entry in WalkDir::new(dir).follow_links(false) {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => return true,
-        };
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => return true,
-        };
-        match metadata.modified() {
-            Ok(modified) => {
-                if modified > baseline {
-                    return true;
-                }
-            }
-            Err(_) => return true,
-        }
-    }
-
-    false
 }
 
 fn is_ts_like_file(path: &Utf8Path) -> bool {
@@ -2248,6 +2002,8 @@ pub struct TransformedFile {
     pub original_path: Utf8PathBuf,
     /// The generated TSX content.
     pub tsx_content: String,
+    /// Line index for the generated content (for fast source mapping).
+    pub generated_line_index: source_map::LineIndex,
     /// The source map for position mapping.
     pub source_map: SourceMap,
     /// Line index for the original source (for position mapping).
@@ -2300,6 +2056,7 @@ mod tests {
             TransformedFile {
                 original_path: Utf8PathBuf::from("src/App.svelte"),
                 tsx_content: "// generated".to_string(),
+                generated_line_index: LineIndex::new("// generated"),
                 source_map: SourceMap::new(),
                 original_line_index: LineIndex::new(original_source),
             },
