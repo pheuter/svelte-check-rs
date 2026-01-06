@@ -21,6 +21,7 @@ walkdir.workspace = true
 swc_common.workspace = true
 swc_ecma_parser.workspace = true
 swc_ecma_ast.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
