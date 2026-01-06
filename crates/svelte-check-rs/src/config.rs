@@ -293,7 +293,6 @@ impl SvelteConfig {
 /// TypeScript configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub struct TsConfig {
     /// Compiler options.
     #[serde(default)]
@@ -301,9 +300,10 @@ pub struct TsConfig {
 
     /// Include patterns.
     #[serde(default)]
+    #[allow(dead_code)]
     pub include: Vec<String>,
 
-    /// Exclude patterns.
+    /// Exclude patterns (used to filter out files from checking).
     #[serde(default)]
     pub exclude: Vec<String>,
 }
