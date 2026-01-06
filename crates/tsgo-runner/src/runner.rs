@@ -2,8 +2,8 @@
 
 use crate::kit;
 use crate::parser::{parse_tsgo_output, TsgoDiagnostic};
-use camino::{Utf8Path, Utf8PathBuf};
 use blake3::Hasher;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use source_map::SourceMap;
@@ -549,10 +549,7 @@ impl TsgoRunner {
         let mut files = BTreeMap::new();
 
         for path in Self::collect_sveltekit_sync_files(project_root) {
-            let rel = path
-                .strip_prefix(project_root)
-                .unwrap_or(&path)
-                .to_string();
+            let rel = path.strip_prefix(project_root).unwrap_or(&path).to_string();
             let stamp = file_hash(&path)?;
             files.insert(rel, stamp);
         }
@@ -1439,9 +1436,12 @@ fn sync_sveltekit_cache(source: &Utf8Path, target: &Utf8Path) -> Result<(), Tsgo
 }
 
 fn file_hash(path: &Utf8Path) -> Result<SvelteKitFileStamp, TsgoError> {
-    let contents =
-        std::fs::read(path).map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-    let hash = Hasher::new().update(&contents).finalize().to_hex().to_string();
+    let contents = std::fs::read(path).map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+    let hash = Hasher::new()
+        .update(&contents)
+        .finalize()
+        .to_hex()
+        .to_string();
     Ok(SvelteKitFileStamp { hash })
 }
 

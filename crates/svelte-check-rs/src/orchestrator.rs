@@ -669,7 +669,10 @@ async fn run_single_check(
     // Combine outputs and transformed files from both component and module files
     let mut outputs: Vec<FileOutput> = Vec::new();
     let mut transformed_files = TransformedFiles::new();
-    for result in component_results.into_iter().chain(module_results.into_iter()) {
+    for result in component_results
+        .into_iter()
+        .chain(module_results.into_iter())
+    {
         if let Some(output) = result.output {
             outputs.push(output);
         }
