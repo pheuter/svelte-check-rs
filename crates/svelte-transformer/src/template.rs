@@ -9,6 +9,8 @@ use source_map::{ByteOffset, Span};
 use std::collections::HashSet;
 use svelte_parser::*;
 
+use crate::snippets::split_snippet_name;
+
 /// Transform store subscriptions in an expression.
 ///
 /// In Svelte, `$storeName` is shorthand for subscribing to a store and getting its value.
@@ -1449,12 +1451,13 @@ impl TemplateContext {
         // This enables TypeScript to infer parameter types from the component's expected snippet type
         for snippet_node in &snippets {
             if let TemplateNode::SnippetBlock(block) = snippet_node {
+                let snippet_name = split_snippet_name(&block.name).base;
                 // Generate snippet as arrow function: name: (params) => { body }
                 // Transform store subscriptions in parameter types
                 let transformed_params = self.transform_expr(&block.parameters);
                 let trimmed_params = transformed_params.trim();
                 if trimmed_params.is_empty() {
-                    self.emit(&format!("{}: () => {{", block.name));
+                    self.emit(&format!("{}: () => {{", snippet_name));
                     self.indent += 1;
                     self.generate_fragment(&block.body);
                     self.emit("return __svelte_snippet_return;");
@@ -1462,7 +1465,7 @@ impl TemplateContext {
                     self.emit("},");
                 } else {
                     let snippet_param = format!("__snippet_params_{}", self.next_id());
-                    self.emit(&format!("{}: ({}) => {{", block.name, snippet_param));
+                    self.emit(&format!("{}: ({}) => {{", snippet_name, snippet_param));
                     self.indent += 1;
                     // Emit the destructuring with source mapping for the parameters
                     let indent_str = self.indent_str();
@@ -1704,20 +1707,29 @@ impl TemplateContext {
         // Snippets are local functions, use original names so @render tags can call them
         // JavaScript's block scoping handles uniqueness when snippets appear in different scopes
         // Transform store subscriptions in parameter types (e.g., typeof $formData.prop)
+        let snippet_name_parts = split_snippet_name(&block.name);
+        let snippet_name = snippet_name_parts.base;
+        let snippet_generics = snippet_name_parts.generics.unwrap_or_default();
         let transformed_params = self.transform_expr(&block.parameters);
         let trimmed_params = transformed_params.trim();
         if trimmed_params.is_empty() {
-            self.emit(&format!("function {}() {{", block.name));
+            self.emit(&format!(
+                "function {}{}() {{",
+                snippet_name, snippet_generics
+            ));
         } else if trimmed_params.starts_with('{') || trimmed_params.starts_with('[') {
             let param_name = format!("__snippet_params_{}", self.next_id());
-            self.emit(&format!("function {}({}: any) {{", block.name, param_name));
+            self.emit(&format!(
+                "function {}{}({}: any) {{",
+                snippet_name, snippet_generics, param_name
+            ));
             self.indent += 1;
             self.emit(&format!("const {} = {};", trimmed_params, param_name));
             self.indent -= 1;
         } else {
             self.emit(&format!(
-                "function {}({}) {{",
-                block.name, transformed_params
+                "function {}{}({}) {{",
+                snippet_name, snippet_generics, transformed_params
             ));
         }
         self.indent += 1;

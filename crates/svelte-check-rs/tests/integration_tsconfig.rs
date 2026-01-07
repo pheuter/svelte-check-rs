@@ -322,6 +322,19 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2322",
             message_contains: "boolean",
         },
+        // Issue #32 snippet generics type errors
+        ExpectedError {
+            filename: "src/routes/issue-32-snippet-generic-error/+page.svelte",
+            line: 7,
+            code: "TS2322",
+            message_contains: "number",
+        },
+        ExpectedError {
+            filename: "src/routes/issue-32-snippet-generic-error-shortname/+page.svelte",
+            line: 7,
+            code: "TS2322",
+            message_contains: "number",
+        },
         ExpectedError {
             filename: "src/routes/action-attribute/+page.svelte",
             line: 11,
@@ -851,8 +864,8 @@ fn test_all_configs_have_expected_error_counts() {
         .filter(|d| d.diagnostic_type == "Error")
         .count();
 
-    // Bundler: 10 original + 3 use directive errors = 13
-    assert_eq!(bundler_errors, 13, "Bundler should have exactly 13 errors");
+    // Bundler: 10 original + 3 use directive errors + 2 snippet generic errors = 15
+    assert_eq!(bundler_errors, 15, "Bundler should have exactly 15 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"

@@ -388,6 +388,34 @@ fn test_template_snippet_block() {
     );
 }
 
+#[test]
+fn test_template_snippet_generic_header() {
+    transform_snapshot(
+        "template_snippet_generic_header",
+        r#"{#snippet relationshipFormFields<
+  T extends { relationshipType: string; shortName?: string | undefined },
+>(args: T)}
+    <div>{args.relationshipType}</div>
+{/snippet}
+
+{@render relationshipFormFields({ relationshipType: "friend" })}"#,
+    );
+}
+
+#[test]
+fn test_component_snippet_generic_header_as_prop() {
+    transform_snapshot(
+        "component_snippet_generic_header",
+        r#"<Table>
+    {#snippet row<
+        T extends { id: string },
+    >(item)}
+        <span>{item.id}</span>
+    {/snippet}
+</Table>"#,
+    );
+}
+
 // ============================================================================
 // EVENT HANDLER TESTS
 // ============================================================================

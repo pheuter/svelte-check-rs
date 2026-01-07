@@ -2,6 +2,7 @@
 
 use crate::props::{extract_props_info, generate_props_type};
 use crate::runes::transform_runes_with_options;
+use crate::snippets::split_snippet_name;
 use crate::template::{
     generate_template_check_with_spans, transform_store_subscriptions, TemplateCheckResult,
 };
@@ -107,6 +108,7 @@ pub struct TransformResult {
 #[derive(Debug, Clone)]
 struct SnippetDecl {
     name: String,
+    generics: Option<String>,
     parameters: String,
 }
 
@@ -116,10 +118,12 @@ fn collect_top_level_snippets(fragment: &Fragment) -> Vec<SnippetDecl> {
 
     for node in &fragment.nodes {
         if let TemplateNode::SnippetBlock(block) = node {
-            let name = block.name.to_string();
+            let parts = split_snippet_name(&block.name);
+            let name = parts.base;
             if seen.insert(name.clone()) {
                 snippets.push(SnippetDecl {
                     name,
+                    generics: parts.generics,
                     parameters: block.parameters.clone(),
                 });
             }
@@ -1236,7 +1240,11 @@ declare const __svelte_any: any;
         for decl in &snippet_decls {
             let helper_name = format!("__svelte_snippet_params_{}", decl.name);
             let params = transform_store_subscriptions(&decl.parameters);
-            snippet_block.push_str(&format!("function {}({}) {{}}\n", helper_name, params));
+            let generics = decl.generics.as_deref().unwrap_or("");
+            snippet_block.push_str(&format!(
+                "function {}{}({}) {{}}\n",
+                helper_name, generics, params
+            ));
             snippet_block.push_str(&format!(
                 "const {}: __SvelteSnippet<Parameters<typeof {}>> = null as any;\n",
                 decl.name, helper_name
