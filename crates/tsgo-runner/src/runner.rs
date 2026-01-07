@@ -1123,7 +1123,7 @@ impl TsgoRunner {
         excludes.push(format!("{}/**/*.svelte.ts", self.project_root));
         excludes.push(format!("{}/**/*.svelte.js", self.project_root));
         for source in options.patched_sources {
-            excludes.push(source.to_string());
+            excludes.push(clean_path(source).to_string());
         }
 
         let mut root = Map::new();
@@ -1181,7 +1181,7 @@ impl TsgoRunner {
         Ok(overlay_path)
     }
 
-    /// Writes only the patched source files into the cache.
+    /// Writes patched source files and SvelteKit source files into the cache.
     /// This avoids mirroring the entire source tree and relies on rootDirs for resolution.
     fn write_source_patches(
         project_root: &Utf8Path,
@@ -1240,9 +1240,8 @@ impl TsgoRunner {
                             transformed = patched;
                         }
                     }
-                    if transformed != source {
-                        write_contents = Some(transformed);
-                    }
+                    // Always cache SvelteKit files so relative imports resolve within temp_src.
+                    write_contents = Some(transformed);
                     is_kit_file = true;
                 } else if apply_tsgo_fixes && is_ts_like_file(path) {
                     if let Ok(content) = std::fs::read_to_string(path) {
