@@ -75,7 +75,7 @@ type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, 
 type __SvelteLoosen<T> =
   T extends (...args: any) => any ? T :
   T extends readonly any[] ? T :
-  T extends object ? T & Record<string, any> : T;
+  T extends object ? T & Record<string, unknown> : T;
 
 // Helper for $props.<name>() accessors.
 type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;

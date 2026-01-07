@@ -47,6 +47,14 @@ fn binary_path() -> PathBuf {
         .join("svelte-check-rs")
 }
 
+/// Path to the svelte-check-rs cache directory for a fixture
+fn cache_root(fixture_path: &std::path::Path) -> PathBuf {
+    fixture_path
+        .join("node_modules")
+        .join(".cache")
+        .join("svelte-check-rs")
+}
+
 /// A diagnostic from the JSON output
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -120,6 +128,49 @@ fn sleep_for_timestamp_resolution() {
 // CACHE INVALIDATION TESTS
 // ============================================================================
 
+/// Test that legacy .svelte-check-rs cache is migrated to node_modules/.cache.
+#[test]
+#[serial]
+fn test_cache_migration_from_legacy_path() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+
+    // Ensure dependencies are installed
+    let node_modules = fixture_path.join("node_modules");
+    if !node_modules.exists() {
+        let output = Command::new("bun")
+            .arg("install")
+            .current_dir(&fixture_path)
+            .output()
+            .expect("Failed to run bun install");
+        assert!(output.status.success(), "bun install failed");
+    }
+
+    // Run svelte-kit sync
+    let _ = Command::new("bunx")
+        .args(["svelte-kit", "sync"])
+        .current_dir(&fixture_path)
+        .output();
+
+    let legacy_cache = fixture_path.join(".svelte-check-rs");
+    let legacy_marker = legacy_cache.join("cache/legacy.txt");
+    let _ = fs::create_dir_all(legacy_marker.parent().unwrap());
+    fs::write(&legacy_marker, "legacy").expect("Failed to write legacy marker");
+
+    let cache_path = cache_root(&fixture_path);
+    let _ = fs::remove_dir_all(&cache_path);
+
+    let (_exit_code, _diagnostics) = run_check_json(&fixture_path);
+
+    assert!(
+        !legacy_cache.exists(),
+        "Legacy cache directory should be removed during migration"
+    );
+    assert!(
+        cache_path.exists(),
+        "New cache directory should be created during migration"
+    );
+}
+
 /// Test that modifying a TypeScript file invalidates the cache and new types are detected.
 ///
 /// This test reproduces the exact bug found in careswitch-web where:
@@ -132,7 +183,7 @@ fn test_modified_typescript_types_are_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     // Ensure dependencies are installed
@@ -247,7 +298,7 @@ fn test_new_typescript_file_is_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     // Ensure dependencies are installed
@@ -309,7 +360,7 @@ fn test_fixed_type_error_is_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     // Ensure dependencies are installed
@@ -397,7 +448,7 @@ fn test_imported_module_changes_propagate() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     // Ensure dependencies are installed
@@ -502,7 +553,7 @@ fn test_deleted_file_removed_from_cache() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     // Ensure dependencies are installed
@@ -522,10 +573,17 @@ fn test_deleted_file_removed_from_cache() {
         .current_dir(&fixture_path)
         .output();
 
-    // Create a TypeScript file
+    // Create a TypeScript file that triggers a tsgo patch
     let temp_file = fixture_path.join("src/lib/temp-file.ts");
-    let content = r#"// Temporary file
-export const TEMP_VALUE = 42;
+    let content = r#"// Temporary file with Promise.all empty array branch
+export async function loadValue(cond: boolean) {
+    const [value] = await Promise.all([cond ? fetchValue() : []]);
+    return value;
+}
+
+async function fetchValue() {
+    return 42;
+}
 "#;
     fs::write(&temp_file, content).expect("Failed to write temp file");
 
@@ -533,7 +591,7 @@ export const TEMP_VALUE = 42;
     let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
 
     // Verify the file is in the cache
-    let cached_file = cache_path.join("cache/src/lib/temp-file.ts");
+    let cached_file = cache_path.join("src/lib/temp-file.ts");
     assert!(
         cached_file.exists(),
         "File should be in cache after first run"
@@ -559,7 +617,7 @@ fn test_rapid_modifications_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     // Ensure dependencies are installed
@@ -626,7 +684,7 @@ fn test_whitespace_changes_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     // Ensure dependencies are installed

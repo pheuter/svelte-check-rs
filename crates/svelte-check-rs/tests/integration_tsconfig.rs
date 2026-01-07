@@ -48,6 +48,14 @@ fn binary_path() -> std::path::PathBuf {
         .join("svelte-check-rs")
 }
 
+/// Path to the svelte-check-rs cache directory for a fixture
+fn cache_root(fixture_path: &std::path::Path) -> std::path::PathBuf {
+    fixture_path
+        .join("node_modules")
+        .join(".cache")
+        .join("svelte-check-rs")
+}
+
 /// A diagnostic from the JSON output
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -90,7 +98,7 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
         let fixture_path = fixtures_dir().join(fixture_name);
 
         // Clean cache to ensure fresh state
-        let cache_path = fixture_path.join(".svelte-check-rs");
+        let cache_path = cache_root(&fixture_path);
         let _ = std::fs::remove_dir_all(&cache_path);
 
         // Check if node_modules exists

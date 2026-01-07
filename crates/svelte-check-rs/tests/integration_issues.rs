@@ -50,6 +50,14 @@ fn binary_path() -> PathBuf {
         .join("svelte-check-rs")
 }
 
+/// Path to the svelte-check-rs cache directory for a fixture
+fn cache_root(fixture_path: &std::path::Path) -> PathBuf {
+    fixture_path
+        .join("node_modules")
+        .join(".cache")
+        .join("svelte-check-rs")
+}
+
 /// A diagnostic from the JSON output
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -87,7 +95,7 @@ static BUNDLER_READY: OnceLock<()> = OnceLock::new();
 fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
     ready.get_or_init(|| {
         // Clean cache to ensure fresh state
-        let cache_path = fixture_path.join(".svelte-check-rs");
+        let cache_path = cache_root(fixture_path);
         let _ = fs::remove_dir_all(&cache_path);
 
         // Check if node_modules exists
@@ -380,7 +388,7 @@ fn test_tsconfig_exclude_filters_svelte_diagnostics() {
     fs::write(&tsconfig_path, updated_tsconfig).expect("Failed to write updated tsconfig");
 
     // Clean cache to ensure tsconfig changes are picked up
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
@@ -450,7 +458,7 @@ fn test_tsconfig_exclude_wildcard_patterns() {
     fs::write(&tsconfig_path, updated_tsconfig).expect("Failed to write updated tsconfig");
 
     // Clean cache to ensure tsconfig changes are picked up
-    let cache_path = fixture_path.join(".svelte-check-rs");
+    let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
     let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");

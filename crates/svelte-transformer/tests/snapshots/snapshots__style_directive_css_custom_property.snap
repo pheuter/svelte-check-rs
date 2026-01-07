@@ -62,7 +62,7 @@ type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, 
 type __SvelteLoosen<T> =
   T extends (...args: any) => any ? T :
   T extends readonly any[] ? T :
-  T extends object ? T & Record<string, any> : T;
+  T extends object ? T & Record<string, unknown> : T;
 
 // Helper for $props.<name>() accessors.
 type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;
@@ -151,12 +151,12 @@ export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (9) ===
-  0: generated 4568..4590 -> original 18..40
-  1: generated 4590..4591 -> original 40..49
-  2: generated 4591..4609 -> original 49..67
-  3: generated 4609..4615 -> original 67..81
-  4: generated 4615..4617 -> original 81..83
-  5: generated 4748..4791 -> original 124..167
-  6: generated 4837..4838 -> original 180..181
-  7: generated 4852..4857 -> original 214..219
-  8: generated 4861..4866 -> original 238..241
+  0: generated 4572..4594 -> original 18..40
+  1: generated 4594..4595 -> original 40..49
+  2: generated 4595..4613 -> original 49..67
+  3: generated 4613..4619 -> original 67..81
+  4: generated 4619..4621 -> original 81..83
+  5: generated 4752..4795 -> original 124..167
+  6: generated 4841..4842 -> original 180..181
+  7: generated 4856..4861 -> original 214..219
+  8: generated 4865..4870 -> original 238..241

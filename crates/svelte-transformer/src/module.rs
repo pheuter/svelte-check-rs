@@ -42,7 +42,7 @@ const MODULE_HELPERS: &str = r#"// Svelte module rune helpers
 declare function __svelte_effect(fn: () => void | (() => void)): void;
 declare function __svelte_effect_pre(fn: () => void | (() => void)): void;
 declare function __svelte_effect_root(fn: (...args: any[]) => any): void;
-type __SvelteLoosen<T> = T extends (...args: any) => any ? T : T extends readonly any[] ? T : T extends object ? T & Record<string, any> : T;
+type __SvelteLoosen<T> = T extends (...args: any) => any ? T : T extends readonly any[] ? T : T extends object ? T & Record<string, unknown> : T;
 
 "#;
 

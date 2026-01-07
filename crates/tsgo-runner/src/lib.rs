@@ -8,6 +8,7 @@
 //! ```ignore
 //! use tsgo_runner::{TsgoRunner, TransformedFiles};
 //! use camino::Utf8PathBuf;
+//! use std::collections::HashMap;
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -15,6 +16,7 @@
 //!         Utf8PathBuf::from("/usr/local/bin/tsgo"),
 //!         Utf8PathBuf::from("/path/to/project"),
 //!         None,
+//!         HashMap::new(),
 //!         true,
 //!     );
 //!
