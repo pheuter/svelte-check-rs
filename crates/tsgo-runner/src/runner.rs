@@ -58,7 +58,7 @@ declare global {
   type __SvelteLoosen<T> =
     T extends (...args: any) => any ? T :
     T extends readonly any[] ? T :
-    T extends object ? T & Record<string, any> : T;
+    T extends object ? T & Record<string, unknown> : T;
 
   type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;
 
@@ -234,6 +234,12 @@ pub enum TsgoError {
     )]
     PackageManagerNotFound,
 
+    /// node_modules not found when resolving the cache directory.
+    #[error(
+        "node_modules not found starting at {0} (searched parent directories). Please run npm/pnpm/yarn/bun install first."
+    )]
+    NodeModulesNotFound(Utf8PathBuf),
+
     /// svelte-kit sync failed.
     #[error("svelte-kit sync failed: {0}")]
     SvelteKitSyncFailed(String),
@@ -247,6 +253,8 @@ pub struct TsgoRunner {
     project_root: Utf8PathBuf,
     /// Optional tsconfig path override.
     tsconfig_path: Option<Utf8PathBuf>,
+    /// Additional path aliases to merge into the tsconfig.
+    extra_paths: HashMap<String, Vec<String>>,
     /// Whether to cache .svelte-kit contents in a stable location.
     use_sveltekit_cache: bool,
 }
@@ -298,6 +306,33 @@ pub struct TsgoCheckOutput {
     pub stats: TsgoCheckStats,
 }
 
+#[derive(Debug, Default, Clone)]
+struct TsconfigSnapshot {
+    base_url: Option<String>,
+    base_url_base: Option<Utf8PathBuf>,
+    root_dirs: Option<Vec<String>>,
+    root_dirs_base: Option<Utf8PathBuf>,
+    paths: HashMap<String, Vec<String>>,
+    paths_base: Option<Utf8PathBuf>,
+    allow_js: Option<bool>,
+    check_js: Option<bool>,
+    include: Option<Vec<String>>,
+    include_base: Option<Utf8PathBuf>,
+    exclude: Option<Vec<String>>,
+    exclude_base: Option<Utf8PathBuf>,
+    files: Option<Vec<String>>,
+    files_base: Option<Utf8PathBuf>,
+}
+
+struct TsconfigOverlayOptions<'a> {
+    temp_root: &'a Utf8Path,
+    tsconfig_path: &'a Utf8Path,
+    overrides: Option<&'a Map<String, Value>>,
+    kit_include: Option<&'a Utf8Path>,
+    patched_sources: &'a [Utf8PathBuf],
+    extra_files: &'a [Utf8PathBuf],
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct SvelteKitFileStamp {
     hash: String,
@@ -314,14 +349,47 @@ impl TsgoRunner {
         tsgo_path: Utf8PathBuf,
         project_root: Utf8PathBuf,
         tsconfig_path: Option<Utf8PathBuf>,
+        extra_paths: HashMap<String, Vec<String>>,
         use_sveltekit_cache: bool,
     ) -> Self {
         Self {
             tsgo_path,
             project_root,
             tsconfig_path,
+            extra_paths,
             use_sveltekit_cache,
         }
+    }
+
+    fn find_node_modules_dir(project_root: &Utf8Path) -> Option<Utf8PathBuf> {
+        let mut current = Some(project_root);
+
+        while let Some(dir) = current {
+            let candidate = dir.join("node_modules");
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            current = dir.parent();
+        }
+
+        None
+    }
+
+    fn project_cache_root_for(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        let node_modules = Self::find_node_modules_dir(project_root)
+            .ok_or_else(|| TsgoError::NodeModulesNotFound(project_root.to_owned()))?;
+        let cache_root = node_modules.join(".cache/svelte-check-rs");
+
+        let legacy_cache = project_root.join(".svelte-check-rs");
+        if legacy_cache.exists() {
+            eprintln!("Migrating cache: removing legacy {}", legacy_cache.as_str());
+            let _ = std::fs::remove_dir_all(&legacy_cache);
+        }
+
+        std::fs::create_dir_all(&cache_root)
+            .map_err(|e| TsgoError::TempFileFailed(format!("create cache dir: {e}")))?;
+
+        Ok(cache_root)
     }
 
     /// Attempts to find tsgo in workspace, PATH, or common locations.
@@ -490,7 +558,8 @@ impl TsgoRunner {
             return Ok(false);
         }
 
-        let state_path = project_root.join(".svelte-check-rs/kit-sync.manifest.json");
+        let cache_root = Self::project_cache_root_for(project_root)?;
+        let state_path = cache_root.join("kit-sync.manifest.json");
         let previous = read_sync_manifest(&state_path);
         let manifest = match Self::compute_sveltekit_sync_manifest(project_root) {
             Ok(manifest) => manifest,
@@ -778,82 +847,349 @@ impl TsgoRunner {
         }
     }
 
-    /// Prepare a tsconfig overlay inside the temp directory.
-    ///
-    /// This symlinks the existing project tsconfig into the temp workspace so
-    /// relative paths (like `./.svelte-kit/tsconfig.json`) resolve against the temp root.
-    fn prepare_tsconfig_overlay(
+    fn load_tsconfig_snapshot(&self, tsconfig_path: &Utf8Path) -> TsconfigSnapshot {
+        let mut visited = HashSet::new();
+        self.load_tsconfig_snapshot_inner(tsconfig_path, &mut visited)
+    }
+
+    fn load_tsconfig_snapshot_inner(
         &self,
-        temp_root: &Utf8Path,
         tsconfig_path: &Utf8Path,
-        stats: &mut TsgoCacheStats,
-        overrides: Option<&Map<String, Value>>,
-    ) -> Result<Utf8PathBuf, TsgoError> {
-        let temp_tsconfig = if let Ok(rel) = tsconfig_path.strip_prefix(&self.project_root) {
-            temp_root.join(rel)
-        } else {
-            // Fall back to placing the config at the temp root
-            let name = tsconfig_path.file_name().unwrap_or("tsconfig.json");
-            temp_root.join(name)
+        visited: &mut HashSet<Utf8PathBuf>,
+    ) -> TsconfigSnapshot {
+        if !visited.insert(tsconfig_path.to_owned()) {
+            return TsconfigSnapshot::default();
+        }
+
+        let value = match read_tsconfig_value(tsconfig_path) {
+            Some(value) => value,
+            None => return TsconfigSnapshot::default(),
         };
 
-        if let Some(parent) = temp_tsconfig.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-        }
+        let mut snapshot = if let Some(extends_value) = value.get("extends").and_then(Value::as_str)
+        {
+            if let Some(parent) = self.resolve_extends_path(tsconfig_path, extends_value) {
+                self.load_tsconfig_snapshot_inner(&parent, visited)
+            } else {
+                TsconfigSnapshot::default()
+            }
+        } else {
+            TsconfigSnapshot::default()
+        };
 
-        if !temp_tsconfig.exists() {
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(tsconfig_path, &temp_tsconfig)
-                .map_err(|e| TsgoError::TempFileFailed(format!("symlink tsconfig: {e}")))?;
-
-            #[cfg(windows)]
-            std::os::windows::fs::symlink_file(tsconfig_path, &temp_tsconfig)
-                .map_err(|e| TsgoError::TempFileFailed(format!("symlink tsconfig: {e}")))?;
-        }
-
-        if let Some(overrides) = overrides {
-            if !overrides.is_empty() {
-                let overlay_path = temp_tsconfig.with_file_name("tsconfig.tsgo.json");
-                let extends_value = temp_tsconfig
-                    .file_name()
-                    .unwrap_or("tsconfig.json")
-                    .to_string();
-                let mut root = Map::new();
-                root.insert(
-                    "extends".to_string(),
-                    Value::String(format!("./{}", extends_value)),
-                );
-                root.insert(
-                    "compilerOptions".to_string(),
-                    Value::Object(overrides.clone()),
-                );
-                let content = serde_json::to_string_pretty(&Value::Object(root))
-                    .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                let wrote =
-                    write_if_changed(&overlay_path, content.as_bytes(), "write tsconfig overlay")?;
-                if wrote {
-                    stats.tsconfig_written += 1;
-                } else {
-                    stats.tsconfig_skipped += 1;
+        if let Some(options) = value.get("compilerOptions").and_then(Value::as_object) {
+            if let Some(base_url) = options.get("baseUrl").and_then(Value::as_str) {
+                snapshot.base_url = Some(base_url.to_string());
+                snapshot.base_url_base = tsconfig_path.parent().map(|p| p.to_owned());
+            }
+            if let Some(root_dirs) = parse_string_array(options.get("rootDirs")) {
+                snapshot.root_dirs = Some(root_dirs);
+                snapshot.root_dirs_base = tsconfig_path.parent().map(|p| p.to_owned());
+            }
+            if let Some(paths) = options.get("paths").and_then(Value::as_object) {
+                snapshot.paths_base = tsconfig_path.parent().map(|p| p.to_owned());
+                for (key, value) in paths {
+                    if let Some(entries) = parse_string_array(Some(value)) {
+                        if !entries.is_empty() {
+                            snapshot.paths.insert(key.clone(), entries);
+                        }
+                    }
                 }
-                return Ok(overlay_path);
+            }
+            if let Some(allow_js) = options.get("allowJs").and_then(Value::as_bool) {
+                snapshot.allow_js = Some(allow_js);
+            }
+            if let Some(check_js) = options.get("checkJs").and_then(Value::as_bool) {
+                snapshot.check_js = Some(check_js);
             }
         }
 
-        Ok(temp_tsconfig)
+        if let Some(include) = parse_string_array(value.get("include")) {
+            snapshot.include = Some(include);
+            snapshot.include_base = tsconfig_path.parent().map(|p| p.to_owned());
+        }
+        if let Some(exclude) = parse_string_array(value.get("exclude")) {
+            snapshot.exclude = Some(exclude);
+            snapshot.exclude_base = tsconfig_path.parent().map(|p| p.to_owned());
+        }
+        if let Some(files) = parse_string_array(value.get("files")) {
+            snapshot.files = Some(files);
+            snapshot.files_base = tsconfig_path.parent().map(|p| p.to_owned());
+        }
+
+        snapshot
     }
 
-    /// Mirrors the entire source directory tree from the project to the temp directory.
-    /// This preserves the exact directory structure so all relative imports resolve correctly.
-    /// .svelte files are skipped since we write transformed .tsx versions.
-    fn symlink_source_tree(
+    fn resolve_extends_path(
+        &self,
+        base_path: &Utf8Path,
+        extends_value: &str,
+    ) -> Option<Utf8PathBuf> {
+        let base_dir = base_path.parent().unwrap_or(&self.project_root);
+        let extends_path = Utf8Path::new(extends_value);
+        let mut candidates = Vec::new();
+
+        if extends_path.is_absolute() || extends_value.starts_with('.') {
+            let resolved = if extends_path.is_absolute() {
+                extends_path.to_owned()
+            } else {
+                base_dir.join(extends_path)
+            };
+            candidates.push(resolved.clone());
+            if resolved.extension().is_none() {
+                candidates.push(resolved.with_extension("json"));
+            }
+        } else if let Some(node_modules) = Self::find_node_modules_dir(&self.project_root) {
+            let mut resolved = node_modules.join(extends_value);
+            if resolved.is_dir() {
+                candidates.push(resolved.join("tsconfig.json"));
+            } else {
+                candidates.push(resolved.clone());
+                if resolved.extension().is_none() {
+                    resolved.set_extension("json");
+                    candidates.push(resolved);
+                }
+            }
+        }
+
+        candidates.into_iter().find(|path| path.exists())
+    }
+
+    /// Prepare a tsconfig overlay inside the cache directory.
+    ///
+    /// Generates a standalone config with absolute paths and rootDirs so we
+    /// can avoid symlinks and only cache patched sources.
+    fn prepare_tsconfig_overlay(
+        &self,
+        options: &TsconfigOverlayOptions<'_>,
+        stats: &mut TsgoCacheStats,
+    ) -> Result<Utf8PathBuf, TsgoError> {
+        let overlay_path = options.temp_root.join("tsconfig.tsgo.json");
+        let tsconfig_dir = options.tsconfig_path.parent().unwrap_or(&self.project_root);
+        let snapshot = self.load_tsconfig_snapshot(options.tsconfig_path);
+
+        let mut compiler_options = Map::new();
+        if let Some(overrides) = options.overrides {
+            for (key, value) in overrides {
+                compiler_options.insert(key.clone(), value.clone());
+            }
+        }
+
+        let mut root_dirs: Vec<String> = Vec::new();
+        if let Some(root_dirs_raw) = snapshot.root_dirs.as_ref() {
+            let base = snapshot.root_dirs_base.as_deref().unwrap_or(tsconfig_dir);
+            root_dirs.extend(
+                root_dirs_raw
+                    .iter()
+                    .map(|dir| resolve_path_value(base, dir)),
+            );
+        }
+        let project_root = clean_path(&self.project_root).to_string();
+        let temp_root = clean_path(options.temp_root).to_string();
+        root_dirs.retain(|dir| dir != &project_root && dir != &temp_root);
+        let mut ordered_root_dirs = Vec::new();
+        // Prefer cached files over project sources when both exist.
+        ordered_root_dirs.push(temp_root);
+        ordered_root_dirs.push(project_root);
+        ordered_root_dirs.extend(root_dirs);
+        root_dirs = ordered_root_dirs;
+        if let Some(kit_path) = options.kit_include {
+            let types_dir = kit_path.join("types");
+            if types_dir.exists() {
+                root_dirs.push(types_dir.to_string());
+            }
+        }
+
+        let project_kit_root = clean_path(&self.project_root.join(".svelte-kit"));
+        let use_cached_kit = options
+            .kit_include
+            .map(|path| clean_path(path) != project_kit_root)
+            .unwrap_or(false);
+        if use_cached_kit {
+            let project_types = project_kit_root.join("types").to_string();
+            root_dirs.retain(|dir| dir != &project_types);
+        }
+        let mut seen = HashSet::new();
+        root_dirs.retain(|dir| seen.insert(dir.clone()));
+        compiler_options.insert(
+            "rootDirs".to_string(),
+            Value::Array(root_dirs.into_iter().map(Value::String).collect()),
+        );
+
+        let mut merged_paths = snapshot.paths.clone();
+        for (alias, values) in &self.extra_paths {
+            merged_paths
+                .entry(alias.clone())
+                .or_insert_with(|| values.clone());
+        }
+
+        let base_url_base = snapshot.base_url_base.as_deref().unwrap_or(tsconfig_dir);
+        let resolved_base = snapshot
+            .base_url
+            .as_deref()
+            .map(|base| resolve_base_url(base_url_base, base));
+        let paths_base = snapshot.paths_base.as_deref().unwrap_or(tsconfig_dir);
+        let fallback_base = resolved_base
+            .as_ref()
+            .map(|path| path.as_path())
+            .unwrap_or(paths_base);
+
+        if !merged_paths.is_empty() {
+            let mut paths_map = Map::new();
+            for (alias, values) in merged_paths {
+                let mut resolved_values: Vec<Value> = Vec::new();
+                let mut seen = HashSet::new();
+                for value in values {
+                    let resolved = resolve_path_value(fallback_base, &value);
+                    if let Ok(relative) = Utf8Path::new(&resolved).strip_prefix(&self.project_root)
+                    {
+                        let cached = clean_path(&options.temp_root.join(relative)).to_string();
+                        if seen.insert(cached.clone()) {
+                            resolved_values.push(Value::String(cached));
+                        }
+                    }
+                    if seen.insert(resolved.clone()) {
+                        resolved_values.push(Value::String(resolved));
+                    }
+                }
+                paths_map.insert(alias, Value::Array(resolved_values));
+            }
+            compiler_options.insert("paths".to_string(), Value::Object(paths_map));
+        }
+
+        if let Some(resolved) = resolved_base {
+            compiler_options.insert("baseUrl".to_string(), Value::String(resolved.to_string()));
+        }
+
+        let mut includes: Vec<String> = Vec::new();
+        if let Some(files) = snapshot.files.as_ref() {
+            let base = snapshot.files_base.as_deref().unwrap_or(tsconfig_dir);
+            includes.extend(
+                files
+                    .iter()
+                    .map(|pattern| absolutize_pattern(base, pattern)),
+            );
+        }
+        if let Some(include) = snapshot.include.as_ref() {
+            let base = snapshot.include_base.as_deref().unwrap_or(tsconfig_dir);
+            includes.extend(
+                include
+                    .iter()
+                    .map(|pattern| absolutize_pattern(base, pattern)),
+            );
+        }
+        let default_includes = includes.is_empty();
+        if default_includes {
+            includes.push(absolutize_pattern(tsconfig_dir, "src/**/*"));
+            if self.project_root.join("tests").exists() {
+                includes.push(absolutize_pattern(tsconfig_dir, "tests/**/*"));
+            }
+            if self.project_root.join("workflows").exists() {
+                includes.push(absolutize_pattern(tsconfig_dir, "workflows/**/*"));
+            }
+        }
+
+        includes.push(format!("{}/src/**/*.ts", options.temp_root));
+        includes.push(format!("{}/src/**/*.d.ts", options.temp_root));
+
+        if let Some(kit_path) = options.kit_include {
+            includes.push(kit_path.join("ambient.d.ts").to_string());
+            includes.push(kit_path.join("non-ambient.d.ts").to_string());
+            includes.push(kit_path.join("types/**/$types.d.ts").to_string());
+        }
+
+        if use_cached_kit {
+            let kit_prefix = project_kit_root.to_string();
+            includes.retain(|path| !path.starts_with(&kit_prefix));
+        }
+
+        let exclude_base = snapshot.exclude_base.as_deref().unwrap_or(tsconfig_dir);
+        let mut excludes: Vec<String> = snapshot
+            .exclude
+            .as_ref()
+            .map(|patterns| {
+                patterns
+                    .iter()
+                    .map(|pattern| absolutize_pattern(exclude_base, pattern))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if use_cached_kit {
+            let kit_prefix = project_kit_root.to_string();
+            excludes.retain(|path| !path.starts_with(&kit_prefix));
+        }
+
+        excludes.push(format!("{}/**/*.svelte.ts", self.project_root));
+        excludes.push(format!("{}/**/*.svelte.js", self.project_root));
+        for source in options.patched_sources {
+            excludes.push(source.to_string());
+        }
+
+        let mut root = Map::new();
+        root.insert(
+            "extends".to_string(),
+            Value::String(options.tsconfig_path.to_string()),
+        );
+        root.insert(
+            "compilerOptions".to_string(),
+            Value::Object(compiler_options),
+        );
+        let allow_js = snapshot
+            .allow_js
+            .unwrap_or(snapshot.check_js.unwrap_or(false));
+        let extra_files: Vec<&Utf8PathBuf> = if allow_js {
+            options.extra_files.iter().collect()
+        } else {
+            options
+                .extra_files
+                .iter()
+                .filter(|path| !is_js_like_file(path))
+                .collect()
+        };
+        if !extra_files.is_empty() {
+            root.insert(
+                "files".to_string(),
+                Value::Array(
+                    extra_files
+                        .into_iter()
+                        .map(|path| Value::String(path.to_string()))
+                        .collect(),
+                ),
+            );
+        }
+        root.insert(
+            "include".to_string(),
+            Value::Array(includes.into_iter().map(Value::String).collect()),
+        );
+        if !excludes.is_empty() {
+            root.insert(
+                "exclude".to_string(),
+                Value::Array(excludes.into_iter().map(Value::String).collect()),
+            );
+        }
+
+        let content = serde_json::to_string_pretty(&Value::Object(root))
+            .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+        let wrote = write_if_changed(&overlay_path, content.as_bytes(), "write tsconfig overlay")?;
+        if wrote {
+            stats.tsconfig_written += 1;
+        } else {
+            stats.tsconfig_skipped += 1;
+        }
+
+        Ok(overlay_path)
+    }
+
+    /// Writes only the patched source files into the cache.
+    /// This avoids mirroring the entire source tree and relies on rootDirs for resolution.
+    fn write_source_patches(
         project_root: &Utf8Path,
         project_src: &Utf8Path,
         temp_src: &Utf8Path,
         apply_tsgo_fixes: bool,
         stats: &mut TsgoCacheStats,
-    ) -> Result<(), TsgoError> {
+    ) -> Result<Vec<Utf8PathBuf>, TsgoError> {
         // Always create temp_src so shim can be written even if project has no src dir
         std::fs::create_dir_all(temp_src).map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
 
@@ -861,6 +1197,7 @@ impl TsgoRunner {
         let mut cache_files: HashSet<Utf8PathBuf> = HashSet::new();
         let mut cache_dirs: HashSet<Utf8PathBuf> = HashSet::new();
         cache_dirs.insert(temp_src.to_owned());
+        let mut patched_sources: Vec<Utf8PathBuf> = Vec::new();
 
         if project_src.exists() {
             for entry in WalkDir::new(project_src).into_iter().filter_map(|e| e.ok()) {
@@ -877,12 +1214,8 @@ impl TsgoRunner {
                 };
                 let target = temp_src.join(relative);
 
-                // Create directories
                 if entry.file_type().is_dir() {
                     stats.source_dirs += 1;
-                    std::fs::create_dir_all(&target)
-                        .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                    cache_dirs.insert(target);
                     continue;
                 }
 
@@ -894,85 +1227,66 @@ impl TsgoRunner {
                     continue;
                 }
 
+                let mut write_contents: Option<String> = None;
+                let mut is_kit_file = false;
+
                 if let Some(kind) = kit::kit_file_kind(path, project_root) {
                     let source = std::fs::read_to_string(path)
                         .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                    let mut transformed =
-                        kit::transform_kit_source(kind, path, &source).unwrap_or(source);
+                    let mut transformed = kit::transform_kit_source(kind, path, &source)
+                        .unwrap_or_else(|| source.clone());
                     if apply_tsgo_fixes {
                         if let Some(patched) = patch_promise_all_empty_arrays(&transformed) {
                             transformed = patched;
                         }
                     }
-                    let wrote =
-                        write_if_changed(&target, transformed.as_bytes(), "write kit transform")?;
-                    if wrote {
-                        stats.kit_written += 1;
-                    } else {
-                        stats.kit_skipped += 1;
+                    if transformed != source {
+                        write_contents = Some(transformed);
                     }
-                    cache_files.insert(target);
-                    continue;
-                }
-
-                // Check if target already exists
-                if target.exists() {
-                    // Check if source is newer than cached copy (stale cache detection)
-                    let source_modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-                    let target_modified =
-                        std::fs::metadata(&target).and_then(|m| m.modified()).ok();
-
-                    let is_stale = match (source_modified, target_modified) {
-                        (Some(src), Some(tgt)) => src > tgt,
-                        // If we can't determine timestamps, assume stale to be safe
-                        _ => true,
-                    };
-
-                    if !is_stale {
-                        stats.source_existing_skipped += 1;
-                        cache_files.insert(target);
-                        continue;
-                    }
-
-                    // Source is newer - remove stale cache entry
-                    let _ = std::fs::remove_file(&target);
-                    stats.stale_removed += 1;
-                }
-
-                if apply_tsgo_fixes && is_ts_like_file(path) {
+                    is_kit_file = true;
+                } else if apply_tsgo_fixes && is_ts_like_file(path) {
                     if let Ok(content) = std::fs::read_to_string(path) {
                         if content.contains("Promise.all") {
                             if let Some(patched) = patch_promise_all_empty_arrays(&content) {
-                                let wrote = write_if_changed(
-                                    &target,
-                                    patched.as_bytes(),
-                                    "write patched ts",
-                                )?;
-                                if wrote {
-                                    stats.patched_written += 1;
-                                } else {
-                                    stats.patched_skipped += 1;
-                                }
-                                cache_files.insert(target);
-                                continue;
+                                write_contents = Some(patched);
                             }
                         }
                     }
                 }
 
-                // Prefer hard links to keep paths under the temp root. Fall back to copying.
-                if let Err(err) = std::fs::hard_link(path, &target) {
-                    stats.source_copied += 1;
-                    std::fs::copy(path, &target).map_err(|e| {
-                        TsgoError::TempFileFailed(format!(
-                            "link/copy {}: hard link error {}, copy error {}",
-                            relative, err, e
-                        ))
-                    })?;
-                } else {
-                    stats.source_linked += 1;
+                let Some(contents) = write_contents else {
+                    continue;
+                };
+
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                    let mut dir = parent.to_owned();
+                    while dir.starts_with(temp_src) && dir != temp_src {
+                        cache_dirs.insert(dir.clone());
+                        if let Some(p) = dir.parent() {
+                            dir = p.to_owned();
+                        } else {
+                            break;
+                        }
+                    }
                 }
+
+                let wrote = write_if_changed(&target, contents.as_bytes(), "write patched source")?;
+                if is_kit_file {
+                    if wrote {
+                        stats.kit_written += 1;
+                    } else {
+                        stats.kit_skipped += 1;
+                    }
+                } else if wrote {
+                    stats.patched_written += 1;
+                } else {
+                    stats.patched_skipped += 1;
+                }
+
                 cache_files.insert(target);
+                patched_sources.push(path.to_owned());
             }
         }
 
@@ -1022,7 +1336,7 @@ impl TsgoRunner {
             }
         }
 
-        Ok(())
+        Ok(patched_sources)
     }
 
     /// Runs type-checking on the transformed files.
@@ -1036,6 +1350,7 @@ impl TsgoRunner {
         let strict_function_types =
             read_env_bool("SVELTE_CHECK_RS_TSGO_STRICT_FUNCTION_TYPES").unwrap_or(false);
         let apply_tsgo_fixes = !strict_function_types;
+        let cache_root = Self::project_cache_root_for(&self.project_root)?;
         let mut tsconfig_overrides = Map::new();
         tsconfig_overrides.insert(
             "strictFunctionTypes".to_string(),
@@ -1044,7 +1359,7 @@ impl TsgoRunner {
 
         // Enable incremental builds for faster subsequent runs
         tsconfig_overrides.insert("incremental".to_string(), Value::Bool(true));
-        let tsbuildinfo_path = self.project_root.join(".svelte-check-rs/tsgo.tsbuildinfo");
+        let tsbuildinfo_path = cache_root.join("tsgo.tsbuildinfo");
         tsconfig_overrides.insert(
             "tsBuildInfoFile".to_string(),
             Value::String(tsbuildinfo_path.to_string()),
@@ -1055,17 +1370,17 @@ impl TsgoRunner {
             return Err(TsgoError::NotFound(self.tsgo_path.clone()));
         }
 
-        // Use a stable cache directory for transformed files inside the project root.
+        // Use a stable cache directory for transformed files under node_modules/.cache.
         // This enables tsgo incremental builds (file paths stay the same between runs)
         // and avoids the overhead of creating/deleting temp directories.
-        let cache_path = self.project_root.join(".svelte-check-rs/cache");
+        let cache_path = cache_root;
         std::fs::create_dir_all(&cache_path)
             .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
         let temp_path = &cache_path;
 
         let write_start = Instant::now();
         // Write transformed files
-        let mut tsx_files = Vec::new();
+        let mut tsconfig_files: Vec<Utf8PathBuf> = Vec::new();
         let mut cache_files: HashSet<Utf8PathBuf> = HashSet::new();
         let mut cache_dirs: HashSet<Utf8PathBuf> = HashSet::new();
         cache_dirs.insert(cache_path.clone());
@@ -1093,6 +1408,7 @@ impl TsgoRunner {
                 stats.cache.tsx_skipped += 1;
             }
             cache_files.insert(full_path.clone());
+            tsconfig_files.push(full_path.clone());
 
             if let Some(file_name) = full_path.file_name() {
                 let stub_path = full_path.with_extension("d.ts");
@@ -1106,14 +1422,14 @@ impl TsgoRunner {
                 } else {
                     stats.cache.stub_skipped += 1;
                 }
-                cache_files.insert(stub_path);
+                cache_files.insert(stub_path.clone());
+                tsconfig_files.push(stub_path);
             }
-            tsx_files.push(full_path.to_string());
         }
 
         // Clean up stale cache files (from deleted .svelte files)
         // Note: we only clean .svelte.ts and .svelte.d.ts here.
-        // Other source files are cleaned in symlink_source_tree_with_cleanup.
+        // Other source files are cleaned in write_source_patches.
         for entry in WalkDir::new(&cache_path).follow_links(false).into_iter() {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -1137,103 +1453,41 @@ impl TsgoRunner {
 
         stats.timings.write_time = write_start.elapsed();
 
-        // Symlink key directories/files from project to temp directory for module resolution
-        // Note: Don't symlink 'src' since we write transformed files there
-        let symlinks = [
-            ("node_modules", self.project_root.join("node_modules")),
-            ("tests", self.project_root.join("tests")),
-            ("workflows", self.project_root.join("workflows")),
-            ("vite.config.js", self.project_root.join("vite.config.js")),
-            ("vite.config.ts", self.project_root.join("vite.config.ts")),
-        ];
-
-        for (name, source) in symlinks {
-            let target = temp_path.join(name);
-            if source.exists() && !target.exists() {
-                #[cfg(unix)]
-                {
-                    std::os::unix::fs::symlink(&source, &target)
-                        .map_err(|e| TsgoError::TempFileFailed(format!("symlink {name}: {e}")))?;
-                }
-                #[cfg(windows)]
-                {
-                    if source.is_dir() {
-                        std::os::windows::fs::symlink_dir(&source, &target).map_err(|e| {
-                            TsgoError::TempFileFailed(format!("symlink {name}: {e}"))
-                        })?;
-                    } else {
-                        std::os::windows::fs::symlink_file(&source, &target).map_err(|e| {
-                            TsgoError::TempFileFailed(format!("symlink {name}: {e}"))
-                        })?;
-                    }
-                }
-            }
-        }
-
         // Keep a stable copy of .svelte-kit to avoid invalidating tsgo incremental builds.
         // When caching is enabled, write directly into the cache root to avoid duplicate copies.
         let kit_source = self.project_root.join(".svelte-kit");
-        if kit_source.exists() {
-            let target = temp_path.join(".svelte-kit");
+        let kit_include = if kit_source.exists() {
             if self.use_sveltekit_cache {
-                // Clean up legacy cache location if present.
-                let legacy_cache = self.project_root.join(".svelte-check-rs/kit");
-                if legacy_cache.exists() {
-                    let _ = std::fs::remove_dir_all(&legacy_cache);
-                }
-                if let Ok(meta) = std::fs::symlink_metadata(&target) {
-                    if meta.file_type().is_symlink() || meta.is_file() {
-                        let _ = std::fs::remove_file(&target);
-                    } else if meta.is_dir() {
-                        // Keep existing directory; sync will update contents.
-                    } else {
-                        let _ = std::fs::remove_file(&target);
-                    }
-                }
+                let target = temp_path.join(".svelte-kit");
                 sync_sveltekit_cache(&kit_source, &target)?;
+                Some(target)
             } else {
-                let mut needs_link = true;
-                if let Ok(meta) = std::fs::symlink_metadata(&target) {
-                    if meta.file_type().is_symlink() {
-                        if let Ok(existing) = std::fs::read_link(&target) {
-                            if existing == kit_source.as_std_path() {
-                                needs_link = false;
-                            }
-                        }
-                    }
-                    if needs_link {
-                        if meta.is_dir() {
-                            let _ = std::fs::remove_dir_all(&target);
-                        } else {
-                            let _ = std::fs::remove_file(&target);
-                        }
-                    }
+                let cached = temp_path.join(".svelte-kit");
+                if cached.exists() {
+                    let _ = std::fs::remove_dir_all(&cached);
                 }
-                if needs_link {
-                    #[cfg(unix)]
-                    {
-                        std::os::unix::fs::symlink(&kit_source, &target).map_err(|e| {
-                            TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
-                        })?;
-                    }
-                    #[cfg(windows)]
-                    {
-                        std::os::windows::fs::symlink_dir(&kit_source, &target).map_err(|e| {
-                            TsgoError::TempFileFailed(format!("symlink .svelte-kit: {e}"))
-                        })?;
-                    }
-                }
+                Some(kit_source)
+            }
+        } else {
+            None
+        };
+        if let Some(kit_path) = &kit_include {
+            let ambient = kit_path.join("ambient.d.ts");
+            if ambient.exists() {
+                tsconfig_files.push(ambient);
+            }
+            let non_ambient = kit_path.join("non-ambient.d.ts");
+            if non_ambient.exists() {
+                tsconfig_files.push(non_ambient);
             }
         }
 
         let project_src = self.project_root.join("src");
 
-        // Symlink the entire source tree for proper module resolution
-        // This preserves directory structure so relative imports like `./schema` work
-        // and SvelteKit route files (+page.ts, etc.) can access ./$types
+        // Write patched source files (SvelteKit transforms, Promise.all fixes).
         let temp_src = temp_path.join("src");
         let source_start = Instant::now();
-        Self::symlink_source_tree(
+        let patched_sources = Self::write_source_patches(
             &self.project_root,
             &project_src,
             &temp_src,
@@ -1253,6 +1507,7 @@ impl TsgoRunner {
         } else {
             stats.cache.shim_skipped += 1;
         }
+        tsconfig_files.push(shim_path.clone());
 
         let helpers_path = temp_path.join(SHARED_HELPERS_FILENAME);
         let _ = write_if_changed(
@@ -1260,16 +1515,26 @@ impl TsgoRunner {
             SHARED_HELPERS_DTS.as_bytes(),
             "write helpers",
         )?;
+        tsconfig_files.push(helpers_path.clone());
 
-        // Use the existing tsconfig via symlink overlay
+        for source in &patched_sources {
+            if let Ok(relative) = source.strip_prefix(&self.project_root) {
+                tsconfig_files.push(temp_path.join(relative));
+            }
+        }
+
+        // Generate a standalone tsconfig overlay with rootDirs and absolute paths.
         let project_tsconfig = self.resolve_tsconfig_path()?;
         let tsconfig_start = Instant::now();
-        let temp_tsconfig = self.prepare_tsconfig_overlay(
-            temp_path,
-            &project_tsconfig,
-            &mut stats.cache,
-            Some(&tsconfig_overrides),
-        )?;
+        let overlay_options = TsconfigOverlayOptions {
+            temp_root: temp_path,
+            tsconfig_path: &project_tsconfig,
+            overrides: Some(&tsconfig_overrides),
+            kit_include: kit_include.as_deref(),
+            patched_sources: &patched_sources,
+            extra_files: &tsconfig_files,
+        };
+        let temp_tsconfig = self.prepare_tsconfig_overlay(&overlay_options, &mut stats.cache)?;
         stats.timings.tsconfig_time = tsconfig_start.elapsed();
 
         // Run tsgo on the temp directory
@@ -1322,6 +1587,99 @@ fn read_env_bool(name: &str) -> Option<bool> {
     }
 }
 
+fn parse_string_array(value: Option<&Value>) -> Option<Vec<String>> {
+    let arr = value?.as_array()?;
+    let mut values = Vec::new();
+    for item in arr {
+        if let Some(text) = item.as_str() {
+            values.push(text.to_string());
+        }
+    }
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
+fn read_tsconfig_value(path: &Utf8Path) -> Option<Value> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let contents = strip_json_comments(&contents);
+    serde_json::from_str(&contents).ok()
+}
+
+fn clean_path(path: &Utf8Path) -> Utf8PathBuf {
+    let mut prefix: Option<String> = None;
+    let mut root: Option<String> = None;
+    let mut parts: Vec<String> = Vec::new();
+
+    for component in path.components() {
+        match component {
+            camino::Utf8Component::Prefix(prefix_component) => {
+                prefix = Some(prefix_component.as_str().to_string());
+            }
+            camino::Utf8Component::RootDir => {
+                root = Some(component.as_str().to_string());
+            }
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::ParentDir => {
+                if let Some(last) = parts.last() {
+                    if last != ".." {
+                        parts.pop();
+                        continue;
+                    }
+                }
+                if root.is_none() && prefix.is_none() {
+                    parts.push("..".to_string());
+                }
+            }
+            camino::Utf8Component::Normal(name) => {
+                parts.push(name.to_string());
+            }
+        }
+    }
+
+    let mut out = Utf8PathBuf::new();
+    if let Some(prefix) = prefix {
+        out.push(prefix);
+    }
+    if let Some(root) = root {
+        out.push(root);
+    }
+    for part in parts {
+        out.push(part);
+    }
+    out
+}
+
+fn absolutize_pattern(base_dir: &Utf8Path, pattern: &str) -> String {
+    let pattern = pattern.trim();
+    let path = Utf8Path::new(pattern);
+    if path.is_absolute() {
+        clean_path(path).to_string()
+    } else {
+        clean_path(&base_dir.join(path)).to_string()
+    }
+}
+
+fn resolve_base_url(base_dir: &Utf8Path, base_url: &str) -> Utf8PathBuf {
+    let base = Utf8Path::new(base_url);
+    if base.is_absolute() {
+        clean_path(base)
+    } else {
+        clean_path(&base_dir.join(base))
+    }
+}
+
+fn resolve_path_value(base_dir: &Utf8Path, value: &str) -> String {
+    let path = Utf8Path::new(value);
+    if path.is_absolute() {
+        clean_path(path).to_string()
+    } else {
+        clean_path(&base_dir.join(path)).to_string()
+    }
+}
+
 fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<bool, TsgoError> {
     if let Ok(metadata) = std::fs::metadata(path) {
         if metadata.len() == contents.len() as u64 {
@@ -1336,6 +1694,57 @@ fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<b
     std::fs::write(path, contents)
         .map_err(|e| TsgoError::TempFileFailed(format!("{context}: {e}")))?;
     Ok(true)
+}
+
+/// Removes single-line and multi-line comments from JSON.
+fn strip_json_comments(json: &str) -> String {
+    let mut result = String::with_capacity(json.len());
+    let mut chars = json.chars().peekable();
+    let mut in_string = false;
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            result.push(c);
+            if c == '"' {
+                in_string = false;
+            } else if c == '\\' {
+                if let Some(next) = chars.next() {
+                    result.push(next);
+                }
+            }
+        } else if c == '"' {
+            result.push(c);
+            in_string = true;
+        } else if c == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    chars.next();
+                    for n in chars.by_ref() {
+                        if n == '\n' {
+                            result.push('\n');
+                            break;
+                        }
+                    }
+                }
+                Some('*') => {
+                    chars.next();
+                    while let Some(n) = chars.next() {
+                        if n == '*' {
+                            if let Some('/') = chars.peek() {
+                                chars.next();
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => result.push(c),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 fn read_sync_manifest(path: &Utf8Path) -> Option<SvelteKitSyncManifest> {
@@ -1498,6 +1907,10 @@ fn route_base_name(file_name: &str) -> Option<&str> {
     } else {
         Some(stem)
     }
+}
+
+fn is_js_like_file(path: &Utf8Path) -> bool {
+    matches!(path.extension(), Some("js" | "jsx" | "mjs" | "cjs"))
 }
 
 fn is_ts_like_file(path: &Utf8Path) -> bool {

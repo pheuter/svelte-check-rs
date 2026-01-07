@@ -7,6 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
 use source_map::LineIndex;
+use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -97,6 +98,12 @@ fn helpers_import_path_for(virtual_path: &Utf8Path, use_nodenext_imports: bool) 
     path
 }
 
+fn svelte_alias_paths(svelte_config: &SvelteConfig) -> HashMap<String, Vec<String>> {
+    let mut ts_config = TsConfig::default();
+    ts_config.merge_svelte_aliases(svelte_config);
+    ts_config.compiler_options.paths
+}
+
 /// Normalizes a tsconfig exclude pattern to work with globset.
 ///
 /// tsconfig patterns like "src/excluded/**" need to be normalized to match
@@ -179,6 +186,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
 
     // Load configuration
     let svelte_config = SvelteConfig::load(&workspace);
+    let extra_paths = svelte_alias_paths(&svelte_config);
 
     // Load tsconfig to detect module resolution strategy
     let ts_config_path = if let Some(ref custom_path) = args.tsconfig {
@@ -252,6 +260,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         "**/dist/**",
         "**/.svelte-kit/**",
         "**/.svelte-check-rs/**",
+        "**/node_modules/.cache/svelte-check-rs/**",
     ] {
         if let Ok(glob) = Glob::new(pattern) {
             ignore_builder.add(glob);
@@ -354,6 +363,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
+            &extra_paths,
         )
         .await
     } else {
@@ -363,6 +373,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
+            &extra_paths,
         )
         .await
     }
@@ -375,6 +386,7 @@ async fn run_single_check(
     files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
+    extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     let total_start = Instant::now();
     let timings_enabled = args.timings
@@ -726,7 +738,15 @@ async fn run_single_check(
             sveltekit_sync_time = Some(sync_start.elapsed());
             sveltekit_sync_ran = Some(sync_ran);
 
-            match run_tsgo_check(workspace, &transformed, args, args.tsgo_diagnostics).await {
+            match run_tsgo_check(
+                workspace,
+                &transformed,
+                args,
+                args.tsgo_diagnostics,
+                extra_paths,
+            )
+            .await
+            {
                 Ok(output) => {
                     let mut ts_diagnostics = output.diagnostics;
                     ts_diagnostics
@@ -883,8 +903,6 @@ async fn run_single_check(
                 "  existing skipped: {}",
                 stats.cache.source_existing_skipped
             );
-            eprintln!("  symlinked:        {}", stats.cache.source_linked);
-            eprintln!("  copied:           {}", stats.cache.source_copied);
         } else if args.skip_tsgo {
             eprintln!("=== svelte-check-rs cache stats ===");
             eprintln!("(tsgo was skipped, no cache stats available)");
@@ -918,6 +936,7 @@ async fn run_tsgo_check(
     files: &TransformedFiles,
     args: &Args,
     emit_diagnostics: bool,
+    extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<TsgoCheckOutput, OrchestratorError> {
     // Find or install tsgo
     let tsgo_path = TsgoRunner::ensure_tsgo(Some(workspace))
@@ -928,6 +947,7 @@ async fn run_tsgo_check(
         tsgo_path,
         workspace.to_owned(),
         args.tsconfig.clone(),
+        extra_paths.clone(),
         !args.disable_sveltekit_cache,
     );
 
@@ -1175,6 +1195,7 @@ async fn run_watch_mode(
     initial_files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
+    extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::time::Duration;
@@ -1188,6 +1209,7 @@ async fn run_watch_mode(
         initial_files.clone(),
         file_scan_time,
         use_nodenext_imports,
+        extra_paths,
     )
     .await?;
 
@@ -1234,6 +1256,7 @@ async fn run_watch_mode(
                 initial_files.clone(),
                 file_scan_time,
                 use_nodenext_imports,
+                extra_paths,
             )
             .await;
         }

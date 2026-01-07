@@ -13,7 +13,7 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 - `crates/tsgo-runner`: Bridge to `tsgo` for TypeScript type-checking.
 - `crates/svelte-check-rs`: Main CLI and orchestration logic.
 - `test-fixtures/`: Svelte component fixtures for testing.
-- `.svelte-check-rs/`: Per-project cache (transformed files, tsgo incremental build info).
+- `node_modules/.cache/svelte-check-rs/`: Per-project cache (transformed files, tsgo incremental build info).
 
 ## Architecture
 
@@ -29,7 +29,7 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 - External TypeScript type-checker (Go-based, faster than tsc)
 - Auto-installed to cache dir on first run if not found
 - Communication: JSON over stdin/stdout
-- Incremental builds via `.svelte-check-rs/tsgo.tsbuildinfo`
+- Incremental builds via `node_modules/.cache/svelte-check-rs/tsgo.tsbuildinfo`
 
 **SvelteKit Support**:
 - Detects route files (`+page.svelte`, `+layout.svelte`, etc.) for proper prop types
@@ -168,4 +168,3 @@ gh run watch
 ```
 
 **Important**: Do NOT manually create GitHub releases. Monitor with: `gh run list` or `gh run watch`
-

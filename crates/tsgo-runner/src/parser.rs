@@ -138,7 +138,7 @@ fn map_to_original(
     // The file_path may include temp directory prefixes (e.g., /tmp/.../src/App.svelte.ts)
     // We need to match against our virtual paths which are relative (e.g., src/App.svelte.ts)
 
-    // Fast path: tsgo outputs absolute paths under .svelte-check-rs/cache
+    // Fast path: tsgo outputs absolute paths under node_modules/.cache/svelte-check-rs
     if let Some(rel) = strip_cache_prefix(file_path) {
         if let Some(file) = files.get(camino::Utf8Path::new(&rel)) {
             return do_source_mapping(file, line, column);
@@ -171,6 +171,12 @@ fn map_to_original(
 
         if matches.len() == 1 {
             return do_source_mapping(matches[0].1, line, column);
+        }
+    }
+
+    if !virtual_path.is_absolute() {
+        if let Some(cleaned) = normalize_relative_path(file_path) {
+            return (cleaned, line, column);
         }
     }
 
@@ -209,13 +215,39 @@ fn do_source_mapping(
 
 fn strip_cache_prefix(path: &str) -> Option<String> {
     let normalized = path.replace('\\', "/");
-    let marker = "/.svelte-check-rs/cache/";
-    let idx = normalized.find(marker)?;
-    let rel = &normalized[idx + marker.len()..];
-    if rel.is_empty() {
+    let markers = [
+        "/node_modules/.cache/svelte-check-rs/",
+        "/.svelte-check-rs/cache/",
+    ];
+    for marker in markers {
+        if let Some(idx) = normalized.find(marker) {
+            let rel = &normalized[idx + marker.len()..];
+            if !rel.is_empty() {
+                return Some(rel.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn normalize_relative_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if !parts.is_empty() {
+                    parts.pop();
+                }
+            }
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
         None
     } else {
-        Some(rel.to_string())
+        Some(parts.join("/"))
     }
 }
 

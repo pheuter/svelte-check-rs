@@ -105,7 +105,7 @@ pub struct Args {
     #[arg(long = "emit-source-map")]
     pub emit_source_map: bool,
 
-    /// Show cache statistics (files written/skipped to .svelte-check-rs/)
+    /// Show cache statistics (files written/skipped to node_modules/.cache/svelte-check-rs/)
     #[arg(long = "cache-stats")]
     pub cache_stats: bool,
 }
