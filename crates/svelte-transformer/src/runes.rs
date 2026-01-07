@@ -1060,6 +1060,7 @@ impl<'a> RuneScanner<'a> {
         // Now look backwards from the equals sign to find `: Type`
         // We need to find the closing `}` of destructuring, then the `: Type` after it
         let before_equals = &output[..equals_pos];
+        let comment_mask = build_comment_mask(before_equals);
 
         // Find the colon that starts the type annotation.
         // We only accept a `:` at top-level (not inside braces/paren/brackets/strings).
@@ -1076,6 +1077,9 @@ impl<'a> RuneScanner<'a> {
         while i > 0 {
             i -= 1;
             let (idx, ch) = chars[i];
+            if comment_mask.get(idx).copied().unwrap_or(false) {
+                continue;
+            }
 
             // When iterating backwards through strings, we need to detect string boundaries
             // and skip their contents. A quote at position i closes a string (when going backwards),
@@ -1116,7 +1120,10 @@ impl<'a> RuneScanner<'a> {
                 let mut j = i;
                 while j > 0 {
                     j -= 1;
-                    let prev_ch = chars[j].1;
+                    let (prev_idx, prev_ch) = chars[j];
+                    if comment_mask.get(prev_idx).copied().unwrap_or(false) {
+                        continue;
+                    }
                     if prev_ch == '/' {
                         // Check if it's escaped
                         let mut escape_count = 0;
@@ -1165,7 +1172,12 @@ impl<'a> RuneScanner<'a> {
                     if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 {
                         let mut j = idx;
                         while j > 0 {
-                            let prev = before_equals.as_bytes()[j - 1];
+                            let prev_idx = j - 1;
+                            if comment_mask.get(prev_idx).copied().unwrap_or(false) {
+                                j -= 1;
+                                continue;
+                            }
+                            let prev = before_equals.as_bytes()[prev_idx];
                             if !prev.is_ascii_whitespace() {
                                 let is_ident = (prev as char).is_ascii_alphanumeric()
                                     || prev == b'_'
@@ -1205,6 +1217,121 @@ impl<'a> RuneScanner<'a> {
         }
 
         Some(type_str.to_string())
+    }
+}
+
+fn build_comment_mask(source: &str) -> Vec<bool> {
+    let mut mask = vec![false; source.len()];
+    let mut chars = source.char_indices().peekable();
+    let mut in_string: Option<char> = None;
+    let mut prev_was_escape = false;
+    let mut template_brace_depth: Vec<usize> = Vec::new();
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            } else {
+                mark_comment_char(&mut mask, idx, ch);
+            }
+            continue;
+        }
+
+        if in_block_comment {
+            mark_comment_char(&mut mask, idx, ch);
+            if ch == '*' && chars.peek().map(|(_, next)| *next) == Some('/') {
+                let (next_idx, next_ch) = chars.next().unwrap();
+                mark_comment_char(&mut mask, next_idx, next_ch);
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if let Some(quote) = in_string {
+            if quote != '`' {
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == quote {
+                    in_string = None;
+                }
+                continue;
+            } else {
+                if prev_was_escape {
+                    prev_was_escape = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    prev_was_escape = true;
+                    continue;
+                }
+                if ch == '`' {
+                    in_string = None;
+                    continue;
+                }
+                if ch == '$' && chars.peek().map(|(_, next)| *next) == Some('{') {
+                    chars.next();
+                    template_brace_depth.push(0);
+                    in_string = None;
+                    continue;
+                }
+                continue;
+            }
+        }
+
+        if !template_brace_depth.is_empty() {
+            if ch == '{' {
+                if let Some(depth) = template_brace_depth.last_mut() {
+                    *depth += 1;
+                }
+            } else if ch == '}' {
+                if let Some(depth) = template_brace_depth.last_mut() {
+                    if *depth == 0 {
+                        template_brace_depth.pop();
+                        in_string = Some('`');
+                        continue;
+                    } else {
+                        *depth -= 1;
+                    }
+                }
+            }
+        }
+
+        if ch == '/' {
+            if chars.peek().map(|(_, next)| *next) == Some('/') {
+                mark_comment_char(&mut mask, idx, ch);
+                let (next_idx, next_ch) = chars.next().unwrap();
+                mark_comment_char(&mut mask, next_idx, next_ch);
+                in_line_comment = true;
+                continue;
+            } else if chars.peek().map(|(_, next)| *next) == Some('*') {
+                mark_comment_char(&mut mask, idx, ch);
+                let (next_idx, next_ch) = chars.next().unwrap();
+                mark_comment_char(&mut mask, next_idx, next_ch);
+                in_block_comment = true;
+                continue;
+            }
+        }
+
+        if ch == '\'' || ch == '"' || ch == '`' {
+            in_string = Some(ch);
+            prev_was_escape = false;
+            continue;
+        }
+    }
+
+    mask
+}
+
+fn mark_comment_char(mask: &mut [bool], idx: usize, ch: char) {
+    let len = ch.len_utf8();
+    for i in idx..idx + len {
+        if let Some(slot) = mask.get_mut(i) {
+            *slot = true;
+        }
     }
 }
 
@@ -1605,6 +1732,30 @@ let { children } = $props();"#,
                 .contains("__SvelteLoosen<Record<string, unknown>>"),
             "Expected fallback type for $props() but got:\n{}",
             result.output
+        );
+    }
+
+    #[test]
+    fn test_props_with_colon_in_block_comment() {
+        let result = transform_runes(
+            "let { children } = /* note: comment before props */ $props();",
+            0,
+        );
+        assert_eq!(
+            result.output,
+            "let { children } = /* note: comment before props */ ({} as __SvelteLoosen<Record<string, unknown>>);"
+        );
+    }
+
+    #[test]
+    fn test_props_with_trailing_inline_comment() {
+        let result = transform_runes(
+            "let { children } = $props(); // trailing: comment after props",
+            0,
+        );
+        assert_eq!(
+            result.output,
+            "let { children } = ({} as __SvelteLoosen<Record<string, unknown>>); // trailing: comment after props"
         );
     }
 

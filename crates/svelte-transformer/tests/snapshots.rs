@@ -238,6 +238,21 @@ fn test_props_with_rest() {
 }
 
 #[test]
+fn test_props_with_comment_before() {
+    transform_snapshot(
+        "props_comment_before",
+        r#"<script lang="ts">
+    // See: issue-28 - comment before props
+    const flag = true;
+
+    let { children } = $props();
+</script>
+
+{@render children()}"#,
+    );
+}
+
+#[test]
 fn test_props_with_rest_loosened_annotation() {
     transform_snapshot(
         "props_rest_loosened_annotation",
