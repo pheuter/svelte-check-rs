@@ -29,6 +29,7 @@
 mod module;
 mod props;
 mod runes;
+mod snippets;
 mod template;
 mod transform;
 mod types;
