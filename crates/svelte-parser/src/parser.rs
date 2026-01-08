@@ -375,6 +375,153 @@ impl<'src> Parser<'src> {
         (text, Span::new(start, end))
     }
 
+    /// Reads an expression from a specific source offset until the closing character.
+    /// Unlike `read_expression_until`, this doesn't advance tokens - caller must handle that.
+    /// Used when the lexer has already tokenized past the opening brace (e.g., LBraceSlash for `{/`).
+    fn read_expression_from_offset(&self, start_offset: usize, close_char: char) -> (String, Span) {
+        let start = TextSize::from(start_offset as u32);
+        let mut depth = 0;
+        let mut in_string = false;
+        let mut in_template_literal = false;
+        let mut template_expr_depth = 0;
+        let mut string_char = ' ';
+        let mut pos = start_offset;
+        let bytes = self.source.as_bytes();
+
+        let mut chars = self.source[start_offset..].char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            let absolute_i = start_offset + i;
+            let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
+
+            if in_string && !in_template_literal {
+                if c == string_char && !is_escaped {
+                    in_string = false;
+                }
+                pos = start_offset + i + c.len_utf8();
+                continue;
+            }
+
+            if in_template_literal {
+                if c == '`' && !is_escaped && template_expr_depth == 0 {
+                    in_template_literal = false;
+                    in_string = false;
+                } else if c == '$' && template_expr_depth == 0 {
+                    if let Some(&(_, '{')) = chars.peek() {
+                        chars.next();
+                        template_expr_depth = 1;
+                        pos = start_offset + i + 2;
+                        continue;
+                    }
+                } else if template_expr_depth > 0 {
+                    match c {
+                        '/' => {
+                            if let Some(&(_, next_c)) = chars.peek() {
+                                if next_c == '/' {
+                                    chars.next();
+                                    for (_, sc) in chars.by_ref() {
+                                        if sc == '\n' {
+                                            break;
+                                        }
+                                    }
+                                } else if next_c == '*' {
+                                    chars.next();
+                                    let mut prev_star = false;
+                                    for (_, sc) in chars.by_ref() {
+                                        if prev_star && sc == '/' {
+                                            break;
+                                        }
+                                        prev_star = sc == '*';
+                                    }
+                                }
+                            }
+                        }
+                        '"' | '\'' => {
+                            let quote = c;
+                            for (si, sc) in chars.by_ref() {
+                                let string_abs_i = start_offset + si;
+                                let sc_escaped =
+                                    string_abs_i > 0 && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                if sc == quote && !sc_escaped {
+                                    break;
+                                }
+                            }
+                        }
+                        '{' => template_expr_depth += 1,
+                        '}' => {
+                            template_expr_depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
+                pos = start_offset + i + c.len_utf8();
+                continue;
+            }
+
+            match c {
+                '/' => {
+                    if let Some(&(_, next_c)) = chars.peek() {
+                        if next_c == '/' {
+                            chars.next();
+                            for (_, sc) in chars.by_ref() {
+                                if sc == '\n' {
+                                    break;
+                                }
+                            }
+                        } else if next_c == '*' {
+                            chars.next();
+                            let mut prev_star = false;
+                            for (_, sc) in chars.by_ref() {
+                                if prev_star && sc == '/' {
+                                    break;
+                                }
+                                prev_star = sc == '*';
+                            }
+                        }
+                    }
+                }
+                '"' | '\'' => {
+                    in_string = true;
+                    string_char = c;
+                }
+                '`' => {
+                    in_string = true;
+                    in_template_literal = true;
+                }
+                '{' | '(' | '[' => depth += 1,
+                '}' if close_char == '}' => {
+                    if depth == 0 {
+                        pos = start_offset + i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ')' if close_char == ')' => {
+                    if depth == 0 {
+                        pos = start_offset + i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ']' if close_char == ']' => {
+                    if depth == 0 {
+                        pos = start_offset + i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                '}' => depth -= 1,
+                ')' => depth -= 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+            pos = start_offset + i + c.len_utf8();
+        }
+
+        let text = self.source[start_offset..pos].to_string();
+        let end = TextSize::from(pos as u32);
+        (text, Span::new(start, end))
+    }
+
     /// Finds a keyword in an expression, respecting nesting and string boundaries.
     /// Returns the position of the keyword if found at depth 0.
     /// Note: For keywords with spaces like " as " or " then ", word boundaries are
@@ -1101,6 +1248,7 @@ impl<'src> Parser<'src> {
         if is_namespaced {
             // Read the argument name and all its modifiers/content
             // Only continue if tokens are adjacent (no whitespace between)
+            // Include keywords that can be valid directive argument names (e.g., bind:key, on:if)
             while self.pos < self.tokens.len()
                 && self.current().span.start == prev_end
                 && (self.check(TokenKind::Ident)
@@ -1111,8 +1259,23 @@ impl<'src> Parser<'src> {
                     || self.check(TokenKind::Text) // For !, [, ], etc.
                     || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
                     || self.check(TokenKind::Number) // For sizes: [100px], grid-cols-2
-                    || self.check(TokenKind::Minus))
-            // For CSS custom properties: style:--my-var
+                    || self.check(TokenKind::Minus) // For CSS custom properties: style:--my-var
+                    // Keywords that can be valid directive argument names
+                    || self.check(TokenKind::Key) // bind:key
+                    || self.check(TokenKind::If) // on:if (custom events)
+                    || self.check(TokenKind::Else)
+                    || self.check(TokenKind::Each)
+                    || self.check(TokenKind::Await)
+                    || self.check(TokenKind::Then)
+                    || self.check(TokenKind::Catch)
+                    || self.check(TokenKind::As)
+                    || self.check(TokenKind::Snippet)
+                    || self.check(TokenKind::Html)
+                    || self.check(TokenKind::Const)
+                    || self.check(TokenKind::Debug)
+                    || self.check(TokenKind::Render)
+                    || self.check(TokenKind::Style)
+                    || self.check(TokenKind::Script))
             {
                 full_name.push_str(self.current_text());
                 prev_end = self.current().span.end;
@@ -1121,24 +1284,28 @@ impl<'src> Parser<'src> {
         }
 
         // Check for directive (name:arg)
-        if let Some(colon_pos) = full_name.find(':') {
+        // Only recognize known Svelte directive prefixes; unknown prefixes like xmlns: or xlink:
+        // should be treated as normal attributes (valid in SVG/XML contexts)
+        let directive_info = full_name.find(':').and_then(|colon_pos| {
             let directive_name = &full_name[..colon_pos];
             let arg_name = &full_name[colon_pos + 1..];
-
             let kind = match directive_name {
-                "on" => DirectiveKind::On,
-                "bind" => DirectiveKind::Bind,
-                "class" => DirectiveKind::Class,
-                "style" => DirectiveKind::StyleDirective,
-                "use" => DirectiveKind::Use,
-                "transition" => DirectiveKind::Transition,
-                "in" => DirectiveKind::In,
-                "out" => DirectiveKind::Out,
-                "animate" => DirectiveKind::Animate,
-                "let" => DirectiveKind::Let,
-                _ => return None,
-            };
+                "on" => Some(DirectiveKind::On),
+                "bind" => Some(DirectiveKind::Bind),
+                "class" => Some(DirectiveKind::Class),
+                "style" => Some(DirectiveKind::StyleDirective),
+                "use" => Some(DirectiveKind::Use),
+                "transition" => Some(DirectiveKind::Transition),
+                "in" => Some(DirectiveKind::In),
+                "out" => Some(DirectiveKind::Out),
+                "animate" => Some(DirectiveKind::Animate),
+                "let" => Some(DirectiveKind::Let),
+                _ => None,
+            }?;
+            Some((kind, directive_name.to_string(), arg_name.to_string()))
+        });
 
+        if let Some((kind, directive_name, arg_name)) = directive_info {
             // Parse modifiers (|modifier)
             // Split on '|' - first part is directive name, rest are modifiers
             let parts: Vec<&str> = arg_name.split('|').collect();
@@ -1255,6 +1422,33 @@ impl<'src> Parser<'src> {
             let start = self.current().span.start;
             self.advance();
             let (expr, expr_span) = self.read_expression_until('}');
+            self.eat(TokenKind::RBrace);
+            let end = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span.end)
+                .unwrap_or(start);
+            AttributeValue::Expression(ExpressionValue {
+                span: Span::new(start, end),
+                expression_span: expr_span,
+                expression: expr,
+                is_quoted: false,
+            })
+        } else if self.check(TokenKind::LBraceSlash) {
+            // Handle case where lexer tokenized {/* as LBraceSlash + * (comment in expression)
+            // or {// as LBraceSlash + / (single-line comment in expression)
+            // This happens because LBraceSlash has higher priority than LBrace
+            let start = self.current().span.start;
+            // Read from source directly, skipping the "{" that was consumed as part of LBraceSlash
+            // The source starting at `start` contains the full `{...}` expression
+            let start_offset = u32::from(start) as usize;
+            // Skip the opening brace and read the expression
+            let (expr, expr_span) = self.read_expression_from_offset(start_offset + 1, '}');
+            // Advance past all tokens until we reach or pass the closing brace
+            let expr_end = expr_span.end;
+            while !self.check(TokenKind::Eof) && self.current().span.end <= expr_end {
+                self.advance();
+            }
             self.eat(TokenKind::RBrace);
             let end = self
                 .tokens

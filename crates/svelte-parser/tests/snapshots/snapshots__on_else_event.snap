@@ -1,0 +1,66 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<Component on:else={handleElse}/>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 33,
+                    },
+                    name: "Component",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 11,
+                                    end: 31,
+                                },
+                                kind: On,
+                                name: "else",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 11,
+                                            end: 31,
+                                        },
+                                        expression_span: Span {
+                                            start: 20,
+                                            end: 30,
+                                        },
+                                        expression: "handleElse",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 33,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 33,
+    },
+}

@@ -1,0 +1,66 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<Component bind:key={selectedKey}/>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 35,
+                    },
+                    name: "Component",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 11,
+                                    end: 33,
+                                },
+                                kind: Bind,
+                                name: "key",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 11,
+                                            end: 33,
+                                        },
+                                        expression_span: Span {
+                                            start: 21,
+                                            end: 32,
+                                        },
+                                        expression: "selectedKey",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 35,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 35,
+    },
+}

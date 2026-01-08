@@ -1,0 +1,64 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<MyComponent data={/* config */ { a: 1 }}/>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 43,
+                    },
+                    name: "MyComponent",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 13,
+                                    end: 41,
+                                },
+                                name: "data",
+                                value: Expression(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 18,
+                                            end: 41,
+                                        },
+                                        expression_span: Span {
+                                            start: 19,
+                                            end: 40,
+                                        },
+                                        expression: "/* config */ { a: 1 }",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 43,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 43,
+    },
+}

@@ -1,0 +1,130 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<input bind:value={val}/>
+<Component bind:key={k} bind:html={h}/>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 25,
+                    },
+                    name: "input",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 7,
+                                    end: 23,
+                                },
+                                kind: Bind,
+                                name: "value",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 7,
+                                            end: 23,
+                                        },
+                                        expression_span: Span {
+                                            start: 19,
+                                            end: 22,
+                                        },
+                                        expression: "val",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+            Component(
+                Component {
+                    span: Span {
+                        start: 26,
+                        end: 65,
+                    },
+                    name: "Component",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 37,
+                                    end: 49,
+                                },
+                                kind: Bind,
+                                name: "key",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 37,
+                                            end: 49,
+                                        },
+                                        expression_span: Span {
+                                            start: 47,
+                                            end: 48,
+                                        },
+                                        expression: "k",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 50,
+                                    end: 63,
+                                },
+                                kind: Bind,
+                                name: "html",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 50,
+                                            end: 63,
+                                        },
+                                        expression_span: Span {
+                                            start: 61,
+                                            end: 62,
+                                        },
+                                        expression: "h",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 65,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 65,
+    },
+}

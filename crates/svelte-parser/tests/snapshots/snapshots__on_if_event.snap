@@ -1,0 +1,66 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<Component on:if={handleIf}/>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 29,
+                    },
+                    name: "Component",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 11,
+                                    end: 27,
+                                },
+                                kind: On,
+                                name: "if",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 11,
+                                            end: 27,
+                                        },
+                                        expression_span: Span {
+                                            start: 18,
+                                            end: 26,
+                                        },
+                                        expression: "handleIf",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 29,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 29,
+    },
+}

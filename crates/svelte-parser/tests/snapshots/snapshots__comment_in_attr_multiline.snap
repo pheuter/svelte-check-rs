@@ -1,0 +1,64 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div data={/* TODO: fix typing */ items as any}/>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 49,
+                    },
+                    name: "div",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 47,
+                                },
+                                name: "data",
+                                value: Expression(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 10,
+                                            end: 47,
+                                        },
+                                        expression_span: Span {
+                                            start: 11,
+                                            end: 46,
+                                        },
+                                        expression: "/* TODO: fix typing */ items as any",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 49,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 49,
+    },
+}
