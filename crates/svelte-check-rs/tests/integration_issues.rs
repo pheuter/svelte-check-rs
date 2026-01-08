@@ -470,3 +470,491 @@ fn test_tsconfig_exclude_wildcard_patterns() {
     assert_no_diagnostics_in_file(&diagnostics, "__tests__/TestComponent.svelte");
     assert_no_diagnostics_in_file(&diagnostics, "spec/SpecComponent.svelte");
 }
+
+// ============================================================================
+// ISSUE #35: SVELTE.TS FILES WITH RUNES
+// ============================================================================
+// These tests verify that .svelte.ts files with Svelte 5 runes ($state, $derived,
+// etc.) are properly transformed before being passed to tsgo, and that no
+// TypeScript parse errors occur.
+//
+// The bug was that when workspace paths contain "./" (e.g., --workspace ./project),
+// the exclude patterns for .svelte.ts files might not match due to path
+// normalization inconsistencies.
+//
+// Test files: test-fixtures/projects/svelte-modules/src/lib/*.svelte.ts
+
+/// Fixture state tracking for svelte-modules
+static MODULES_READY: OnceLock<()> = OnceLock::new();
+
+/// Ensures dependencies are installed for svelte-modules fixture
+fn ensure_modules_fixture_ready(fixture_path: &PathBuf) {
+    MODULES_READY.get_or_init(|| {
+        // Clean cache to ensure fresh state
+        let cache_path = cache_root(fixture_path);
+        let _ = fs::remove_dir_all(&cache_path);
+
+        // Check if node_modules exists
+        let node_modules = fixture_path.join("node_modules");
+        if !node_modules.exists() {
+            eprintln!("Installing dependencies for svelte-modules...");
+
+            let output = Command::new("bun")
+                .arg("install")
+                .current_dir(fixture_path)
+                .output()
+                .expect("Failed to run bun install. Is bun installed?");
+
+            if !output.status.success() {
+                panic!(
+                    "bun install failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+
+        // Run svelte-kit sync to generate types
+        let _ = Command::new("bunx")
+            .args(["svelte-kit", "sync"])
+            .current_dir(fixture_path)
+            .output();
+    });
+}
+
+/// Runs svelte-check-rs on svelte-modules fixture with JSON output
+fn run_modules_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
+    // Ensure fixture is ready
+    ensure_modules_fixture_ready(fixture_path);
+
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_path)
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Parse JSON diagnostics
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        eprintln!("Failed to parse JSON output: {}", e);
+        eprintln!("Raw output:\n{}", stdout);
+        vec![]
+    });
+
+    (exit_code, diagnostics)
+}
+
+/// Test that .svelte.ts files with runes don't produce TypeScript parse errors.
+///
+/// This reproduces issue #35 where .svelte.ts files using Svelte 5 runes like:
+///   let count = $state(0);
+///   let doubled = $derived(count * 2);
+/// caused TypeScript parse errors like "')' expected" (TS1005).
+///
+/// The bug occurs when the workspace path contains "./" which causes path
+/// normalization mismatches between include and exclude patterns.
+///
+/// Fixture: test-fixtures/projects/svelte-modules/src/lib/*.svelte.ts
+#[test]
+#[serial]
+fn test_svelte_ts_files_no_parse_errors() {
+    let fixture_path = fixtures_dir().join("svelte-modules");
+    let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
+
+    // Check that no TS1005 (parse error) diagnostics exist for .svelte.ts files
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with(".svelte.ts")
+                && (d.code.contains("TS1005")
+                    || d.code.contains("TS1003")
+                    || d.code.contains("TS1002")
+                    || d.message.contains("expected"))
+        })
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Found TypeScript parse errors in .svelte.ts files (indicates untransformed runes):\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that .svelte.ts files with runes work correctly when using relative path with ./
+///
+/// This specifically tests the path normalization issue where --workspace ./path
+/// causes the exclude patterns to have "./" but include patterns don't.
+#[test]
+#[serial]
+fn test_svelte_ts_files_relative_path_with_dot() {
+    let fixture_path = fixtures_dir().join("svelte-modules");
+
+    // Ensure fixture is ready
+    ensure_modules_fixture_ready(&fixture_path);
+
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    // Use a relative path with ./ prefix (the problematic case)
+    // We need to run from the fixtures parent directory
+    let fixtures_parent = fixtures_dir();
+    let relative_path = format!("./{}", "svelte-modules");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(&relative_path)
+        .arg("--output")
+        .arg("json")
+        .current_dir(&fixtures_parent)
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        eprintln!("Failed to parse JSON output: {}", e);
+        eprintln!("Raw output:\n{}", stdout);
+        vec![]
+    });
+
+    // Check that no TS1005 (parse error) diagnostics exist for .svelte.ts files
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with(".svelte.ts")
+                && (d.code.contains("TS1005")
+                    || d.code.contains("TS1003")
+                    || d.code.contains("TS1002")
+                    || d.message.contains("expected"))
+        })
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Found TypeScript parse errors in .svelte.ts files when using relative path with ./:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that multiline $state<T>(value) with trailing commas is correctly transformed.
+///
+/// This is the specific bug from issue #35 where patterns like:
+///   $state<'a' | 'b'>(
+///       'a',
+///   )
+/// were being transformed to invalid TypeScript:
+///   ('a', as 'a' | 'b')
+/// instead of:
+///   ('a' as 'a' | 'b')
+///
+/// Fixture: test-fixtures/projects/svelte-modules/src/lib/issue-35-multiline-runes.svelte.ts
+#[test]
+#[serial]
+fn test_issue_35_multiline_state_with_trailing_comma() {
+    let fixture_path = fixtures_dir().join("svelte-modules");
+    let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
+
+    // Check that no parse errors exist for the issue-35 test file specifically
+    let issue_35_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.contains("issue-35-multiline-runes")
+                && (d.code.contains("TS1005")
+                    || d.code.contains("TS1003")
+                    || d.code.contains("TS1002")
+                    || d.code.contains("TS1109")
+                    || d.message.contains("expected")
+                    || d.message.contains("Expression expected"))
+        })
+        .collect();
+
+    assert!(
+        issue_35_errors.is_empty(),
+        "Issue #35: Multiline $state<T>(value) with trailing comma produced parse errors:\n{:#?}",
+        issue_35_errors
+    );
+}
+
+/// Test that multiline runes in .svelte component scripts also work correctly.
+///
+/// This ensures the fix applies to component scripts, not just .svelte.ts module files.
+///
+/// Fixture: test-fixtures/projects/svelte-modules/src/lib/Issue35Component.svelte
+#[test]
+#[serial]
+fn test_issue_35_svelte_component_multiline_runes() {
+    let fixture_path = fixtures_dir().join("svelte-modules");
+    let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
+
+    // Check that no parse errors exist for the .svelte component
+    let component_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.contains("Issue35Component.svelte")
+                && (d.code.contains("TS1005")
+                    || d.code.contains("TS1003")
+                    || d.code.contains("TS1002")
+                    || d.code.contains("TS1109")
+                    || d.message.contains("expected")
+                    || d.message.contains("Expression expected"))
+        })
+        .collect();
+
+    assert!(
+        component_errors.is_empty(),
+        "Issue #35: .svelte component with multiline runes produced parse errors:\n{:#?}",
+        component_errors
+    );
+}
+
+/// Test that the transformed output for multiline runes is valid by checking the cache.
+///
+/// This test verifies that the transformation produces valid TypeScript by
+/// examining the cached output file.
+#[test]
+#[serial]
+fn test_issue_35_transformed_output_is_valid() {
+    let fixture_path = fixtures_dir().join("svelte-modules");
+
+    // Run the check to generate cache
+    let _ = run_modules_check_json(&fixture_path);
+
+    // Check the cached transformed file
+    let cache_file = cache_root(&fixture_path)
+        .join("src")
+        .join("lib")
+        .join("issue-35-multiline-runes.svelte.ts");
+
+    if cache_file.exists() {
+        let content = fs::read_to_string(&cache_file).expect("Failed to read cache file");
+
+        // Skip comments when checking for ", as" pattern
+        // The fixture file has comments explaining the bug which contain ", as"
+        // We need to check the actual code, not the comments
+        let code_lines: Vec<&str> = content
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.starts_with("//")
+                    && !trimmed.starts_with("*")
+                    && !trimmed.starts_with("/*")
+            })
+            .collect();
+        let code_only = code_lines.join("\n");
+
+        // The transformed code should NOT contain ", as" pattern (comma before as)
+        assert!(
+            !code_only.contains(", as"),
+            "Transformed code contains invalid ', as' pattern:\n{}",
+            code_only
+        );
+
+        // The transformed content should contain valid 'as' casts
+        // (checking for pattern like "value as Type" without leading comma)
+        assert!(
+            content.contains("'status-start-title' as 'status-start-title'"),
+            "Transformed file should contain valid 'as' cast:\n{}",
+            content
+        );
+    }
+}
+
+// ============================================================================
+// ISSUE #36, #37, #38: PARSER FIXES
+// ============================================================================
+// These tests verify that the parser correctly handles:
+// - Issue #36: Dot notation in component names and attribute names (T.Mesh, rotation.x)
+// - Issue #37: CSS custom property attributes (--primary-color="value")
+// - Issue #38: HTML void elements without closing tags (<br>, <hr>, <img>)
+//
+// Test fixtures:
+// - test-fixtures/valid/parser/issue-36-dot-notation.svelte
+// - test-fixtures/valid/parser/issue-37-css-custom-props.svelte
+// - test-fixtures/valid/parser/issue-38-void-elements.svelte
+// - test-fixtures/projects/sveltekit-bundler/src/routes/test-issues/+page.svelte
+
+/// Test that HTML void elements don't cause parsing errors.
+///
+/// Issue #38: Void elements like <br>, <hr>, <img> should not require closing tags.
+///
+/// Fixture: src/routes/test-issues/+page.svelte
+/// Contains void elements without closing tags
+#[test]
+#[serial]
+fn test_issue_38_void_elements_no_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+
+    // Verify no parse errors for test-issues file
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("test-issues/+page.svelte")
+                && (d.code.contains("parse") || d.message.contains("Expected closing tag"))
+        })
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #38: Void elements caused parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that void elements fixture parses without errors using --skip-tsgo.
+///
+/// This tests the parser directly without involving TypeScript checking.
+#[test]
+#[serial]
+fn test_issue_38_void_elements_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("parser")
+        .join("issue-38-void-elements.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("Expected closing tag") || d.code.contains("parse"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #38: Void elements fixture has parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that dot notation in attribute names parses correctly.
+///
+/// Issue #36: Attribute names like rotation.x should be valid.
+///
+/// This test verifies the parser can handle dot notation in attributes
+/// as used by libraries like threlte.
+#[test]
+#[serial]
+fn test_issue_36_dot_notation_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("parser")
+        .join("issue-36-dot-notation.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code.contains("parse") || d.message.contains("Unexpected token"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #36: Dot notation in attributes has parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that CSS custom property attributes parse correctly.
+///
+/// Issue #37: Attributes like --primary-color="red" should be valid on components.
+///
+/// This test verifies the parser can handle CSS custom property syntax in attributes.
+#[test]
+#[serial]
+fn test_issue_37_css_custom_properties_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("parser")
+        .join("issue-37-css-custom-props.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code.contains("parse") || d.message.contains("Unexpected token"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #37: CSS custom property attributes have parse errors:\n{:#?}",
+        parse_errors
+    );
+}

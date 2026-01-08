@@ -8,6 +8,18 @@ use smol_str::SmolStr;
 use source_map::Span;
 use text_size::TextSize;
 
+/// HTML void elements that are self-closing and should not have closing tags.
+/// See: https://developer.mozilla.org/en-US/docs/Glossary/Void_element
+const HTML_VOID_ELEMENTS: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
+];
+
+/// Returns true if the given element name is an HTML void element.
+fn is_void_element(name: &str) -> bool {
+    HTML_VOID_ELEMENTS.contains(&name.to_lowercase().as_str())
+}
+
 /// The Svelte parser.
 pub struct Parser<'src> {
     /// The source being parsed.
@@ -858,10 +870,12 @@ impl<'src> Parser<'src> {
         // Parse attributes
         let attributes = self.parse_attributes();
 
-        // Check for self-closing
-        let self_closing = self.eat(TokenKind::SlashRAngle);
+        // Check for self-closing syntax (/>) or HTML void element
+        let explicit_self_closing = self.eat(TokenKind::SlashRAngle);
+        let is_void = is_void_element(&name);
+        let self_closing = explicit_self_closing || is_void;
 
-        if !self_closing {
+        if !explicit_self_closing {
             self.expect(TokenKind::RAngle);
         }
 
@@ -961,6 +975,68 @@ impl<'src> Parser<'src> {
             return self.parse_attach_attribute();
         }
 
+        // Check for CSS custom property attribute (--var-name="value")
+        // These start with two minus signs followed by an identifier
+        if self.check(TokenKind::Minus) {
+            let first_minus_end = self.current().span.end;
+            self.advance();
+
+            // Check for second minus immediately after
+            if self.current().span.start == first_minus_end && self.check(TokenKind::Minus) {
+                let second_minus_end = self.current().span.end;
+                self.advance();
+
+                // Check for identifier immediately after
+                if self.current().span.start == second_minus_end && self.check(TokenKind::Ident) {
+                    let mut full_name = String::from("--");
+                    full_name.push_str(self.current_text());
+                    let mut prev_end = self.current().span.end;
+                    self.advance();
+
+                    // Continue reading hyphenated parts (--primary-color-dark)
+                    while self.pos < self.tokens.len()
+                        && self.current().span.start == prev_end
+                        && self.check(TokenKind::Minus)
+                    {
+                        full_name.push('-');
+                        prev_end = self.current().span.end;
+                        self.advance();
+
+                        if self.pos < self.tokens.len()
+                            && self.current().span.start == prev_end
+                            && self.check(TokenKind::Ident)
+                        {
+                            full_name.push_str(self.current_text());
+                            prev_end = self.current().span.end;
+                            self.advance();
+                        }
+                    }
+
+                    // Parse value
+                    let value = if self.eat(TokenKind::Eq) {
+                        Some(self.parse_attribute_value())
+                    } else {
+                        None
+                    };
+
+                    let end = self
+                        .tokens
+                        .get(self.pos.saturating_sub(1))
+                        .map(|t| t.span.end)
+                        .unwrap_or(start);
+                    return Some(Attribute::CssCustomProperty {
+                        name: SmolStr::new(&full_name[2..]), // Strip the leading --
+                        value,
+                        span: Span::new(start, end),
+                    });
+                }
+            }
+
+            // Not a valid CSS custom property, backtrack is not possible
+            // so we return None and let the caller handle it
+            return None;
+        }
+
         // Check for identifier (normal attribute or directive)
         // Also accept keyword tokens that can be valid HTML attribute names
         // This includes block keywords (if, else, each, etc.) and tag keywords (html, const, etc.)
@@ -994,6 +1070,27 @@ impl<'src> Parser<'src> {
         let is_namespaced = self.check(TokenKind::NamespacedIdent);
         let mut prev_end = self.current().span.end;
         self.advance();
+
+        // Handle dot notation in attribute names (e.g., rotation.x={...} used by threlte)
+        // Only continue if tokens are adjacent (no whitespace between)
+        while self.pos < self.tokens.len()
+            && self.current().span.start == prev_end
+            && self.check(TokenKind::Dot)
+        {
+            full_name.push_str(self.current_text());
+            prev_end = self.current().span.end;
+            self.advance();
+
+            // After dot, expect an identifier
+            if self.pos < self.tokens.len()
+                && self.current().span.start == prev_end
+                && self.check(TokenKind::Ident)
+            {
+                full_name.push_str(self.current_text());
+                prev_end = self.current().span.end;
+                self.advance();
+            }
+        }
 
         // For namespaced identifiers (directives), continue reading tokens
         // to build the full name including modifiers: on:click|preventDefault|stopPropagation
@@ -2873,6 +2970,384 @@ mod tests {
             assert_eq!(block.name, "mySnippet");
         } else {
             panic!("Expected SnippetBlock");
+        }
+    }
+
+    // ==========================================
+    // Tests for HTML void elements
+    // Issue #38: https://github.com/pheuter/svelte-check-rs/issues/38
+    // ==========================================
+
+    #[test]
+    fn test_void_element_br_without_closing_tag() {
+        // Issue #38: <br> should not require a closing tag
+        let result = Parser::new("<div>line 1<br>line 2</div>", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "<br> should be valid without closing tag, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert_eq!(el.name.as_str(), "div");
+            // Should have: text, br, text
+            assert_eq!(el.children.len(), 3);
+            if let TemplateNode::Element(br) = &el.children[1] {
+                assert_eq!(br.name.as_str(), "br");
+                assert!(br.self_closing);
+            } else {
+                panic!("Expected br element");
+            }
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    #[test]
+    fn test_void_element_hr() {
+        let result = Parser::new("<div><hr></div>", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "<hr> should be valid without closing tag, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_void_element_img() {
+        let result = Parser::new(
+            r#"<img src="test.png" alt="test">"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "<img> should be valid without closing tag, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert_eq!(el.name.as_str(), "img");
+            assert!(el.self_closing);
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    #[test]
+    fn test_void_element_input() {
+        let result =
+            Parser::new(r#"<input type="text" name="foo">"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "<input> should be valid without closing tag, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert_eq!(el.name.as_str(), "input");
+            assert!(el.self_closing);
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    #[test]
+    fn test_void_element_meta() {
+        let result = Parser::new(r#"<meta charset="utf-8">"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "<meta> should be valid without closing tag, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_void_element_link() {
+        let result = Parser::new(
+            r#"<link rel="stylesheet" href="style.css">"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "<link> should be valid without closing tag, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_all_void_elements() {
+        // Test all HTML void elements
+        let void_elements = [
+            "<area>", "<base>", "<br>", "<col>", "<embed>", "<hr>", "<img>", "<input>", "<link>",
+            "<meta>", "<param>", "<source>", "<track>", "<wbr>",
+        ];
+
+        for element in void_elements {
+            let result = Parser::new(element, ParseOptions::default()).parse();
+            assert!(
+                result.errors.is_empty(),
+                "{} should be valid without closing tag, got errors: {:?}",
+                element,
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn test_void_element_with_explicit_self_closing() {
+        // Should also work with explicit self-closing syntax
+        let result = Parser::new("<br/>", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty());
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert!(el.self_closing);
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    // ==========================================
+    // Tests for dot notation in attributes
+    // Issue #36: https://github.com/pheuter/svelte-check-rs/issues/36
+    // ==========================================
+
+    #[test]
+    fn test_dot_notation_attribute() {
+        // Issue #36: rotation.x should be a valid attribute name
+        let result = Parser::new(
+            r#"<T.Mesh rotation.x={Math.PI / 2}></T.Mesh>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "dot notation in attribute names should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.name.as_str(), "T.Mesh");
+            assert_eq!(comp.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name.as_str(), "rotation.x");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_dot_notation_attribute_on_element() {
+        let result = Parser::new(r#"<div data.value={42}></div>"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "dot notation in attribute names should work on elements, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            assert_eq!(el.attributes.len(), 1);
+            if let Attribute::Normal(attr) = &el.attributes[0] {
+                assert_eq!(attr.name.as_str(), "data.value");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Element");
+        }
+    }
+
+    #[test]
+    fn test_multiple_dot_notation_attributes() {
+        let result = Parser::new(
+            r#"<T.Mesh position.x={0} position.y={1} position.z={2}></T.Mesh>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "multiple dot notation attributes should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 3);
+            let names: Vec<_> = comp
+                .attributes
+                .iter()
+                .filter_map(|a| {
+                    if let Attribute::Normal(attr) = a {
+                        Some(attr.name.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(names, vec!["position.x", "position.y", "position.z"]);
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_deeply_nested_dot_notation() {
+        let result = Parser::new(
+            r#"<Component prop.nested.deep={value}></Component>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "deeply nested dot notation should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            if let Attribute::Normal(attr) = &comp.attributes[0] {
+                assert_eq!(attr.name.as_str(), "prop.nested.deep");
+            } else {
+                panic!("Expected Normal attribute");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    // ==========================================
+    // Tests for CSS custom property attributes
+    // Issue #37: https://github.com/pheuter/svelte-check-rs/issues/37
+    // ==========================================
+
+    #[test]
+    fn test_css_custom_property_attribute() {
+        // Issue #37: --primary-color should be a valid attribute on components
+        let result = Parser::new(
+            r#"<Component --primary-color="red"></Component>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "CSS custom property attributes should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 1);
+            if let Attribute::CssCustomProperty { name, value, .. } = &comp.attributes[0] {
+                assert_eq!(name.as_str(), "primary-color");
+                assert!(value.is_some());
+            } else {
+                panic!("Expected CssCustomProperty, got {:?}", comp.attributes[0]);
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_css_custom_property_with_expression() {
+        let result = Parser::new(
+            r#"<Component --bg-color={dynamicColor}></Component>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "CSS custom property with expression should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            if let Attribute::CssCustomProperty { name, value, .. } = &comp.attributes[0] {
+                assert_eq!(name.as_str(), "bg-color");
+                if let Some(AttributeValue::Expression(expr)) = value {
+                    assert_eq!(expr.expression.trim(), "dynamicColor");
+                } else {
+                    panic!("Expected Expression value");
+                }
+            } else {
+                panic!("Expected CssCustomProperty");
+            }
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_multiple_css_custom_properties() {
+        let result = Parser::new(
+            r#"<Component --color="red" --size="16px" --weight="bold"></Component>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "multiple CSS custom properties should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 3);
+            let names: Vec<_> = comp
+                .attributes
+                .iter()
+                .filter_map(|a| {
+                    if let Attribute::CssCustomProperty { name, .. } = a {
+                        Some(name.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(names, vec!["color", "size", "weight"]);
+        } else {
+            panic!("Expected Component");
+        }
+    }
+
+    #[test]
+    fn test_css_custom_property_on_html_element() {
+        // CSS custom properties should also work on HTML elements
+        let result =
+            Parser::new(r#"<div --my-var="value"></div>"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "CSS custom property on HTML element should work, got errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_css_custom_property_mixed_with_regular_attrs() {
+        let result = Parser::new(
+            r#"<Component class="foo" --theme="dark" id="bar"></Component>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "CSS custom properties mixed with regular attrs should work, got errors: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Component(comp) = &result.document.fragment.nodes[0] {
+            assert_eq!(comp.attributes.len(), 3);
+            // First should be regular attribute
+            assert!(matches!(comp.attributes[0], Attribute::Normal(_)));
+            // Second should be CSS custom property
+            assert!(matches!(
+                comp.attributes[1],
+                Attribute::CssCustomProperty { .. }
+            ));
+            // Third should be regular attribute
+            assert!(matches!(comp.attributes[2], Attribute::Normal(_)));
+        } else {
+            panic!("Expected Component");
         }
     }
 }

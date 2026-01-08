@@ -416,6 +416,15 @@ pub enum Attribute {
     Shorthand(ShorthandAttribute),
     /// An attach attribute `{@attach expr}`.
     Attach(AttachAttribute),
+    /// A CSS custom property attribute `--custom-prop="value"`.
+    CssCustomProperty {
+        /// The property name (without the -- prefix).
+        name: SmolStr,
+        /// The property value.
+        value: Option<AttributeValue>,
+        /// The span of the entire attribute.
+        span: Span,
+    },
 }
 
 impl Attribute {
@@ -427,6 +436,7 @@ impl Attribute {
             Attribute::Directive(a) => a.span,
             Attribute::Shorthand(a) => a.span,
             Attribute::Attach(a) => a.span,
+            Attribute::CssCustomProperty { span, .. } => *span,
         }
     }
 }

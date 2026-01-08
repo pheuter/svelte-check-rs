@@ -530,6 +530,34 @@ impl<'a> RuneScanner<'a> {
         self.output_pos += s.len() as u32;
     }
 
+    /// Strips trailing comma (and surrounding whitespace) from rune argument content.
+    ///
+    /// JavaScript/TypeScript allows trailing commas in function arguments:
+    ///   $state<Type>(
+    ///       value,
+    ///   )
+    ///
+    /// When transforming to `(value as Type)`, we must strip the trailing comma
+    /// to produce valid TypeScript, otherwise we'd get `(value, as Type)`.
+    ///
+    /// Returns (body, trailing_whitespace) where:
+    /// - body: content with trailing comma stripped
+    /// - trailing_whitespace: whitespace after the value (for formatting preservation)
+    fn strip_trailing_comma(content: &str) -> (&str, &str) {
+        // First find where trailing whitespace starts
+        let trimmed = content.trim_end();
+        let trailing_ws_start = trimmed.len();
+        let trailing_ws = &content[trailing_ws_start..];
+
+        // Check if the last non-whitespace character is a comma
+        if let Some(without_comma) = trimmed.strip_suffix(',') {
+            // Strip the comma and any whitespace before it
+            (without_comma.trim_end(), trailing_ws)
+        } else {
+            (trimmed, trailing_ws)
+        }
+    }
+
     /// Try to match a rune at the current position.
     fn try_match_rune(&mut self, start_pos: usize) -> Option<RuneMatch> {
         let remaining = &self.source[start_pos..];
@@ -551,6 +579,25 @@ impl<'a> RuneScanner<'a> {
         ];
 
         // Special cases for runes with TypeScript generics: $rune<Type>() or $rune<Type>(init)
+        // Check $state.raw<Type>() first (longer pattern takes precedence over $state<)
+        if remaining.starts_with("$state.raw<") {
+            if let Some((full_end, content, content_span, generic)) =
+                self.find_rune_with_generic(start_pos, "$state.raw<")
+            {
+                return Some(RuneMatch {
+                    kind: RuneKind::StateRaw,
+                    full_span: Span::new(
+                        self.base_offset + start_pos as u32,
+                        self.base_offset + full_end as u32,
+                    ),
+                    content,
+                    content_span,
+                    pattern_len: 11, // "$state.raw<"
+                    generic: Some(generic),
+                });
+            }
+        }
+
         // Check $state<Type>() - transforms to the content or undefined
         if remaining.starts_with("$state<") {
             if let Some((full_end, content, content_span, generic)) =
@@ -875,20 +922,19 @@ impl<'a> RuneScanner<'a> {
                         } else {
                             self.push_str("undefined as any");
                         }
+                    } else if let Some(generic) = generic {
+                        // Strip trailing comma from content (issue #35)
+                        // e.g., $state<Type>(\n    value,\n) → (value as Type)
+                        let (body, _trailing) = Self::strip_trailing_comma(content);
+                        self.push_char('(');
+                        self.push_str(body);
+                        self.push_str(" as ");
+                        self.push_str(generic);
+                        self.push_char(')');
                     } else {
-                        let transformed = content;
-                        if let Some(generic) = generic {
-                            let trimmed_len = transformed.trim_end().len();
-                            let (body, trailing) = transformed.split_at(trimmed_len);
-                            self.push_char('(');
-                            self.push_str(body);
-                            self.push_str(" as ");
-                            self.push_str(generic);
-                            self.push_str(trailing);
-                            self.push_char(')');
-                        } else {
-                            self.push_str(transformed);
-                        }
+                        // No generic - strip trailing comma for consistency
+                        let (body, _trailing) = Self::strip_trailing_comma(content);
+                        self.push_str(body);
                     }
                 } else if let Some(generic) = generic {
                     self.push_str("undefined as unknown as (");
@@ -910,7 +956,9 @@ impl<'a> RuneScanner<'a> {
                 // $derived(expr) → (expr)
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    // Strip trailing comma from content (issue #35)
+                    let (body, _trailing) = Self::strip_trailing_comma(content);
+                    self.push_str(body);
                 }
                 self.push_char(')');
                 if let Some(generic) = rune_match.generic.as_deref() {
@@ -922,7 +970,9 @@ impl<'a> RuneScanner<'a> {
                 // $derived.by(fn) → (fn)()
                 self.push_char('(');
                 if let Some(content) = &rune_match.content {
-                    self.push_str(content);
+                    // Strip trailing comma from content (issue #35)
+                    let (body, _trailing) = Self::strip_trailing_comma(content);
+                    self.push_str(body);
                 }
                 self.push_str(")()");
                 if let Some(generic) = rune_match.generic.as_deref() {
@@ -957,8 +1007,9 @@ impl<'a> RuneScanner<'a> {
             RuneKind::Bindable => {
                 // $bindable(default?) → default or undefined
                 if let Some(content) = &rune_match.content {
-                    if !content.trim().is_empty() {
-                        self.push_str(content);
+                    let (body, _trailing) = Self::strip_trailing_comma(content);
+                    if !body.trim().is_empty() {
+                        self.push_str(body);
                     } else {
                         self.push_str("undefined as any");
                     }
@@ -1773,6 +1824,284 @@ let { data } = $props();"#,
                 .output
                 .contains("__SvelteLoosen<Record<string, unknown>>"),
             "Expected fallback type but got:\n{}",
+            result.output
+        );
+    }
+
+    // =========================================================================
+    // Issue #35: Multiline $state<T>(value) with trailing commas
+    // =========================================================================
+    // These tests verify that multiline rune expressions with trailing commas
+    // are correctly transformed. The bug was that trailing commas were preserved
+    // in the output, producing invalid TypeScript like:
+    //   eventOrder = ('status-start-title', as 'status-start-title' | ...)
+    // instead of:
+    //   eventOrder = ('status-start-title' as 'status-start-title' | ...)
+
+    #[test]
+    fn test_state_multiline_with_trailing_comma() {
+        // This is the exact pattern from issue #35
+        let result = transform_runes(
+            r#"eventOrder = $state<'status-start-title' | 'start-title' | 'title'>(
+    'status-start-title',
+);"#,
+            0,
+        );
+
+        // The output should NOT contain a comma before "as"
+        assert!(
+            !result.output.contains(", as"),
+            "Trailing comma should be stripped before 'as' keyword. Got:\n{}",
+            result.output
+        );
+
+        // The output should contain valid TypeScript with proper 'as' cast
+        // (whitespace may be preserved from original formatting)
+        assert!(
+            result
+                .output
+                .contains("'status-start-title' as 'status-start-title' | 'start-title' | 'title'"),
+            "Expected proper 'as' cast. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_state_multiline_with_trailing_comma_and_whitespace() {
+        // Test with extra whitespace around the trailing comma
+        let result = transform_runes(
+            r#"value = $state<number>(
+    42   ,
+);"#,
+            0,
+        );
+
+        assert!(
+            !result.output.contains(", as"),
+            "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+
+        // The value and type should be present (whitespace may vary)
+        assert!(
+            result.output.contains("42 as number"),
+            "Expected proper 'as' cast. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_state_multiline_complex_type_with_trailing_comma() {
+        // Test with complex union type including function type
+        let result = transform_runes(
+            r#"handler = $state<(() => void) | null>(
+    null,
+);"#,
+            0,
+        );
+
+        assert!(
+            !result.output.contains(", as"),
+            "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+
+        // The value and type should be present (whitespace may vary)
+        assert!(
+            result.output.contains("null as (() => void) | null"),
+            "Expected proper 'as' cast. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_state_multiline_object_literal_with_trailing_comma() {
+        // Test with object literal that has its own trailing comma
+        let result = transform_runes(
+            r#"config = $state<{ enabled: boolean }>(
+    { enabled: true, },
+);"#,
+            0,
+        );
+
+        assert!(
+            !result.output.contains("}, as"),
+            "Outer trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+
+        // The inner trailing comma inside the object should be preserved
+        assert!(
+            result.output.contains("{ enabled: true, }"),
+            "Inner object comma should be preserved. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_state_single_line_no_trailing_comma() {
+        // Ensure single-line without trailing comma still works
+        let result = transform_runes("let x = $state<number>(42);", 0);
+        assert_eq!(result.output, "let x = (42 as number);");
+    }
+
+    #[test]
+    fn test_state_single_line_with_trailing_comma() {
+        // Single line with trailing comma should also work
+        let result = transform_runes("let x = $state<number>(42,);", 0);
+
+        assert!(
+            !result.output.contains(", as") && !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_derived_by_multiline_with_trailing_comma() {
+        // Test $derived.by with multiline and trailing comma
+        let result = transform_runes(
+            r#"doubled = $derived.by<number>(
+    () => count * 2,
+);"#,
+            0,
+        );
+
+        assert!(
+            !result.output.contains(", as") && !result.output.contains(",)()"),
+            "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+
+        assert!(
+            result.output.contains("() => count * 2)() as number"),
+            "Expected proper transformation. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_derived_multiline_with_trailing_comma() {
+        // Test $derived with multiline and trailing comma
+        let result = transform_runes(
+            r#"doubled = $derived<number>(
+    count * 2,
+);"#,
+            0,
+        );
+
+        assert!(
+            !result.output.contains(", as") && !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+
+        assert!(
+            result.output.contains("count * 2) as number"),
+            "Expected proper transformation. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_derived_complex_type_multiline_with_trailing_comma() {
+        // Test $derived with complex union type and trailing comma
+        let result = transform_runes(
+            r#"value = $derived<string | number>(
+    someCondition ? 'text' : 42,
+);"#,
+            0,
+        );
+
+        assert!(
+            !result.output.contains(", as"),
+            "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+
+        assert!(
+            result
+                .output
+                .contains("someCondition ? 'text' : 42) as string | number"),
+            "Expected proper transformation. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_bindable_multiline_with_trailing_comma() {
+        // Test $bindable with multiline and trailing comma
+        let result = transform_runes(
+            r#"let { value = $bindable(
+    42,
+) } = $props();"#,
+            0,
+        );
+
+        // Bindable should output just the value without trailing comma
+        // The output preserves leading whitespace but strips the trailing comma
+        assert!(
+            !result.output.contains("42,"),
+            "Trailing comma should be stripped from bindable. Got:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("42 }"),
+            "Value should be preserved. Got:\n{}",
+            result.output
+        );
+    }
+
+    // =========================================================================
+    // $state.raw<T>() generic support tests
+    // =========================================================================
+
+    #[test]
+    fn test_state_raw_with_generic() {
+        let result = transform_runes("let items = $state.raw<number[]>([1, 2, 3]);", 0);
+        assert_eq!(result.output, "let items = ([1, 2, 3] as number[]);");
+        assert_eq!(result.runes[0].kind, RuneKind::StateRaw);
+    }
+
+    #[test]
+    fn test_state_raw_with_generic_empty() {
+        let result = transform_runes("let items = $state.raw<string[]>([]);", 0);
+        assert_eq!(result.output, "let items = ([] as string[]);");
+    }
+
+    #[test]
+    fn test_state_raw_multiline_with_trailing_comma() {
+        let result = transform_runes(
+            r#"let items = $state.raw<number[]>(
+    [1, 2, 3],
+);"#,
+            0,
+        );
+
+        assert!(
+            !result.output.contains(", as"),
+            "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+
+        assert!(
+            result.output.contains("[1, 2, 3] as number[]"),
+            "Expected proper 'as' cast. Got:\n{}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_state_raw_with_complex_generic_type() {
+        let result = transform_runes(
+            "let data = $state.raw<Map<string, { id: number; name: string }>>(new Map());",
+            0,
+        );
+        assert!(
+            result
+                .output
+                .contains("(new Map() as Map<string, { id: number; name: string }>)"),
+            "Expected proper 'as' cast with complex type. Got:\n{}",
             result.output
         );
     }
