@@ -1114,6 +1114,17 @@ impl TemplateContext {
                         ExpressionContext::AttachTag,
                     );
                 }
+                Attribute::CssCustomProperty { value, .. } => {
+                    // CSS custom property attributes (--var="value")
+                    // Only emit expression check if value is an expression
+                    if let Some(AttributeValue::Expression(e)) = value {
+                        self.emit_expression(
+                            &e.expression,
+                            e.expression_span,
+                            ExpressionContext::Attribute,
+                        );
+                    }
+                }
             }
         }
     }
@@ -1443,6 +1454,67 @@ impl TemplateContext {
                     self.record_mapping_at_current_pos(&transformed, a.expression_span);
                     self.output.push_str(&transformed);
                     self.output.push_str(",\n");
+                }
+                Attribute::CssCustomProperty { name, value, span } => {
+                    // CSS custom property: --name="value" => "--name": value
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    // Emit as "--name": value
+                    self.output.push_str(&format!("\"--{}\": ", name));
+                    match value {
+                        Some(AttributeValue::Expression(expr)) => {
+                            let transformed = self.track_inline_expression(
+                                &expr.expression,
+                                expr.expression_span,
+                                ExpressionContext::Attribute,
+                            );
+                            self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                            self.output.push_str(&transformed);
+                        }
+                        Some(AttributeValue::Text(t)) => {
+                            let escaped = escape_js_string(&t.value);
+                            self.output.push_str(&format!("\"{}\"", escaped));
+                        }
+                        Some(AttributeValue::True) | None => {
+                            self.output.push_str("true");
+                        }
+                        Some(AttributeValue::Concat(parts)) => {
+                            // Build a template literal for concatenated values
+                            let mut template = String::from("`");
+                            for part in parts {
+                                match part {
+                                    AttributeValuePart::Text(t) => {
+                                        let escaped = t
+                                            .value
+                                            .replace('\\', "\\\\")
+                                            .replace('`', "\\`")
+                                            .replace("${", "\\${");
+                                        template.push_str(&escaped);
+                                    }
+                                    AttributeValuePart::Expression(expr) => {
+                                        let transformed = self.track_inline_expression(
+                                            &expr.expression,
+                                            expr.expression_span,
+                                            ExpressionContext::Attribute,
+                                        );
+                                        let normalized: String = transformed
+                                            .lines()
+                                            .map(|line| line.trim())
+                                            .collect::<Vec<_>>()
+                                            .join("");
+                                        template.push_str("${");
+                                        template.push_str(&normalized);
+                                        template.push('}');
+                                    }
+                                }
+                            }
+                            template.push('`');
+                            self.output.push_str(&template);
+                        }
+                    }
+                    self.output.push_str(",\n");
+                    // Suppress unused variable warning
+                    let _ = span;
                 }
             }
         }

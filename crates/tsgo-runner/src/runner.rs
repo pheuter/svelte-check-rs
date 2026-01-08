@@ -1120,8 +1120,9 @@ impl TsgoRunner {
             excludes.retain(|path| !path.starts_with(&kit_prefix));
         }
 
-        excludes.push(format!("{}/**/*.svelte.ts", self.project_root));
-        excludes.push(format!("{}/**/*.svelte.js", self.project_root));
+        let clean_project_root = clean_path(&self.project_root);
+        excludes.push(format!("{}/**/*.svelte.ts", clean_project_root));
+        excludes.push(format!("{}/**/*.svelte.js", clean_project_root));
         for source in options.patched_sources {
             excludes.push(clean_path(source).to_string());
         }
