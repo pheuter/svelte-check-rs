@@ -1,0 +1,129 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <rect width="100" height="100" />
+</svg>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 126,
+                    },
+                    name: "svg",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 39,
+                                },
+                                name: "xmlns",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 12,
+                                            end: 38,
+                                        },
+                                        value: "http://www.w3.org/2000/svg",
+                                    },
+                                ),
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 40,
+                                    end: 82,
+                                },
+                                name: "xmlns:xlink",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 53,
+                                            end: 81,
+                                        },
+                                        value: "http://www.w3.org/1999/xlink",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Element(
+                            Element {
+                                span: Span {
+                                    start: 86,
+                                    end: 119,
+                                },
+                                name: "rect",
+                                attributes: [
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 92,
+                                                end: 103,
+                                            },
+                                            name: "width",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 99,
+                                                        end: 102,
+                                                    },
+                                                    value: "100",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 104,
+                                                end: 116,
+                                            },
+                                            name: "height",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 112,
+                                                        end: 115,
+                                                    },
+                                                    value: "100",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ],
+                                children: [],
+                                self_closing: true,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 126,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 126,
+    },
+}

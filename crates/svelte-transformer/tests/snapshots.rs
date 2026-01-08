@@ -1292,3 +1292,151 @@ fn test_use_directive_source_mapping() {
 </form>"#,
     );
 }
+
+// === Issue #40: XML Namespace Attributes ===
+
+#[test]
+fn test_xmlns_xlink_transform() {
+    // Issue #40: XML namespace attributes should be passed through correctly
+    transform_snapshot(
+        "xmlns_xlink_transform",
+        r#"<script lang="ts">
+    let className = '';
+</script>
+
+<svg class={className} xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <rect width="100" height="100" />
+</svg>"#,
+    );
+}
+
+#[test]
+fn test_xlink_href_transform() {
+    // Issue #40: xlink:href should be transformed correctly
+    transform_snapshot(
+        "xlink_href_transform",
+        r##"<svg xmlns:xlink="http://www.w3.org/1999/xlink">
+    <use xlink:href="#icon"/>
+</svg>"##,
+    );
+}
+
+// === Issue #41: Comments in Attribute Expressions ===
+
+#[test]
+fn test_comment_in_attr_transform() {
+    // Issue #41: Comments in attribute expressions should be preserved
+    transform_snapshot(
+        "comment_in_attr_transform",
+        r#"<script lang="ts">
+    let items: any[] = [];
+</script>
+
+<div data={/* TODO: fix typing */ items as any}/>"#,
+    );
+}
+
+// === Issue #42: bind:key Directive ===
+
+#[test]
+fn test_bind_key_transform() {
+    // Issue #42: bind:key should transform correctly
+    transform_snapshot(
+        "bind_key_transform",
+        r#"<script lang="ts">
+    import Component from './Component.svelte';
+    let selectedKey = $state('default');
+</script>
+
+<Component bind:key={selectedKey}/>"#,
+    );
+}
+
+// === Issue #44: @const with Arrow Functions ===
+
+#[test]
+fn test_const_arrow_function_transform() {
+    // Issue #44: @const with arrow function should transform correctly
+    transform_snapshot(
+        "const_arrow_function_transform",
+        r#"<script lang="ts">
+    let condition = true;
+    let value: string | null = 'test';
+</script>
+
+{#if condition}
+    {@const is_valid = (val: string | null): boolean => !val || val === 'none'}
+    <span>Valid: {is_valid(value)}</span>
+{/if}"#,
+    );
+}
+
+#[test]
+fn test_const_iife_transform() {
+    // Issue #44: @const with IIFE should transform correctly
+    transform_snapshot(
+        "const_iife_transform",
+        r#"<script lang="ts">
+    let condition = true;
+    let some_check = false;
+    let valueA = 'A';
+    let valueB = 'B';
+</script>
+
+{#if condition}
+    {@const computed_value = (() => {
+        if (some_check) return valueA
+        return valueB
+    })()}
+    <span>{computed_value}</span>
+{/if}"#,
+    );
+}
+
+#[test]
+fn test_snippet_with_const_transform() {
+    // Issue #44: @const inside snippet should transform correctly
+    transform_snapshot(
+        "snippet_with_const_transform",
+        r#"<script lang="ts">
+    let key = $state('test');
+
+    function check(val: string): boolean {
+        return val.length > 0;
+    }
+</script>
+
+{#snippet example()}
+    {@const result = check(key) ? 'valid' : 'invalid'}
+    <span>{result}</span>
+{/snippet}
+
+{@render example()}"#,
+    );
+}
+
+#[test]
+fn test_each_complex_destructure_transform() {
+    // Issue #44: Complex {#each} with destructuring should transform correctly
+    transform_snapshot(
+        "each_complex_destructure_transform",
+        r#"<script lang="ts">
+    interface Item {
+        title: string;
+        value: number;
+        unit: string;
+        fmt?: (v: number) => string;
+    }
+
+    let data: Item[] = [];
+
+    function default_fmt(v: number): string {
+        return v.toString();
+    }
+</script>
+
+{#each data.filter((itm) => itm.value !== undefined) as { title, value, unit, fmt = default_fmt } (title + value + unit)}
+    <div>{title}: {fmt(value)}{unit}</div>
+{/each}"#,
+    );
+}

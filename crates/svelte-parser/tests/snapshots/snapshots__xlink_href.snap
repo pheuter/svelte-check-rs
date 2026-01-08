@@ -1,0 +1,93 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<svg xmlns:xlink="http://www.w3.org/1999/xlink">
+  <use xlink:href="#icon"/>
+</svg>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 83,
+                    },
+                    name: "svg",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 47,
+                                },
+                                name: "xmlns:xlink",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 18,
+                                            end: 46,
+                                        },
+                                        value: "http://www.w3.org/1999/xlink",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Element(
+                            Element {
+                                span: Span {
+                                    start: 51,
+                                    end: 76,
+                                },
+                                name: "use",
+                                attributes: [
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 56,
+                                                end: 74,
+                                            },
+                                            name: "xlink:href",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 68,
+                                                        end: 73,
+                                                    },
+                                                    value: "#icon",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ],
+                                children: [],
+                                self_closing: true,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 83,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 83,
+    },
+}

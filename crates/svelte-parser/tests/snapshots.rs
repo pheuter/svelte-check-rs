@@ -320,3 +320,82 @@ fn test_snapshot_use_directive_with_modifiers() {
         r#"<div use:action.method|once|capture={handler}>Content</div>"#,
     );
 }
+
+// === Issue #40: XML Namespace Attributes ===
+
+#[test]
+fn test_snapshot_xmlns_xlink() {
+    // Issue #40: XML namespace attributes should be parsed as normal attributes
+    parse_snapshot(
+        "xmlns_xlink",
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <rect width="100" height="100" />
+</svg>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_xlink_href() {
+    // Issue #40: xlink:href attribute in SVG
+    parse_snapshot(
+        "xlink_href",
+        r##"<svg xmlns:xlink="http://www.w3.org/1999/xlink">
+  <use xlink:href="#icon"/>
+</svg>"##,
+    );
+}
+
+// === Issue #41: Comments in Attribute Expressions ===
+
+#[test]
+fn test_snapshot_comment_in_attr_multiline() {
+    // Issue #41: Multi-line comment inside attribute expression
+    parse_snapshot(
+        "comment_in_attr_multiline",
+        r#"<div data={/* TODO: fix typing */ items as any}/>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_comment_in_attr_with_value() {
+    // Issue #41: Comment before value in attribute expression
+    parse_snapshot(
+        "comment_in_attr_with_value",
+        r#"<MyComponent data={/* config */ { a: 1 }}/>"#,
+    );
+}
+
+// === Issue #42: bind:key Directive ===
+
+#[test]
+fn test_snapshot_bind_key_directive() {
+    // Issue #42: bind:key should be a valid directive
+    parse_snapshot(
+        "bind_key_directive",
+        r#"<Component bind:key={selectedKey}/>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_bind_keyword_directives() {
+    // Other keyword bindings that should work
+    parse_snapshot(
+        "bind_keyword_directives",
+        r#"<input bind:value={val}/>
+<Component bind:key={k} bind:html={h}/>"#,
+    );
+}
+
+// === Edge Cases: Directives with Keyword Names ===
+
+#[test]
+fn test_snapshot_on_if_event() {
+    // on:if should be valid (custom event with keyword name)
+    parse_snapshot("on_if_event", r#"<Component on:if={handleIf}/>"#);
+}
+
+#[test]
+fn test_snapshot_on_else_event() {
+    // on:else should be valid (custom event with keyword name)
+    parse_snapshot("on_else_event", r#"<Component on:else={handleElse}/>"#);
+}
