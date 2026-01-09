@@ -1703,4 +1703,125 @@ mod tests {
             "Should have proper component declaration"
         );
     }
+
+    /// Test for issue #48/#59: Large props with HTMLAttributes intersection and many properties
+    #[test]
+    fn test_issue_48_trajectory_pattern() {
+        // Pattern from Trajectory.svelte - many props with HTMLAttributes intersection
+        let source = r#"<script lang="ts">
+  type EventHandlers = {
+    on_play?: () => void
+    on_pause?: () => void
+  }
+  type HTMLAttributes<T> = { class?: string }
+
+  let {
+    trajectory = undefined as any,
+    data_url,
+    current_step_idx = 0,
+    allow_file_drop = true,
+    layout = `auto`,
+    structure_props = {},
+    scatter_props = {},
+    histogram_props = {},
+    spinner_props = {},
+    trajectory_controls,
+    error_snippet,
+    show_controls,
+    fullscreen_toggle = true,
+    auto_play = false,
+    display_mode = `structure+scatter`,
+    step_labels = 5,
+    visible_properties = undefined as any,
+    on_play,
+    on_pause,
+    fps_range = [1, 60],
+    fps = 5,
+    loading_options = {},
+    atom_type_mapping,
+    plot_skimming = true,
+    ...rest
+  }: EventHandlers & HTMLAttributes<HTMLDivElement> & {
+    trajectory?: unknown
+    data_url?: string
+    current_step_idx?: number
+    allow_file_drop?: boolean
+    layout?: `auto` | `horizontal` | `vertical`
+    structure_props?: Record<string, unknown>
+    scatter_props?: Record<string, unknown>
+    histogram_props?: Omit<Record<string, unknown>, `series`>
+    spinner_props?: Record<string, unknown>
+    trajectory_controls?: unknown
+    error_snippet?: unknown
+    show_controls?: unknown
+    fullscreen_toggle?: unknown | boolean
+    auto_play?: boolean
+    display_mode?:
+      | `structure+scatter`
+      | `structure`
+      | `scatter`
+      | `histogram`
+      | `structure+histogram`
+    step_labels?: number | number[]
+    visible_properties?: string[]
+    fps_range?: [number, number]
+    fps?: number
+    loading_options?: Record<string, unknown>
+    atom_type_mapping?: Record<number, string>
+    plot_skimming?: boolean
+  } = $props()
+
+  let dragover = $state(false)
+  let loading = $state(false)
+  let error_msg = $state<string | null>(null)
+
+  let step_label_positions = $derived.by((): number[] => {
+    const total_frames = 100
+    if (typeof step_labels === `number`) {
+      if (step_labels > 0) {
+        return [1, 2, 3]
+          .map((t) => Math.round(t))
+          .filter((t, i, arr) => t >= 0 && t < total_frames && arr.indexOf(t) === i)
+      }
+    }
+    return []
+  })
+</script>
+<div>{step_label_positions.length}</div>"#;
+
+        let doc = parse(source).document;
+        let result = transform(
+            &doc,
+            TransformOptions {
+                filename: Some("Trajectory.svelte".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let export_section_start = result
+            .tsx_code
+            .find("// === COMPONENT TYPE EXPORT ===")
+            .expect("Should have COMPONENT TYPE EXPORT section");
+        let export_section = &result.tsx_code[export_section_start..];
+
+        // Type export section must not contain raw Svelte 5 runes
+        for rune in ["$props()", "$state", "$derived", "$effect"] {
+            assert!(
+                !export_section.contains(rune),
+                "COMPONENT TYPE EXPORT should not contain {rune}. Got:\n{export_section}"
+            );
+        }
+
+        // The $derived.by body should be complete with === i)
+        let instance_section_start = result
+            .tsx_code
+            .find("// === INSTANCE SCRIPT ===")
+            .expect("Should have INSTANCE SCRIPT section");
+        let instance_section = &result.tsx_code[instance_section_start..export_section_start];
+
+        assert!(
+            instance_section.contains("arr.indexOf(t) === i)"),
+            "Instance script should have complete filter expression with === i). Got:\n{instance_section}"
+        );
+    }
 }

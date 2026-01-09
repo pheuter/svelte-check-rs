@@ -462,8 +462,12 @@ impl<'a> RuneScanner<'a> {
         match ch {
             '`' => {
                 self.push_char(ch);
-                self.template_depth -= 1;
-                if self.template_depth == 0 {
+                self.template_depth = self.template_depth.saturating_sub(1);
+                // After exiting a template literal, check if we're still inside a template
+                // expression (brace_depth not empty). If so, return to Code context to
+                // properly handle the closing `}`. Otherwise, only return to Code if
+                // we've exited all nested template literals (template_depth == 0).
+                if self.template_depth == 0 || !self.brace_depth.is_empty() {
                     self.context = ScanContext::Code;
                 }
             }

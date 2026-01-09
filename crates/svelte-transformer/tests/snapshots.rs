@@ -1442,6 +1442,61 @@ fn test_each_complex_destructure_transform() {
 }
 
 // ============================================================================
+// NESTED TEMPLATE LITERAL TESTS (Issue #59)
+// ============================================================================
+
+#[test]
+fn test_nested_template_literal_in_expression() {
+    // Issue #59: Nested template literal inside template expression
+    // should not cause scanner state confusion
+    transform_snapshot(
+        "nested_template_literal_in_expression",
+        r#"<script lang="ts">
+    // Nested template literals inside template expressions
+    const path = `/${parts.join(`/`)}`;
+
+    // Additional code after to verify scanner state is correct
+    console.log(`test`);
+</script>
+
+<p>Path: {path}</p>"#,
+    );
+}
+
+#[test]
+fn test_nested_template_literal_complex() {
+    // Issue #59: More complex nested template literals with trailing content
+    transform_snapshot(
+        "nested_template_literal_complex",
+        r#"<script lang="ts">
+    const routes = files
+        .map((filename) => {
+            const parts = filename.split(`/`);
+            return { route: `/${parts.slice(2, -1).join(`/`)}`, filename }
+        });
+
+    if (routes.length === 0) console.error(`No routes found: ${routes.length}`);
+</script>
+
+<p>Routes: {routes.length}</p>"#,
+    );
+}
+
+#[test]
+fn test_nested_template_literal_multiple_levels() {
+    // Issue #59: Multiple levels of nesting
+    transform_snapshot(
+        "nested_template_literal_multiple_levels",
+        r#"<script lang="ts">
+    const deep = `outer ${`middle ${`inner`}`}`;
+    const after = `still works`;
+</script>
+
+<p>{deep} - {after}</p>"#,
+    );
+}
+
+// ============================================================================
 // SNIPPET TRAILING COMMA TESTS (Issue #57)
 // ============================================================================
 
@@ -1540,5 +1595,87 @@ fn test_snippet_component_prop_trailing_comma() {
         <tr><td>{id}</td><td>{name}</td></tr>
     {/snippet}
 </Table>"#,
+    );
+}
+
+// Issue #59: Test derived.by with template literal type comparison and triple equals
+#[test]
+fn test_derived_by_with_template_literal_comparison() {
+    transform_snapshot(
+        "derived_by_template_literal_comparison",
+        r#"<script lang="ts">
+  let total_frames = 100
+  let step_labels = 5 as number | number[]
+
+  let step_label_positions = $derived.by((): number[] => {
+    if (typeof step_labels === `number`) {
+      if (step_labels > 0) {
+        return [1, 2, 3]
+          .map((t) => Math.round(t))
+          .filter((t, i, arr) => t >= 0 && t < total_frames && arr.indexOf(t) === i)
+      }
+    }
+    return []
+  })
+</script>
+
+<p>{step_label_positions.length}</p>"#,
+    );
+}
+
+// Test extraction of props type with template literal types in destructuring defaults
+#[test]
+fn test_props_with_template_literal_defaults() {
+    transform_snapshot(
+        "props_template_literal_defaults",
+        r#"<script lang="ts">
+  let {
+    layout = `auto`,
+    display_mode = `structure+scatter`,
+  }: {
+    layout?: `auto` | `horizontal` | `vertical`
+    display_mode?: `structure+scatter` | `structure` | `scatter`
+  } = $props()
+</script>"#,
+    );
+}
+
+// Test issue #59: Large props type with template literal types spanning multiple lines
+#[test]
+fn test_complex_props_type_trajectory_pattern() {
+    transform_snapshot(
+        "complex_props_trajectory_pattern",
+        r#"<script lang="ts">
+  type EventHandlers = {
+    on_play?: () => void
+    on_pause?: () => void
+  }
+
+  let {
+    trajectory = undefined as any,
+    layout = `auto`,
+    display_mode = `structure+scatter`,
+  }: EventHandlers & {
+    trajectory?: unknown
+    layout?: `auto` | `horizontal` | `vertical`
+    display_mode?:
+      | `structure+scatter`
+      | `structure`
+      | `scatter`
+      | `histogram`
+      | `structure+histogram`
+    units?: {
+      energy?: string
+      [key: string]: string | undefined
+    }
+  } = $props()
+
+  let step_label_positions = $derived.by((): number[] => {
+    const total_frames = 100
+    return [1, 2, 3]
+      .map((t) => Math.round(t))
+      .filter((t, i, arr) => t >= 0 && t < total_frames && arr.indexOf(t) === i)
+  })
+</script>"#,
     );
 }
