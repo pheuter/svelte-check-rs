@@ -1542,14 +1542,15 @@ impl TemplateContext {
                     // Emit the destructuring with source mapping for the parameters
                     let indent_str = self.indent_str();
                     let prefix = format!("{}const ", indent_str);
+                    let const_params = strip_trailing_comma(trimmed_params);
                     let generated_start = self.output.len() + prefix.len();
-                    let generated_end = generated_start + trimmed_params.len();
+                    let generated_end = generated_start + const_params.len();
                     self.mappings.push(GeneratedMapping {
                         generated_start,
                         generated_end,
                         original_span: block.parameters_span,
                     });
-                    self.emit(&format!("const {} = {};", trimmed_params, snippet_param));
+                    self.emit(&format!("const {} = {};", const_params, snippet_param));
                     self.generate_fragment(&block.body);
                     self.emit("return __svelte_snippet_return;");
                     self.indent -= 1;
@@ -1796,7 +1797,8 @@ impl TemplateContext {
                 snippet_name, snippet_generics, param_name
             ));
             self.indent += 1;
-            self.emit(&format!("const {} = {};", trimmed_params, param_name));
+            let const_params = strip_trailing_comma(trimmed_params);
+            self.emit(&format!("const {} = {};", const_params, param_name));
             self.indent -= 1;
         } else {
             self.emit(&format!(
@@ -1822,6 +1824,14 @@ fn event_attribute_name(attr_name: &str) -> Option<&str> {
     } else {
         Some(event)
     }
+}
+
+/// Strip trailing comma from snippet parameters for use in const declarations.
+///
+/// Trailing commas are valid in function parameter lists but not in const declarations.
+/// Input: `{ x, y }: Props,` -> Output: `{ x, y }: Props`
+fn strip_trailing_comma(params: &str) -> &str {
+    params.trim_end().trim_end_matches(',').trim_end()
 }
 
 struct SplitExpression {
