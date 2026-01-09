@@ -739,6 +739,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_div_with_application_role_and_tabindex() {
+        // Issue #49: role="application" is interactive
+        let doc = parse(r#"<div role="application" tabindex="0">content</div>"#).document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yNoNoninteractiveTabindex)),
+            "Should NOT trigger noninteractive-tabindex when element has role='application'"
+        );
+    }
+
     // === svelte-ignore pragma tests ===
 
     #[test]

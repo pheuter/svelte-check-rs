@@ -1651,4 +1651,56 @@ mod tests {
             .tsx_code
             .contains("// Helper functions for template type-checking"));
     }
+
+    /// Regression test for issue #48: `Props & { extended }` pattern should not
+    /// include raw runes in COMPONENT TYPE EXPORT section.
+    #[test]
+    fn test_issue_48_complex_props_type_export() {
+        // Minimal reproduction: intersection type with arrow function signatures
+        // spanning multiple lines, followed by rune usage
+        let source = r#"<script lang="ts">
+    interface Props { value: string; }
+    let {
+        value,
+        onclick,
+        onchange,
+    }: Props & {
+        onclick: (e: MouseEvent) => void;
+        onchange?: (value: string, index: number) => void;
+    } = $props();
+
+    let el = $state<HTMLElement | null>(null);
+    const doubled = $derived(value + value);
+    $effect(() => console.log(el));
+</script>
+<div>{value}</div>"#;
+
+        let doc = parse(source).document;
+        let result = transform(
+            &doc,
+            TransformOptions {
+                filename: Some("TestComponent.svelte".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let export_section_start = result
+            .tsx_code
+            .find("// === COMPONENT TYPE EXPORT ===")
+            .expect("Should have COMPONENT TYPE EXPORT section");
+        let export_section = &result.tsx_code[export_section_start..];
+
+        // Type export section must not contain raw Svelte 5 runes
+        for rune in ["$props()", "$state", "$derived", "$effect"] {
+            assert!(
+                !export_section.contains(rune),
+                "COMPONENT TYPE EXPORT should not contain {rune}. Got:\n{export_section}"
+            );
+        }
+
+        assert!(
+            export_section.contains("declare const __SvelteComponent_TestComponent_"),
+            "Should have proper component declaration"
+        );
+    }
 }
