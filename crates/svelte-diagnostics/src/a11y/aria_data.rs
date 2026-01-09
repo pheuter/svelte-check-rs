@@ -147,7 +147,9 @@ pub fn is_non_interactive_element(tag: &str) -> bool {
 }
 
 /// Roles that are interactive.
+/// Reference: WAI-ARIA 1.2 - https://www.w3.org/TR/wai-aria-1.2/
 pub static INTERACTIVE_ROLES: &[&str] = &[
+    "application", // Declares a region as a web application (interactive widget)
     "button",
     "checkbox",
     "combobox",
@@ -379,6 +381,20 @@ mod tests {
         assert!(is_interactive_element("input"));
         assert!(!is_interactive_element("div"));
         assert!(!is_interactive_element("span"));
+    }
+
+    #[test]
+    fn test_interactive_roles() {
+        // Standard interactive roles
+        assert!(is_interactive_role("button"));
+        assert!(is_interactive_role("link"));
+        assert!(is_interactive_role("textbox"));
+        // application role - declares a region as a web application (interactive widget)
+        // Reference: https://www.w3.org/TR/wai-aria-1.1/#application
+        assert!(is_interactive_role("application"));
+        // Non-interactive roles
+        assert!(!is_interactive_role("document"));
+        assert!(!is_interactive_role("article"));
     }
 
     #[test]

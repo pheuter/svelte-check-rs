@@ -739,6 +739,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_div_with_application_role_and_tabindex() {
+        // Issue #49: A div with role="application" and tabindex should NOT trigger noninteractive-tabindex
+        // role="application" declares a region as a web application (interactive widget)
+        // Reference: https://www.w3.org/TR/wai-aria-1.1/#application
+        let doc =
+            parse(r#"<div role="application" tabindex="0" aria-label="Canvas">content</div>"#)
+                .document;
+        let diagnostics = check(&doc);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::A11yNoNoninteractiveTabindex)),
+            "Should NOT trigger noninteractive-tabindex when element has role='application'"
+        );
+    }
+
     // === svelte-ignore pragma tests ===
 
     #[test]
