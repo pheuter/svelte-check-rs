@@ -1,0 +1,41 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{`result: ${/test/.test(x)}`}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Expression(
+                ExpressionTag {
+                    span: Span {
+                        start: 0,
+                        end: 29,
+                    },
+                    expression_span: Span {
+                        start: 1,
+                        end: 28,
+                    },
+                    expression: "`result: ${/test/.test(x)}`",
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 29,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 29,
+    },
+}

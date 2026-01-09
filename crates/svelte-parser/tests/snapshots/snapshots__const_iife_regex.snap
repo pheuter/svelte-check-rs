@@ -1,0 +1,76 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{#if true}{@const result = (() => { return /test/.test(x); })()}{result}{/if}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            IfBlock(
+                IfBlock {
+                    span: Span {
+                        start: 0,
+                        end: 77,
+                    },
+                    condition_span: Span {
+                        start: 5,
+                        end: 9,
+                    },
+                    condition: "true",
+                    consequent: Fragment {
+                        nodes: [
+                            ConstTag(
+                                ConstTag {
+                                    span: Span {
+                                        start: 10,
+                                        end: 64,
+                                    },
+                                    declaration_span: Span {
+                                        start: 18,
+                                        end: 63,
+                                    },
+                                    declaration: "result = (() => { return /test/.test(x); })()",
+                                },
+                            ),
+                            Expression(
+                                ExpressionTag {
+                                    span: Span {
+                                        start: 64,
+                                        end: 72,
+                                    },
+                                    expression_span: Span {
+                                        start: 65,
+                                        end: 71,
+                                    },
+                                    expression: "result",
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 10,
+                            end: 72,
+                        },
+                    },
+                    alternate: None,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 77,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 77,
+    },
+}

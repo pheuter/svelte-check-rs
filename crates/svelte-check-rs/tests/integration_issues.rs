@@ -958,3 +958,266 @@ fn test_issue_37_css_custom_properties_parser_only() {
         parse_errors
     );
 }
+
+// ============================================================================
+// ISSUE #46: REGEX LITERALS IN EXPRESSIONS
+// ============================================================================
+// These tests verify that regex literals in expressions are parsed correctly.
+//
+// The bug was that the expression parser (read_expression_until) did not handle
+// regex literals, causing the depth counter to be affected by ()/[]/{}
+// characters inside regex patterns.
+//
+// Test fixtures:
+// - test-fixtures/valid/issues/issue-46-regex-simple.svelte
+// - test-fixtures/valid/issues/issue-46-regex-const.svelte
+// - test-fixtures/valid/issues/issue-46-regex-snippet.svelte
+// - test-fixtures/valid/issues/issue-46-regex-arrow-iife.svelte
+// - test-fixtures/valid/issues/issue-46-regex-edge-cases.svelte
+
+/// Test that simple regex literals parse correctly.
+///
+/// Issue #46: Basic regex patterns like /test/ should not cause parsing issues.
+#[test]
+#[serial]
+fn test_issue_46_regex_simple_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("issues")
+        .join("issue-46-regex-simple.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code.contains("parse") || d.message.contains("unclosed"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #46: Simple regex caused parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that @const with regex match and complex patterns parses correctly.
+///
+/// Issue #46: Regex patterns like /^(.+?)\s*\(([^)]+)\)$/ in @const tags
+/// should not cause the parser to lose track of expression boundaries.
+#[test]
+#[serial]
+fn test_issue_46_regex_const_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("issues")
+        .join("issue-46-regex-const.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code.contains("parse") || d.message.contains("unclosed"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #46: @const with regex caused parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that snippets with @const and regex parse correctly.
+///
+/// Issue #46: The main reproduction case - snippets containing @const with
+/// complex regex patterns that have parentheses, brackets, and braces.
+#[test]
+#[serial]
+fn test_issue_46_regex_snippet_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("issues")
+        .join("issue-46-regex-snippet.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors - the key indicator of issue #46 is "unclosed tag"
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code.contains("parse") || d.message.contains("unclosed"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #46: Snippet with @const and regex caused parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that @const with typed arrow functions and IIFEs containing regex parses correctly.
+///
+/// Issue #46: Arrow functions with type annotations and IIFEs containing regex
+/// should be parsed correctly without "Expression expected" errors.
+#[test]
+#[serial]
+fn test_issue_46_regex_arrow_iife_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("issues")
+        .join("issue-46-regex-arrow-iife.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code.contains("parse") || d.message.contains("unclosed"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #46: Arrow function/IIFE with regex caused parse errors:\n{:#?}",
+        parse_errors
+    );
+}
+
+/// Test that regex edge cases (quantifiers, escapes, char classes) parse correctly.
+///
+/// Issue #46: Edge cases like:
+/// - Regex with {n,m} quantifiers: /\d{2,4}/
+/// - Regex with } in character class: /[{}]+/
+/// - Regex with ) in character class: /[^)]+/
+/// - Division operators that should NOT be treated as regex
+#[test]
+#[serial]
+fn test_issue_46_regex_edge_cases_parser_only() {
+    // Build if necessary
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "svelte-check-rs"])
+        .output();
+
+    let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("test-fixtures")
+        .join("valid")
+        .join("issues")
+        .join("issue-46-regex-edge-cases.svelte");
+
+    let output = Command::new(binary_path())
+        .arg("--workspace")
+        .arg(fixture_file.parent().unwrap().parent().unwrap())
+        .arg("--single-file")
+        .arg(&fixture_file)
+        .arg("--skip-tsgo")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // Should have no parse errors
+    let parse_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code.contains("parse") || d.message.contains("unclosed"))
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #46: Regex edge cases caused parse errors:\n{:#?}",
+        parse_errors
+    );
+}
