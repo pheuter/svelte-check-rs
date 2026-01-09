@@ -1,0 +1,169 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div class="parent">
+  {#snippet tooltip({ x, y_formatted }: { x: number; y_formatted: string })}
+    {@const [, y_label, y_unit] = y_label_full.match(/^(.+?)\s*\(([^)]+)\)$/) ??
+      [, y_label_full, ``]}
+    {@const segment = Object.entries(x_positions ?? {}).find(([, [start, end]]) =>
+      x >= start && x <= end
+    )}
+    <span>{y_label}: {y_formatted} {y_unit}</span>
+  {/snippet}
+</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 396,
+                    },
+                    name: "div",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 5,
+                                    end: 19,
+                                },
+                                name: "class",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 12,
+                                            end: 18,
+                                        },
+                                        value: "parent",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        SnippetBlock(
+                            SnippetBlock {
+                                span: Span {
+                                    start: 23,
+                                    end: 389,
+                                },
+                                name: "tooltip",
+                                parameters_span: Span {
+                                    start: 41,
+                                    end: 95,
+                                },
+                                parameters: "{ x, y_formatted }: { x: number; y_formatted: string }",
+                                body: Fragment {
+                                    nodes: [
+                                        ConstTag(
+                                            ConstTag {
+                                                span: Span {
+                                                    start: 102,
+                                                    end: 206,
+                                                },
+                                                declaration_span: Span {
+                                                    start: 110,
+                                                    end: 205,
+                                                },
+                                                declaration: "[, y_label, y_unit] = y_label_full.match(/^(.+?)\\s*\\(([^)]+)\\)$/) ??\n      [, y_label_full, ``]",
+                                            },
+                                        ),
+                                        ConstTag(
+                                            ConstTag {
+                                                span: Span {
+                                                    start: 211,
+                                                    end: 325,
+                                                },
+                                                declaration_span: Span {
+                                                    start: 219,
+                                                    end: 324,
+                                                },
+                                                declaration: "segment = Object.entries(x_positions ?? {}).find(([, [start, end]]) =>\n      x >= start && x <= end\n    )",
+                                            },
+                                        ),
+                                        Element(
+                                            Element {
+                                                span: Span {
+                                                    start: 330,
+                                                    end: 376,
+                                                },
+                                                name: "span",
+                                                attributes: [],
+                                                children: [
+                                                    Expression(
+                                                        ExpressionTag {
+                                                            span: Span {
+                                                                start: 336,
+                                                                end: 345,
+                                                            },
+                                                            expression_span: Span {
+                                                                start: 337,
+                                                                end: 344,
+                                                            },
+                                                            expression: "y_label",
+                                                        },
+                                                    ),
+                                                    Expression(
+                                                        ExpressionTag {
+                                                            span: Span {
+                                                                start: 347,
+                                                                end: 360,
+                                                            },
+                                                            expression_span: Span {
+                                                                start: 348,
+                                                                end: 359,
+                                                            },
+                                                            expression: "y_formatted",
+                                                        },
+                                                    ),
+                                                    Expression(
+                                                        ExpressionTag {
+                                                            span: Span {
+                                                                start: 361,
+                                                                end: 369,
+                                                            },
+                                                            expression_span: Span {
+                                                                start: 362,
+                                                                end: 368,
+                                                            },
+                                                            expression: "y_unit",
+                                                        },
+                                                    ),
+                                                ],
+                                                self_closing: false,
+                                            },
+                                        ),
+                                    ],
+                                    span: Span {
+                                        start: 97,
+                                        end: 376,
+                                    },
+                                },
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 396,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 396,
+    },
+}

@@ -1,0 +1,41 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{value.match(/^(.+?)\s*\(([^)]+)\)$/)}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Expression(
+                ExpressionTag {
+                    span: Span {
+                        start: 0,
+                        end: 38,
+                    },
+                    expression_span: Span {
+                        start: 1,
+                        end: 37,
+                    },
+                    expression: "value.match(/^(.+?)\\s*\\(([^)]+)\\)$/)",
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 38,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 38,
+    },
+}

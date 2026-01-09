@@ -1,0 +1,92 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{#snippet tooltip({ x })}
+    {@const match = x.match(/test/)}
+    <span>{match}</span>
+{/snippet}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            SnippetBlock(
+                SnippetBlock {
+                    span: Span {
+                        start: 0,
+                        end: 98,
+                    },
+                    name: "tooltip",
+                    parameters_span: Span {
+                        start: 18,
+                        end: 23,
+                    },
+                    parameters: "{ x }",
+                    body: Fragment {
+                        nodes: [
+                            ConstTag(
+                                ConstTag {
+                                    span: Span {
+                                        start: 30,
+                                        end: 62,
+                                    },
+                                    declaration_span: Span {
+                                        start: 38,
+                                        end: 61,
+                                    },
+                                    declaration: "match = x.match(/test/)",
+                                },
+                            ),
+                            Element(
+                                Element {
+                                    span: Span {
+                                        start: 67,
+                                        end: 87,
+                                    },
+                                    name: "span",
+                                    attributes: [],
+                                    children: [
+                                        Expression(
+                                            ExpressionTag {
+                                                span: Span {
+                                                    start: 73,
+                                                    end: 80,
+                                                },
+                                                expression_span: Span {
+                                                    start: 74,
+                                                    end: 79,
+                                                },
+                                                expression: "match",
+                                            },
+                                        ),
+                                    ],
+                                    self_closing: false,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 25,
+                            end: 87,
+                        },
+                    },
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 98,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 98,
+    },
+}

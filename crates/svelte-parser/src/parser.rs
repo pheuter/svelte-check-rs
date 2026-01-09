@@ -174,6 +174,8 @@ impl<'src> Parser<'src> {
         let mut string_char = ' ';
         let mut pos = start_offset;
         let bytes = self.source.as_bytes();
+        // Track previous non-whitespace char to determine if / starts a regex
+        let mut prev_non_ws: char = '='; // Start with '=' so first / is treated as regex
 
         let mut chars = self.source[start_offset..].char_indices().peekable();
         while let Some((i, c)) = chars.next() {
@@ -184,6 +186,7 @@ impl<'src> Parser<'src> {
                 // Regular string - just look for end quote
                 if c == string_char && !is_escaped {
                     in_string = false;
+                    prev_non_ws = c;
                 }
                 pos = start_offset + i + c.len_utf8();
                 continue;
@@ -194,12 +197,14 @@ impl<'src> Parser<'src> {
                     // End of template literal (not inside a ${...})
                     in_template_literal = false;
                     in_string = false;
+                    prev_non_ws = c;
                 } else if c == '$' && template_expr_depth == 0 {
                     // Check for ${ to enter expression
                     if let Some(&(_, '{')) = chars.peek() {
                         chars.next(); // consume '{'
                         template_expr_depth = 1;
                         pos = start_offset + i + 2;
+                        prev_non_ws = '{';
                         continue;
                     }
                 } else if template_expr_depth > 0 {
@@ -252,6 +257,7 @@ impl<'src> Parser<'src> {
                                     break;
                                 }
                             }
+                            prev_non_ws = '`';
                         }
                         '/' => {
                             // Check for JavaScript comments inside template expression
@@ -274,8 +280,15 @@ impl<'src> Parser<'src> {
                                         }
                                         prev_star = sc == '*';
                                     }
+                                } else if Self::could_start_regex(prev_non_ws) {
+                                    // Regex literal inside template expression - skip it
+                                    Self::skip_regex_literal(&mut chars, bytes, start_offset);
                                 }
+                            } else if Self::could_start_regex(prev_non_ws) {
+                                // Regex at end - skip it
+                                Self::skip_regex_literal(&mut chars, bytes, start_offset);
                             }
+                            prev_non_ws = '/';
                         }
                         '"' | '\'' => {
                             // String inside template expression
@@ -288,13 +301,22 @@ impl<'src> Parser<'src> {
                                     break;
                                 }
                             }
+                            prev_non_ws = c;
                         }
-                        '{' => template_expr_depth += 1,
+                        '{' => {
+                            template_expr_depth += 1;
+                            prev_non_ws = c;
+                        }
                         '}' => {
                             template_expr_depth -= 1;
+                            prev_non_ws = c;
                             // When template_expr_depth becomes 0, we're back in template string
                         }
-                        _ => {}
+                        _ => {
+                            if !c.is_whitespace() {
+                                prev_non_ws = c;
+                            }
+                        }
                     }
                 }
                 pos = start_offset + i + c.len_utf8();
@@ -303,7 +325,7 @@ impl<'src> Parser<'src> {
 
             match c {
                 '/' => {
-                    // Check for JavaScript comments
+                    // Check for JavaScript comments or regex literals
                     if let Some(&(_, next_c)) = chars.peek() {
                         if next_c == '/' {
                             // Single-line comment - skip until end of line
@@ -323,24 +345,37 @@ impl<'src> Parser<'src> {
                                 }
                                 prev_star = sc == '*';
                             }
+                        } else if Self::could_start_regex(prev_non_ws) {
+                            // Regex literal - skip the entire regex
+                            Self::skip_regex_literal(&mut chars, bytes, start_offset);
                         }
+                    } else if Self::could_start_regex(prev_non_ws) {
+                        // Regex at end - skip it
+                        Self::skip_regex_literal(&mut chars, bytes, start_offset);
                     }
+                    prev_non_ws = '/';
                 }
                 '"' | '\'' => {
                     in_string = true;
                     string_char = c;
+                    prev_non_ws = c;
                 }
                 '`' => {
                     in_string = true;
                     in_template_literal = true;
+                    prev_non_ws = c;
                 }
-                '{' | '(' | '[' => depth += 1,
+                '{' | '(' | '[' => {
+                    depth += 1;
+                    prev_non_ws = c;
+                }
                 '}' if close_char == '}' => {
                     if depth == 0 {
                         pos = start_offset + i;
                         break;
                     }
                     depth -= 1;
+                    prev_non_ws = c;
                 }
                 ')' if close_char == ')' => {
                     if depth == 0 {
@@ -348,6 +383,7 @@ impl<'src> Parser<'src> {
                         break;
                     }
                     depth -= 1;
+                    prev_non_ws = c;
                 }
                 ']' if close_char == ']' => {
                     if depth == 0 {
@@ -355,11 +391,25 @@ impl<'src> Parser<'src> {
                         break;
                     }
                     depth -= 1;
+                    prev_non_ws = c;
                 }
-                '}' => depth -= 1,
-                ')' => depth -= 1,
-                ']' => depth -= 1,
-                _ => {}
+                '}' => {
+                    depth -= 1;
+                    prev_non_ws = c;
+                }
+                ')' => {
+                    depth -= 1;
+                    prev_non_ws = c;
+                }
+                ']' => {
+                    depth -= 1;
+                    prev_non_ws = c;
+                }
+                _ => {
+                    if !c.is_whitespace() {
+                        prev_non_ws = c;
+                    }
+                }
             }
             pos = start_offset + i + c.len_utf8();
         }
@@ -375,6 +425,88 @@ impl<'src> Parser<'src> {
         (text, Span::new(start, end))
     }
 
+    /// Determines if a `/` following `prev_char` could start a regex literal.
+    /// Returns true if regex is likely, false if division is likely.
+    fn could_start_regex(prev_char: char) -> bool {
+        // `/` starts a regex when preceded by:
+        // - Operators: = ! + - * % < > & | ^ ~ ? :
+        // - Open brackets: ( [ {
+        // - Comma, semicolon: , ;
+        // - Start of expression (we use '=' as initial value)
+        //
+        // `/` is division when preceded by:
+        // - Close brackets: ) ] }
+        // - Identifiers (letters, digits, underscore, $)
+        // - Quotes (end of string literal)
+        matches!(
+            prev_char,
+            '=' | '!'
+                | '+'
+                | '-'
+                | '*'
+                | '%'
+                | '<'
+                | '>'
+                | '&'
+                | '|'
+                | '^'
+                | '~'
+                | '?'
+                | ':'
+                | '('
+                | '['
+                | '{'
+                | ','
+                | ';'
+                | '\n'
+        )
+    }
+
+    /// Skips a regex literal, handling escape sequences and character classes.
+    /// Assumes the opening `/` has already been consumed.
+    fn skip_regex_literal(
+        chars: &mut std::iter::Peekable<std::str::CharIndices>,
+        bytes: &[u8],
+        start_offset: usize,
+    ) {
+        let mut in_char_class = false;
+
+        while let Some((ri, rc)) = chars.next() {
+            let regex_abs_i = start_offset + ri;
+            let rc_escaped = regex_abs_i > 0 && bytes.get(regex_abs_i - 1) == Some(&b'\\');
+
+            if rc_escaped {
+                // Escaped character - skip it
+                continue;
+            }
+
+            match rc {
+                '/' if !in_char_class => {
+                    // End of regex - now skip flags (g, i, m, s, u, y, d, v)
+                    while let Some(&(_, fc)) = chars.peek() {
+                        if fc.is_ascii_alphabetic() {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    return;
+                }
+                '[' if !in_char_class => {
+                    in_char_class = true;
+                }
+                ']' if in_char_class => {
+                    in_char_class = false;
+                }
+                '\n' => {
+                    // Unterminated regex - stop here
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Reads an expression from a specific source offset until the closing character.
     /// Unlike `read_expression_until`, this doesn't advance tokens - caller must handle that.
     /// Used when the lexer has already tokenized past the opening brace (e.g., LBraceSlash for `{/`).
@@ -387,6 +519,8 @@ impl<'src> Parser<'src> {
         let mut string_char = ' ';
         let mut pos = start_offset;
         let bytes = self.source.as_bytes();
+        // Track previous non-whitespace char to determine if / starts a regex
+        let mut prev_non_ws: char = '='; // Start with '=' so first / is treated as regex
 
         let mut chars = self.source[start_offset..].char_indices().peekable();
         while let Some((i, c)) = chars.next() {
@@ -396,6 +530,7 @@ impl<'src> Parser<'src> {
             if in_string && !in_template_literal {
                 if c == string_char && !is_escaped {
                     in_string = false;
+                    prev_non_ws = c;
                 }
                 pos = start_offset + i + c.len_utf8();
                 continue;
@@ -405,11 +540,13 @@ impl<'src> Parser<'src> {
                 if c == '`' && !is_escaped && template_expr_depth == 0 {
                     in_template_literal = false;
                     in_string = false;
+                    prev_non_ws = c;
                 } else if c == '$' && template_expr_depth == 0 {
                     if let Some(&(_, '{')) = chars.peek() {
                         chars.next();
                         template_expr_depth = 1;
                         pos = start_offset + i + 2;
+                        prev_non_ws = '{';
                         continue;
                     }
                 } else if template_expr_depth > 0 {
@@ -432,8 +569,13 @@ impl<'src> Parser<'src> {
                                         }
                                         prev_star = sc == '*';
                                     }
+                                } else if Self::could_start_regex(prev_non_ws) {
+                                    Self::skip_regex_literal(&mut chars, bytes, start_offset);
                                 }
+                            } else if Self::could_start_regex(prev_non_ws) {
+                                Self::skip_regex_literal(&mut chars, bytes, start_offset);
                             }
+                            prev_non_ws = '/';
                         }
                         '"' | '\'' => {
                             let quote = c;
@@ -445,12 +587,21 @@ impl<'src> Parser<'src> {
                                     break;
                                 }
                             }
+                            prev_non_ws = c;
                         }
-                        '{' => template_expr_depth += 1,
+                        '{' => {
+                            template_expr_depth += 1;
+                            prev_non_ws = c;
+                        }
                         '}' => {
                             template_expr_depth -= 1;
+                            prev_non_ws = c;
                         }
-                        _ => {}
+                        _ => {
+                            if !c.is_whitespace() {
+                                prev_non_ws = c;
+                            }
+                        }
                     }
                 }
                 pos = start_offset + i + c.len_utf8();
@@ -476,24 +627,35 @@ impl<'src> Parser<'src> {
                                 }
                                 prev_star = sc == '*';
                             }
+                        } else if Self::could_start_regex(prev_non_ws) {
+                            Self::skip_regex_literal(&mut chars, bytes, start_offset);
                         }
+                    } else if Self::could_start_regex(prev_non_ws) {
+                        Self::skip_regex_literal(&mut chars, bytes, start_offset);
                     }
+                    prev_non_ws = '/';
                 }
                 '"' | '\'' => {
                     in_string = true;
                     string_char = c;
+                    prev_non_ws = c;
                 }
                 '`' => {
                     in_string = true;
                     in_template_literal = true;
+                    prev_non_ws = c;
                 }
-                '{' | '(' | '[' => depth += 1,
+                '{' | '(' | '[' => {
+                    depth += 1;
+                    prev_non_ws = c;
+                }
                 '}' if close_char == '}' => {
                     if depth == 0 {
                         pos = start_offset + i;
                         break;
                     }
                     depth -= 1;
+                    prev_non_ws = c;
                 }
                 ')' if close_char == ')' => {
                     if depth == 0 {
@@ -501,6 +663,7 @@ impl<'src> Parser<'src> {
                         break;
                     }
                     depth -= 1;
+                    prev_non_ws = c;
                 }
                 ']' if close_char == ']' => {
                     if depth == 0 {
@@ -508,11 +671,25 @@ impl<'src> Parser<'src> {
                         break;
                     }
                     depth -= 1;
+                    prev_non_ws = c;
                 }
-                '}' => depth -= 1,
-                ')' => depth -= 1,
-                ']' => depth -= 1,
-                _ => {}
+                '}' => {
+                    depth -= 1;
+                    prev_non_ws = c;
+                }
+                ')' => {
+                    depth -= 1;
+                    prev_non_ws = c;
+                }
+                ']' => {
+                    depth -= 1;
+                    prev_non_ws = c;
+                }
+                _ => {
+                    if !c.is_whitespace() {
+                        prev_non_ws = c;
+                    }
+                }
             }
             pos = start_offset + i + c.len_utf8();
         }
@@ -912,6 +1089,16 @@ impl<'src> Parser<'src> {
             TokenKind::LBraceHash => self.parse_block(),
             TokenKind::LBraceAt => self.parse_special_tag(),
             TokenKind::LBrace => self.parse_expression_tag(),
+            TokenKind::LBraceSlash => {
+                // {/ could be a closing block tag ({/if}, {/each}, etc.) or a regex literal ({/pattern/})
+                // If followed by a closing block keyword, return None to let parent block handle it
+                // Otherwise, parse as expression containing regex
+                if self.is_closing_block_keyword() {
+                    None
+                } else {
+                    self.parse_expression_tag_from_lbrace_slash()
+                }
+            }
             TokenKind::LBraceColon => {
                 // {:...} outside of a valid block context is an error
                 // Valid continuation tags are {:else}, {:else if}, {:then}, {:catch}
@@ -924,6 +1111,51 @@ impl<'src> Parser<'src> {
             TokenKind::Newline => None,
             _ => None,
         }
+    }
+
+    /// Checks if the next token after LBraceSlash is a block closing keyword.
+    fn is_closing_block_keyword(&self) -> bool {
+        if let Some(next) = self.tokens.get(self.pos + 1) {
+            matches!(
+                next.kind,
+                TokenKind::If
+                    | TokenKind::Each
+                    | TokenKind::Key
+                    | TokenKind::Await
+                    | TokenKind::Snippet
+            )
+        } else {
+            false
+        }
+    }
+
+    /// Parses an expression tag that was tokenized as LBraceSlash (e.g., {/regex/.test(x)}).
+    fn parse_expression_tag_from_lbrace_slash(&mut self) -> Option<TemplateNode> {
+        let start = self.current().span.start;
+        let start_offset = u32::from(start) as usize;
+
+        // LBraceSlash consumed "{/", so expression starts after "{"
+        // Read expression from offset + 1 (skip the "{", include the "/")
+        let (expr, expr_span) = self.read_expression_from_offset(start_offset + 1, '}');
+
+        // Advance past all tokens until we reach or pass the closing brace
+        let expr_end = expr_span.end;
+        while !self.check(TokenKind::Eof) && self.current().span.end <= expr_end {
+            self.advance();
+        }
+        self.eat(TokenKind::RBrace);
+
+        let end = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span.end)
+            .unwrap_or(start);
+
+        Some(TemplateNode::Expression(ExpressionTag {
+            span: Span::new(start, end),
+            expression_span: expr_span,
+            expression: expr,
+        }))
     }
 
     /// Parses an HTML comment.
@@ -3542,6 +3774,649 @@ mod tests {
             assert!(matches!(comp.attributes[2], Attribute::Normal(_)));
         } else {
             panic!("Expected Component");
+        }
+    }
+
+    // ==========================================
+    // Tests for regex literals in expressions
+    // Issue #46: https://github.com/pheuter/svelte-check-rs/issues/46
+    // ==========================================
+
+    #[test]
+    fn test_regex_literal_simple() {
+        // Simple regex in expression should parse correctly
+        let result = Parser::new("{value.match(/test/)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Simple regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "value.match(/test/)");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_literal_with_parens() {
+        // Regex containing parentheses should parse correctly
+        let result =
+            Parser::new("{value.match(/^(.+?)\\s*test$/)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex with parens should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains("/^(.+?)"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_literal_with_brackets() {
+        // Regex containing brackets with special chars should parse correctly
+        let result = Parser::new("{value.match(/[^)]+/)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex with brackets should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "value.match(/[^)]+/)");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_literal_with_braces_in_char_class() {
+        // Regex with } inside character class should parse correctly
+        let result = Parser::new("{value.match(/[{}]+/)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex with braces in char class should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "value.match(/[{}]+/)");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_literal_with_escaped_slash() {
+        // Regex with escaped slash should parse correctly
+        let result = Parser::new(
+            r#"{value.match(/path\/to\/file/)}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex with escaped slash should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains(r"path\/to\/file"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_literal_with_flags() {
+        // Regex with flags should parse correctly
+        let result = Parser::new("{value.match(/test/gi)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex with flags should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "value.match(/test/gi)");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_literal_complex_pattern() {
+        // Complex regex from issue #46 - regex with multiple special chars
+        let result = Parser::new(
+            r#"{value.match(/^(.+?)\s*\(([^)]+)\)$/)}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Complex regex pattern should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains(r"/^(.+?)"));
+            assert!(expr.expression.contains(r"([^)]+)"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_literal_rgba_pattern() {
+        // RGBA pattern regex from issue #46
+        let result = Parser::new(
+            r#"{/rgba\([^)]+[,/]\s*0(\.0*)?\s*\)$/.test(color)}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "RGBA regex pattern should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains(r"rgba\("));
+            assert!(expr.expression.contains(".test(color)"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_const_tag_with_regex_match() {
+        // {@const} with regex match - issue #46 case 1
+        let result = Parser::new(
+            r#"{#if true}{@const [, label] = value.match(/^(.+?)\s*\(([^)]+)\)$/) ?? [, value, ``]}{label}{/if}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "@const with regex match should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::IfBlock(block) = &result.document.fragment.nodes[0] {
+            assert_eq!(block.consequent.nodes.len(), 2); // ConstTag and Expression
+            if let TemplateNode::ConstTag(const_tag) = &block.consequent.nodes[0] {
+                assert!(const_tag.declaration.contains("value.match("));
+                assert!(const_tag.declaration.contains("[, value, ``]"));
+                // Make sure declaration doesn't include content after the }
+                assert!(!const_tag.declaration.contains("{label}"));
+            } else {
+                panic!("Expected ConstTag, got {:?}", block.consequent.nodes[0]);
+            }
+        } else {
+            panic!("Expected IfBlock");
+        }
+    }
+
+    #[test]
+    fn test_const_tag_with_regex_test() {
+        // {@const} with regex.test() - issue #46 case 2
+        let result = Parser::new(
+            r#"{#if true}{@const matches = /rgba\([^)]+\)$/.test(color)}{matches}{/if}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "@const with regex.test() should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::IfBlock(block) = &result.document.fragment.nodes[0] {
+            if let TemplateNode::ConstTag(const_tag) = &block.consequent.nodes[0] {
+                assert!(const_tag.declaration.contains("matches ="));
+                assert!(const_tag.declaration.contains(".test(color)"));
+                assert!(!const_tag.declaration.contains("{matches}"));
+            } else {
+                panic!("Expected ConstTag");
+            }
+        } else {
+            panic!("Expected IfBlock");
+        }
+    }
+
+    #[test]
+    fn test_multiple_const_tags_with_regex() {
+        // Multiple {@const} tags where first has regex - issue #46 main case
+        let result = Parser::new(
+            r#"{#if true}{@const a = /test/.test(x)}{@const b = 2}{a}{b}{/if}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Multiple @const with regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::IfBlock(block) = &result.document.fragment.nodes[0] {
+            // Should have: ConstTag, ConstTag, Expression, Expression
+            assert_eq!(block.consequent.nodes.len(), 4);
+            if let TemplateNode::ConstTag(const_a) = &block.consequent.nodes[0] {
+                assert!(const_a.declaration.contains("a ="));
+                assert!(const_a.declaration.contains("/test/"));
+                assert!(!const_a.declaration.contains("@const b"));
+            } else {
+                panic!("Expected first ConstTag");
+            }
+            if let TemplateNode::ConstTag(const_b) = &block.consequent.nodes[1] {
+                assert!(const_b.declaration.contains("b = 2"));
+            } else {
+                panic!("Expected second ConstTag");
+            }
+        } else {
+            panic!("Expected IfBlock");
+        }
+    }
+
+    #[test]
+    fn test_snippet_with_const_and_regex() {
+        // Snippet containing @const with regex - issue #46 case
+        let result = Parser::new(
+            r#"{#snippet tooltip({ x })}
+    {@const match = x.match(/test/)}
+    <span>{match}</span>
+{/snippet}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Snippet with @const and regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::SnippetBlock(block) = &result.document.fragment.nodes[0] {
+            assert_eq!(block.name, "tooltip");
+            // Body should have: ConstTag, Element
+            let non_whitespace: Vec<_> = block
+                .body
+                .nodes
+                .iter()
+                .filter(|n| !matches!(n, TemplateNode::Text(t) if t.is_whitespace))
+                .collect();
+            assert_eq!(non_whitespace.len(), 2);
+        } else {
+            panic!("Expected SnippetBlock");
+        }
+    }
+
+    #[test]
+    fn test_division_vs_regex_after_paren() {
+        // Division after ) should not be treated as regex
+        let result = Parser::new("{(a + b) / 2}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Division should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "(a + b) / 2");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_division_vs_regex_after_ident() {
+        // Division after identifier should not be treated as regex
+        let result = Parser::new("{count / 2}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Division after ident should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "count / 2");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_equals() {
+        // Regex after = should be treated as regex
+        let result = Parser::new("{x = /test/}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex after = should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "x = /test/");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_comma() {
+        // Regex after comma in function call
+        let result = Parser::new("{fn(x, /test/)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex after comma should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "fn(x, /test/)");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_open_paren() {
+        // Regex after ( should be treated as regex
+        let result = Parser::new("{fn(/test/)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex after ( should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "fn(/test/)");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_open_bracket() {
+        // Regex in array literal
+        let result = Parser::new("{[/a/, /b/]}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex in array should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression.trim(), "[/a/, /b/]");
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_colon() {
+        // Regex in object literal value
+        let result = Parser::new("{{ pattern: /test/ }}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex in object should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains("pattern: /test/"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_logical_operators() {
+        // Regex after || and &&
+        let result = Parser::new("{a || /test/.test(b)}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex after || should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains("|| /test/"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_ternary() {
+        // Regex in ternary expression
+        let result = Parser::new("{cond ? /yes/ : /no/}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex in ternary should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains("? /yes/"));
+            assert!(expr.expression.contains(": /no/"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_after_return() {
+        // Regex after return keyword (in arrow function)
+        let result = Parser::new(
+            "{items.filter(x => /test/.test(x))}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex in arrow function should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains("=> /test/"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_const_with_arrow_function_and_regex() {
+        // Issue #46: @const with arrow function containing regex
+        let result = Parser::new(
+            r#"{#if true}{@const check = (s: string): boolean => /test/.test(s)}{check("x")}{/if}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "@const with arrow function and regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::IfBlock(block) = &result.document.fragment.nodes[0] {
+            if let TemplateNode::ConstTag(const_tag) = &block.consequent.nodes[0] {
+                assert!(const_tag.declaration.contains("=> /test/"));
+                assert!(!const_tag.declaration.contains("check("));
+            } else {
+                panic!("Expected ConstTag");
+            }
+        } else {
+            panic!("Expected IfBlock");
+        }
+    }
+
+    #[test]
+    fn test_const_with_iife_and_regex() {
+        // Issue #46: @const with IIFE containing regex
+        let result = Parser::new(
+            r#"{#if true}{@const result = (() => { return /test/.test(x); })()}{result}{/if}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "@const with IIFE and regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::IfBlock(block) = &result.document.fragment.nodes[0] {
+            if let TemplateNode::ConstTag(const_tag) = &block.consequent.nodes[0] {
+                assert!(const_tag.declaration.contains("(() =>"));
+                assert!(const_tag.declaration.contains("/test/"));
+                assert!(const_tag.declaration.ends_with("()"));
+                assert!(!const_tag.declaration.contains("{result}"));
+            } else {
+                panic!("Expected ConstTag");
+            }
+        } else {
+            panic!("Expected IfBlock");
+        }
+    }
+
+    #[test]
+    fn test_html_tag_with_regex() {
+        // {@html} with regex
+        let result = Parser::new(
+            r#"{@html value.replace(/test/g, 'replaced')}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "@html with regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::HtmlTag(tag) = &result.document.fragment.nodes[0] {
+            assert!(tag.expression.contains("/test/g"));
+            assert!(tag.expression.contains("'replaced'"));
+        } else {
+            panic!("Expected HtmlTag");
+        }
+    }
+
+    #[test]
+    fn test_render_tag_with_regex_in_args() {
+        // {@render} with regex in arguments
+        let result = Parser::new(
+            r#"{@render snippet({ pattern: /test/ })}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "@render with regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::RenderTag(tag) = &result.document.fragment.nodes[0] {
+            assert!(tag.expression.contains("pattern: /test/"));
+        } else {
+            panic!("Expected RenderTag");
+        }
+    }
+
+    #[test]
+    fn test_if_condition_with_regex() {
+        // {#if} with regex in condition
+        let result = Parser::new(
+            r#"{#if /test/.test(value)}yes{/if}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "if condition with regex should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::IfBlock(block) = &result.document.fragment.nodes[0] {
+            assert!(block.condition.contains("/test/"));
+        } else {
+            panic!("Expected IfBlock");
+        }
+    }
+
+    #[test]
+    fn test_each_expression_with_regex_filter() {
+        // {#each} with regex in filter
+        let result = Parser::new(
+            r#"{#each items.filter(x => /test/.test(x)) as item}{item}{/each}"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(
+            result.errors.is_empty(),
+            "each with regex filter should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::EachBlock(block) = &result.document.fragment.nodes[0] {
+            assert!(block.expression.contains("/test/"));
+        } else {
+            panic!("Expected EachBlock");
+        }
+    }
+
+    #[test]
+    fn test_regex_with_quantifier_braces() {
+        // Regex with {n,m} quantifier - should not confuse closing }
+        let result = Parser::new(r#"{value.match(/\d{2,4}/)}"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex with quantifier braces should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains(r"\d{2,4}"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_regex_with_escape_sequences() {
+        // Regex with various escape sequences
+        let result = Parser::new(r#"{value.match(/\n\t\r\s\w/)}"#, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex with escape sequences should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains(r"\n\t\r\s\w"));
+        } else {
+            panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_nested_regex_in_template_literal() {
+        // Regex inside template literal expression
+        let result = Parser::new("{`matches: ${/test/.test(x)}`}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "Regex in template literal should parse without errors, got: {:?}",
+            result.errors
+        );
+
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert!(expr.expression.contains("/test/"));
+        } else {
+            panic!("Expected Expression");
         }
     }
 }

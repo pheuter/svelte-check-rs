@@ -1,0 +1,41 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{/rgba\([^)]+[,/]\s*0(\.0*)?\s*\)$/.test(color)}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Expression(
+                ExpressionTag {
+                    span: Span {
+                        start: 0,
+                        end: 48,
+                    },
+                    expression_span: Span {
+                        start: 1,
+                        end: 47,
+                    },
+                    expression: "/rgba\\([^)]+[,/]\\s*0(\\.0*)?\\s*\\)$/.test(color)",
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 48,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 48,
+    },
+}

@@ -1,0 +1,102 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{#if true}{@const a = /test/.test(x)}{@const b = 2}{a}{b}{/if}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            IfBlock(
+                IfBlock {
+                    span: Span {
+                        start: 0,
+                        end: 62,
+                    },
+                    condition_span: Span {
+                        start: 5,
+                        end: 9,
+                    },
+                    condition: "true",
+                    consequent: Fragment {
+                        nodes: [
+                            ConstTag(
+                                ConstTag {
+                                    span: Span {
+                                        start: 10,
+                                        end: 37,
+                                    },
+                                    declaration_span: Span {
+                                        start: 18,
+                                        end: 36,
+                                    },
+                                    declaration: "a = /test/.test(x)",
+                                },
+                            ),
+                            ConstTag(
+                                ConstTag {
+                                    span: Span {
+                                        start: 37,
+                                        end: 51,
+                                    },
+                                    declaration_span: Span {
+                                        start: 45,
+                                        end: 50,
+                                    },
+                                    declaration: "b = 2",
+                                },
+                            ),
+                            Expression(
+                                ExpressionTag {
+                                    span: Span {
+                                        start: 51,
+                                        end: 54,
+                                    },
+                                    expression_span: Span {
+                                        start: 52,
+                                        end: 53,
+                                    },
+                                    expression: "a",
+                                },
+                            ),
+                            Expression(
+                                ExpressionTag {
+                                    span: Span {
+                                        start: 54,
+                                        end: 57,
+                                    },
+                                    expression_span: Span {
+                                        start: 55,
+                                        end: 56,
+                                    },
+                                    expression: "b",
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 10,
+                            end: 57,
+                        },
+                    },
+                    alternate: None,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 62,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 62,
+    },
+}

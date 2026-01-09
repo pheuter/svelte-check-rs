@@ -399,3 +399,131 @@ fn test_snapshot_on_else_event() {
     // on:else should be valid (custom event with keyword name)
     parse_snapshot("on_else_event", r#"<Component on:else={handleElse}/>"#);
 }
+
+// === Issue #46: Regex Literals in Expressions ===
+
+#[test]
+fn test_snapshot_regex_simple() {
+    // Simple regex literal in expression
+    parse_snapshot("regex_simple", r#"{value.match(/test/)}"#);
+}
+
+#[test]
+fn test_snapshot_regex_with_parens() {
+    // Regex with capture groups (parentheses)
+    parse_snapshot(
+        "regex_with_parens",
+        r#"{value.match(/^(.+?)\s*\(([^)]+)\)$/)}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_regex_with_char_class() {
+    // Regex with character class containing special chars
+    parse_snapshot("regex_with_char_class", r#"{value.match(/[^)]+/)}"#);
+}
+
+#[test]
+fn test_snapshot_regex_rgba_pattern() {
+    // Complex RGBA pattern from issue #46
+    parse_snapshot(
+        "regex_rgba_pattern",
+        r#"{/rgba\([^)]+[,/]\s*0(\.0*)?\s*\)$/.test(color)}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_const_with_regex_match() {
+    // Issue #46: @const with regex match and nullish coalescing
+    parse_snapshot(
+        "const_with_regex_match",
+        r#"{#if true}{@const [, label] = value.match(/^(.+?)\s*\(([^)]+)\)$/) ?? [, value, ``]}{label}{/if}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_const_with_regex_test() {
+    // Issue #46: @const with regex.test()
+    parse_snapshot(
+        "const_with_regex_test",
+        r#"{#if true}{@const matches = /rgba\([^)]+\)$/.test(color)}{matches}{/if}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_multiple_const_with_regex() {
+    // Issue #46: Multiple @const tags, first with regex
+    parse_snapshot(
+        "multiple_const_with_regex",
+        r#"{#if true}{@const a = /test/.test(x)}{@const b = 2}{a}{b}{/if}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_snippet_with_const_regex() {
+    // Issue #46: Snippet containing @const with regex
+    parse_snapshot(
+        "snippet_with_const_regex",
+        r#"{#snippet tooltip({ x })}
+    {@const match = x.match(/test/)}
+    <span>{match}</span>
+{/snippet}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_const_arrow_function_regex() {
+    // Issue #46: @const with typed arrow function containing regex
+    parse_snapshot(
+        "const_arrow_function_regex",
+        r#"{#if true}{@const check = (s: string): boolean => /test/.test(s)}{check("x")}{/if}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_const_iife_regex() {
+    // Issue #46: @const with IIFE containing regex
+    parse_snapshot(
+        "const_iife_regex",
+        r#"{#if true}{@const result = (() => { return /test/.test(x); })()}{result}{/if}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_regex_quantifier_braces() {
+    // Regex with {n,m} quantifier
+    parse_snapshot("regex_quantifier_braces", r#"{value.match(/\d{2,4}/)}"#);
+}
+
+#[test]
+fn test_snapshot_regex_in_template_literal() {
+    // Regex inside template literal ${} expression
+    parse_snapshot(
+        "regex_in_template_literal",
+        r#"{`result: ${/test/.test(x)}`}"#,
+    );
+}
+
+#[test]
+fn test_snapshot_division_not_regex() {
+    // Division should not be confused with regex
+    parse_snapshot("division_not_regex", r#"{(a + b) / 2}"#);
+}
+
+#[test]
+fn test_snapshot_complex_snippet_const_regex() {
+    // Complex case from issue #46 minimal repro
+    parse_snapshot(
+        "complex_snippet_const_regex",
+        r#"<div class="parent">
+  {#snippet tooltip({ x, y_formatted }: { x: number; y_formatted: string })}
+    {@const [, y_label, y_unit] = y_label_full.match(/^(.+?)\s*\(([^)]+)\)$/) ??
+      [, y_label_full, ``]}
+    {@const segment = Object.entries(x_positions ?? {}).find(([, [start, end]]) =>
+      x >= start && x <= end
+    )}
+    <span>{y_label}: {y_formatted} {y_unit}</span>
+  {/snippet}
+</div>"#,
+    );
+}
