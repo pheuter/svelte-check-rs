@@ -1651,4 +1651,111 @@ mod tests {
             .tsx_code
             .contains("// Helper functions for template type-checking"));
     }
+
+    /// Regression test for issue #48: Complex Props & { extended } pattern
+    /// should not include raw runes in COMPONENT TYPE EXPORT section.
+    ///
+    /// When using `Props & { ...extended props... } = $props()` pattern with
+    /// many properties and complex function signatures, the type export section
+    /// was incorrectly including the `= $props()` assignment and subsequent
+    /// script content with raw Svelte 5 runes.
+    #[test]
+    fn test_issue_48_complex_props_type_export() {
+        let source = r#"<script lang="ts">
+    interface BarData { id: string; status?: 'fixed' | 'preliminary'; }
+    interface Props {
+        bar: BarData;
+        isHovered: boolean;
+        columnCount: number;
+        lane?: number;
+    }
+
+    let {
+        bar,
+        isHovered = false,
+        columnCount,
+        lane = 0,
+        onedit,
+        ondelete,
+        onstatuschange,
+        oncategorychange,
+        onprojectchange,
+        onassignto,
+        assignmentStages = [],
+        assignmentSections = [],
+        assignmentLoading = { stages: false, sections: false },
+        onmouseenter,
+        onmouseleave,
+    }: Props & {
+        onedit: (bar: BarData) => void;
+        ondelete: (bar: BarData) => void;
+        onstatuschange: (bar: BarData, newStatus: 'fixed' | 'preliminary') => void;
+        oncategorychange?: (bar: BarData, category: string, subcategory: string) => void;
+        onprojectchange?: (bar: BarData, projectId: string | undefined) => void;
+        onassignto?: (bar: BarData, elementType: 'stage' | 'task' | 'section', elementId: string) => void;
+        assignmentStages?: Array<{ id: string; title: string; tasks: Array<{ id: string; title: string }> }>;
+        assignmentSections?: Array<{ id: string; title: string }>;
+        assignmentLoading?: { stages: boolean; sections: boolean };
+        onmouseenter: () => void;
+        onmouseleave: () => void;
+    } = $props();
+
+    let barElement = $state<HTMLElement | null>(null);
+    let contextMenuOpen = $state(false);
+    const isAppointment = $derived(bar.id.startsWith('apt'));
+
+    $effect(() => {
+        if (!barElement) return;
+        console.log('effect running');
+    });
+</script>
+
+<div bind:this={barElement}>
+    <span>{bar.id}</span>
+</div>"#;
+
+        let doc = parse(source).document;
+        let result = transform(
+            &doc,
+            TransformOptions {
+                filename: Some("TestComponent.svelte".to_string()),
+                ..Default::default()
+            },
+        );
+
+        // Find the COMPONENT TYPE EXPORT section
+        let export_section_start = result
+            .tsx_code
+            .find("// === COMPONENT TYPE EXPORT ===")
+            .expect("Should have COMPONENT TYPE EXPORT section");
+        let export_section = &result.tsx_code[export_section_start..];
+
+        // The type export section should NOT contain raw Svelte 5 runes
+        assert!(
+            !export_section.contains("$props()"),
+            "COMPONENT TYPE EXPORT should not contain $props(). Got:\n{}",
+            export_section
+        );
+        assert!(
+            !export_section.contains("$state"),
+            "COMPONENT TYPE EXPORT should not contain $state. Got:\n{}",
+            export_section
+        );
+        assert!(
+            !export_section.contains("$derived"),
+            "COMPONENT TYPE EXPORT should not contain $derived. Got:\n{}",
+            export_section
+        );
+        assert!(
+            !export_section.contains("$effect"),
+            "COMPONENT TYPE EXPORT should not contain $effect. Got:\n{}",
+            export_section
+        );
+
+        // The type should end with a proper type definition
+        assert!(
+            export_section.contains("declare const __SvelteComponent_TestComponent_"),
+            "Should have proper component declaration"
+        );
+    }
 }
