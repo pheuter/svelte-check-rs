@@ -391,18 +391,65 @@ fn extract_type_annotation(s: &str) -> Option<String> {
 
     // Find the end of the type (before `=`)
     let type_str = &trimmed[1..].trim();
+    let chars: Vec<char> = type_str.chars().collect();
+    let len = chars.len();
 
-    // Simple heuristic: find `=` that's not inside angle brackets or parens
+    // Track depth for brackets, strings, and comments
     let mut depth = 0;
     let mut in_string = false;
     let mut string_char = ' ';
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
     let mut prev_char: Option<char> = None;
+    let mut i = 0;
 
-    for (i, ch) in type_str.char_indices() {
+    while i < len {
+        let ch = chars[i];
+
+        // Handle line comments: skip until newline
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            prev_char = Some(ch);
+            i += 1;
+            continue;
+        }
+
+        // Handle block comments: skip until */
+        if in_block_comment {
+            if ch == '*' && i + 1 < len && chars[i + 1] == '/' {
+                in_block_comment = false;
+                i += 2;
+                prev_char = Some('/');
+                continue;
+            }
+            prev_char = Some(ch);
+            i += 1;
+            continue;
+        }
+
+        // Check for comment start (only outside strings)
+        if !in_string && ch == '/' && i + 1 < len {
+            if chars[i + 1] == '/' {
+                in_line_comment = true;
+                i += 2;
+                prev_char = Some('/');
+                continue;
+            } else if chars[i + 1] == '*' {
+                in_block_comment = true;
+                i += 2;
+                prev_char = Some('*');
+                continue;
+            }
+        }
+
+        // Handle strings
         if !in_string && (ch == '"' || ch == '\'' || ch == '`') {
             in_string = true;
             string_char = ch;
             prev_char = Some(ch);
+            i += 1;
             continue;
         }
         if in_string {
@@ -410,9 +457,11 @@ fn extract_type_annotation(s: &str) -> Option<String> {
                 in_string = false;
             }
             prev_char = Some(ch);
+            i += 1;
             continue;
         }
 
+        // Track depth for brackets
         if ch == '<' || ch == '(' || ch == '{' || ch == '[' {
             depth += 1;
         } else if ch == '>' {
@@ -424,12 +473,19 @@ fn extract_type_annotation(s: &str) -> Option<String> {
             depth -= 1;
         } else if ch == '=' && depth == 0 {
             // Make sure it's not `=>` or `==`
-            let next = type_str[i + 1..].chars().next();
+            let next = if i + 1 < len {
+                Some(chars[i + 1])
+            } else {
+                None
+            };
             if next != Some('>') && next != Some('=') {
-                return Some(type_str[..i].trim().to_string());
+                // Calculate byte position from char position
+                let byte_pos: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
+                return Some(type_str[..byte_pos].trim().to_string());
             }
         }
         prev_char = Some(ch);
+        i += 1;
     }
 
     None
@@ -756,5 +812,307 @@ mod tests {
             info.type_annotation,
             Some("{ onchange?: (n: number) => void }".to_string())
         );
+    }
+
+    #[test]
+    fn test_extract_type_with_template_literal_in_generic() {
+        // This pattern from Trajectory.svelte: Omit<ComponentProps<typeof Histogram>, `series`>
+        let script = r#"let { histogram_props = {} }: {
+    histogram_props?: Omit<ComponentProps<typeof Histogram>, `series`>
+  } = $props()"#;
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert!(info.is_destructured);
+        let type_ann = info.type_annotation.as_ref().unwrap();
+        // Type annotation should NOT include "= $props()"
+        assert!(
+            !type_ann.contains("$props"),
+            "Type annotation should not contain $props: {}",
+            type_ann
+        );
+        assert!(type_ann.contains("Omit<ComponentProps<typeof Histogram>, `series`>"));
+    }
+
+    #[test]
+    fn test_extract_type_annotation_function_directly() {
+        // Test the extract_type_annotation function directly
+        let input = ": { x?: `foo` | `bar` } = $props()";
+        let result = extract_type_annotation(input);
+        assert_eq!(result, Some("{ x?: `foo` | `bar` }".to_string()));
+    }
+
+    #[test]
+    fn test_extract_type_annotation_with_omit_template_literal() {
+        let input =
+            ": { histogram_props?: Omit<ComponentProps<typeof Histogram>, `series`> } = $props()";
+        let result = extract_type_annotation(input);
+        assert!(result.is_some(), "Should extract type annotation");
+        let type_ann = result.unwrap();
+        assert!(
+            !type_ann.contains("$props"),
+            "Should not contain $props: {}",
+            type_ann
+        );
+    }
+
+    #[test]
+    fn test_find_matching_brace_with_template_literals() {
+        // Destructuring with template literal defaults
+        let input = r#"
+    trajectory = $bindable(),
+    layout = `auto`,
+    display_mode = $bindable(`structure+scatter`),
+  }: EventHandlers & { x: number } = $props()"#;
+
+        let result = find_matching_brace(input);
+        assert!(result.is_some(), "Should find matching brace");
+        let (content, _idx) = result.unwrap();
+        // Content should NOT include the }: part after
+        assert!(
+            !content.contains("EventHandlers"),
+            "Content should not include type annotation: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_trajectory_actual_props_pattern() {
+        // Actual props declaration from matterviz Trajectory.svelte
+        let script = r#"  let {
+    trajectory = $bindable(),
+    data_url,
+    current_step_idx = $bindable(0),
+    data_extractor = full_data_extractor,
+    allow_file_drop = true,
+    layout = `auto`,
+    structure_props = {},
+    scatter_props = {},
+    histogram_props = {},
+    spinner_props = {},
+    trajectory_controls,
+    error_snippet,
+    show_controls,
+    fullscreen_toggle = DEFAULTS.trajectory.fullscreen_toggle,
+    auto_play = false,
+    display_mode = $bindable(`structure+scatter`),
+    step_labels = 5,
+    visible_properties = $bindable(),
+    ELEM_PROPERTY_LABELS,
+    on_play,
+    on_pause,
+    on_step_change,
+    on_end,
+    on_loop,
+    on_frame_rate_change,
+    on_display_mode_change,
+    on_fullscreen_change,
+    on_file_load,
+    on_error,
+    fps_range = DEFAULTS.trajectory.fps_range,
+    fps = $bindable(5),
+    loading_options = {},
+    atom_type_mapping,
+    plot_skimming = true,
+    ...rest
+  }: EventHandlers & HTMLAttributes<HTMLDivElement> & {
+    trajectory?: TrajectoryType
+    data_url?: string
+    current_step_idx?: number
+    data_extractor?: TrajectoryDataExtractor
+    allow_file_drop?: boolean
+    layout?: `auto` | Orientation
+    structure_props?: ComponentProps<typeof Structure>
+    scatter_props?: ComponentProps<typeof ScatterPlot>
+    histogram_props?: Omit<ComponentProps<typeof Histogram>, `series`>
+    spinner_props?: ComponentProps<typeof Spinner>
+    trajectory_controls?: Snippet<[ControlsProps]>
+    error_snippet?: Snippet<[{ error_msg: string; on_dismiss: () => void }]>
+    show_controls?: ShowControlsProp
+    fullscreen_toggle?: Snippet<[{ fullscreen: boolean }]> | boolean
+    auto_play?: boolean
+    display_mode?:
+      | `structure+scatter`
+      | `structure`
+      | `scatter`
+      | `histogram`
+      | `structure+histogram`
+    step_labels?: number | number[]
+    visible_properties?: string[]
+    ELEM_PROPERTY_LABELS?: Record<string, string>
+    units?: {
+      energy?: string
+      energy_per_atom?: string
+      force_max?: string
+      [key: string]: string | undefined
+    }
+    fps_range?: [number, number]
+    fps?: number
+    loading_options?: LoadingOptions
+    atom_type_mapping?: AtomTypeMapping
+    plot_skimming?: boolean
+  } = $props()
+
+  let dragover = $state(false)
+  let loading = $state(false)"#;
+
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert!(info.is_destructured, "Should be destructured");
+        let type_ann = info
+            .type_annotation
+            .as_ref()
+            .expect("Should have type annotation");
+
+        // Type annotation should NOT include "= $props()" or anything after
+        assert!(
+            !type_ann.contains("$props"),
+            "Type annotation should not contain $props. Got:\n{}",
+            type_ann
+        );
+        assert!(
+            !type_ann.contains("$state"),
+            "Type annotation should not contain $state. Got:\n{}",
+            type_ann
+        );
+        assert!(
+            !type_ann.contains("dragover"),
+            "Type annotation should not contain script content. Got:\n{}",
+            type_ann
+        );
+
+        // It should end with the closing brace of the type
+        let trimmed = type_ann.trim();
+        assert!(
+            trimmed.ends_with('}'),
+            "Type annotation should end with }}. Got:\n{}",
+            type_ann
+        );
+    }
+
+    #[test]
+    fn test_extract_type_annotation_trajectory_full() {
+        // The exact content after closing brace of destructuring in Trajectory.svelte
+        let input = r#": EventHandlers & HTMLAttributes<HTMLDivElement> & {
+    // trajectory data - can be provided directly or loaded from file
+    trajectory?: TrajectoryType
+    // URL to load trajectory from (alternative to providing trajectory directly)
+    data_url?: string
+    // current step index being displayed
+    current_step_idx?: number
+    // custom function to extract plot data from trajectory frames
+    data_extractor?: TrajectoryDataExtractor
+
+    // file drop handlers
+    allow_file_drop?: boolean
+    // layout configuration - 'auto' (default) adapts to element size, 'horizontal'/'vertical' forces layout
+    layout?: `auto` | Orientation
+    // structure viewer props (passed to Structure component)
+    structure_props?: ComponentProps<typeof Structure>
+    // plot props (passed to ScatterPlot component)
+    scatter_props?: ComponentProps<typeof ScatterPlot>
+    // histogram props (passed to Histogram component, excluding series which is handled separately)
+    histogram_props?: Omit<ComponentProps<typeof Histogram>, `series`>
+    // spinner props (passed to Spinner component)
+    spinner_props?: ComponentProps<typeof Spinner>
+    // custom snippets for additional UI elements
+    trajectory_controls?: Snippet<[ControlsProps]>
+    // Custom error snippet for advanced error handling
+    error_snippet?: Snippet<[{ error_msg: string; on_dismiss: () => void }]>
+    // Controls visibility configuration.
+    // - 'always': controls always visible
+    // - 'hover': controls visible on component hover (default)
+    // - 'never': controls never visible
+    // - object: { mode, hidden, style } for fine-grained control
+    // Control names: 'filename', 'nav', 'step', 'fps', 'info-pane', 'export-pane', 'view-mode', 'fullscreen'
+    show_controls?: ShowControlsProp
+    // show/hide the fullscreen button
+    fullscreen_toggle?: Snippet<[{ fullscreen: boolean }]> | boolean
+    // automatically start playing when trajectory data is loaded
+    auto_play?: boolean
+    // display mode: 'structure+scatter' (default), 'structure' (only structure), 'scatter' (only scatter), 'histogram' (only histogram), 'structure+histogram' (structure with histogram)
+    display_mode?:
+      | `structure+scatter`
+      | `structure`
+      | `scatter`
+      | `histogram`
+      | `structure+histogram`
+    // step labels configuration for slider
+    // - positive number: number of evenly spaced ticks
+    // - negative number: spacing between ticks (e.g. -10 = every 10th step)
+    // - array: exact step indices to label
+    // - undefined: no labels
+    step_labels?: number | number[]
+    // visible properties - bindable array of property keys currently shown in the plot
+    // - controls which trajectory properties are plotted (e.g. ['energy', 'volume', 'force_max'])
+    // - bindable: reflects current visibility state and can be used for external control
+    // - if not provided, uses default visible properties (energy, force_max, stress_frobenius)
+    // - if specified properties don't exist in data, falls back to automatic selection
+    visible_properties?: string[]
+    // custom labels for trajectory properties - maps property keys to display labels
+    // - e.g. {energy: 'Total Energy', volume: 'Cell Volume', force_max: 'Max Force'}
+    // - merged with built-in trajectory_property_config
+    ELEM_PROPERTY_LABELS?: Record<string, string>
+    // units configuration - developers can override these (deprecated - use ELEM_PROPERTY_LABELS instead)
+    units?: {
+      energy?: string
+      energy_per_atom?: string
+      force_max?: string
+      force_norm?: string
+      stress_max?: string
+      volume?: string
+      density?: string
+      temperature?: string
+      pressure?: string
+      length?: string
+      a?: string
+      b?: string
+      c?: string
+      [key: string]: string | undefined
+    }
+    fps_range?: [number, number] // allowed FPS range [min_fps, max_fps]
+    fps?: number // frame rate for playback
+    // Loading options for large files
+    loading_options?: LoadingOptions
+    // Map LAMMPS atom types to element symbols (e.g. {1: 'Na', 2: 'Cl'})
+    atom_type_mapping?: AtomTypeMapping
+    // Disable plot skimming (mouse over plot doesn't update structure/step slider)
+    plot_skimming?: boolean
+  } = $props()
+
+  let dragover = $state(false)"#;
+
+        let result = extract_type_annotation(input);
+        assert!(result.is_some(), "Should find type annotation");
+
+        let type_ann = result.unwrap();
+        assert!(
+            !type_ann.contains("$props"),
+            "Should not contain $props. Got:\n{}",
+            type_ann
+        );
+        assert!(
+            !type_ann.contains("$state"),
+            "Should not contain $state. Got:\n{}",
+            type_ann
+        );
+        assert!(
+            type_ann.trim().ends_with('}'),
+            "Should end with }}. Got:\n{}",
+            type_ann
+        );
+    }
+
+    #[test]
+    fn test_comment_with_equals() {
+        // Test with a comment containing =
+        let input = r#": {
+    // spacing between ticks (e.g. -10 = every 10th step)
+    step_labels?: number
+  } = $props()"#;
+
+        let result = extract_type_annotation(input);
+        assert!(result.is_some(), "Should find type annotation");
+        let t = result.unwrap();
+        assert!(!t.contains("$props"), "Should not contain $props");
     }
 }

@@ -1650,3 +1650,173 @@ fn test_use_directive_sveltekit_form_pattern() {
     // The form with use directive is on line 13
     verify_line_mapping(source, "formSelect.enhance(null", 13);
 }
+
+// ============================================================================
+// NESTED TEMPLATE LITERAL SOURCE MAP TESTS (Issue #59)
+// ============================================================================
+// These tests verify that nested template literals (backticks inside ${})
+// are correctly handled and don't produce source mappings pointing to
+// line numbers beyond the file length.
+
+#[test]
+fn test_nested_template_literal_basic_line_number() {
+    // Issue #59: Nested template literal inside template expression
+    let source = r#"<script>
+    const path = `/${parts.join(`/`)}`;
+</script>
+
+<p>{path}</p>"#;
+
+    // The template literal is on line 2
+    // After the fix, this should not panic and should produce valid mappings
+    verify_line_mapping(source, "path;", 5);
+}
+
+#[test]
+fn test_nested_template_literal_complex_line_number() {
+    // Issue #59: Complex nested template literals with code after
+    let source = r#"<script>
+    const routes = files
+        .map((filename) => {
+            const parts = filename.split(`/`);
+            return { route: `/${parts.slice(2, -1).join(`/`)}`, filename }
+        });
+</script>
+
+<p>{routes.length}</p>"#;
+
+    // The expression in the template should map correctly
+    // Line 9 is where {routes.length} appears
+    verify_line_mapping(source, "routes.length", 9);
+}
+
+#[test]
+fn test_nested_template_literal_after_code_line_number() {
+    // Issue #59: Ensure code after nested template literals maps correctly
+    let source = r#"<script>
+    const a = `${foo(`/`)}`;
+    const b = `simple`;
+    console.log(`test: ${value}`);
+</script>
+
+<p>{a} - {b}</p>"#;
+
+    // The expressions on line 7 should map correctly
+    verify_line_mapping(source, "a;", 7);
+    verify_line_mapping(source, "b;", 7);
+}
+
+#[test]
+fn test_nested_template_literal_multiple_levels_line_number() {
+    // Issue #59: Multiple levels of nesting
+    let source = r#"<script>
+    const deep = `outer ${`middle ${`inner`}`}`;
+    const after = `still works`;
+</script>
+
+<p>{deep}</p>
+<p>{after}</p>"#;
+
+    verify_line_mapping(source, "deep;", 6);
+    verify_line_mapping(source, "after;", 7);
+}
+
+#[test]
+fn test_nested_template_literal_in_function_call_line_number() {
+    // Real-world pattern from matterviz that triggered issue #59
+    let source = r#"<script>
+    const routes = Object.keys(import.meta.glob(`../routes/**/+page.svelte`))
+        .filter((filename) => !filename.includes(`/(hide)/`))
+        .map((filename) => {
+            const parts = filename.split(`/`).filter((part) => !part.startsWith(`(`));
+            return { route: `/${parts.slice(2, -1).join(`/`)}`, filename }
+        });
+
+    if (routes.length === 0) console.error(`No routes found: ${routes.length}`);
+</script>
+
+<p>Found {routes.length} routes</p>"#;
+
+    // Line 12 is where the template expression appears
+    verify_line_mapping(source, "routes.length;", 12);
+}
+
+/// Verify that all source map mappings point to valid line numbers
+fn verify_all_mappings_within_bounds(source: &str) {
+    let parsed = svelte_parser::parse(source);
+    let result = svelte_transformer::transform(
+        &parsed.document,
+        svelte_transformer::TransformOptions {
+            filename: Some("Test.svelte".to_string()),
+            source_maps: true,
+            ..Default::default()
+        },
+    );
+
+    let source_lines = source.lines().count() as u32;
+    let line_index = source_map::LineIndex::new(source);
+
+    for mapping in result.source_map.mappings() {
+        if let Some(line_col) = line_index.line_col(mapping.original.start) {
+            let line = line_col.line + 1; // Convert to 1-indexed
+            assert!(
+                line <= source_lines,
+                "Source map mapping points to line {} but file only has {} lines.\n\
+                 Original span: {:?}\n\
+                 Generated span: {:?}",
+                line,
+                source_lines,
+                mapping.original,
+                mapping.generated,
+            );
+        }
+    }
+}
+
+#[test]
+fn test_nested_template_literal_no_out_of_bounds_mappings() {
+    // Issue #59: Ensure no mappings point beyond file length
+    let source = r#"<script>
+    const routes = Object.keys(import.meta.glob(`../routes/**/+page.svelte`))
+        .filter((filename) => !filename.includes(`/(hide)/`))
+        .map((filename) => {
+            const parts = filename.split(`/`).filter((part) => !part.startsWith(`(`));
+            return { route: `/${parts.slice(2, -1).join(`/`)}`, filename }
+        });
+
+    if (routes.length === 0) console.error(`No routes found: ${routes.length}`);
+</script>
+
+<p>Found {routes.length} routes</p>"#;
+
+    verify_all_mappings_within_bounds(source);
+}
+
+#[test]
+fn test_deeply_nested_template_literals_no_out_of_bounds() {
+    // Issue #59: Multiple levels of nesting shouldn't produce invalid mappings
+    let source = r#"<script>
+    const a = `${`${`deep`}`}`;
+    const b = `after`;
+</script>
+
+<p>{a} {b}</p>"#;
+
+    verify_all_mappings_within_bounds(source);
+}
+
+#[test]
+fn test_many_template_literals_no_out_of_bounds() {
+    // Issue #59: Many template literals in sequence
+    let source = r#"<script>
+    const a = `one`;
+    const b = `two ${x}`;
+    const c = `three ${`nested`}`;
+    const d = `four`;
+    const e = `five ${y} ${`inner`}`;
+</script>
+
+<p>{a} {b} {c} {d} {e}</p>"#;
+
+    verify_all_mappings_within_bounds(source);
+}
