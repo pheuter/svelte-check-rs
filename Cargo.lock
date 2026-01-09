@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "source-map"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -1768,7 +1768,7 @@ checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
 name = "svelte-check-rs"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "camino",
  "clap",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-diagnostics"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -1810,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-parser"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "insta",
  "logos",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-transformer"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -1909,6 +1909,21 @@ dependencies = [
  "swc_atoms",
  "swc_common",
  "swc_ecma_ast",
+ "tracing",
+]
+
+[[package]]
+name = "swc_ecma_visit"
+version = "19.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a69d63f7f704a2ec937edef90a3eba1f64602eceb60c8deb260c01131f680e8b"
+dependencies = [
+ "new_debug_unreachable",
+ "num-bigint",
+ "swc_atoms",
+ "swc_common",
+ "swc_ecma_ast",
+ "swc_visit",
  "tracing",
 ]
 
@@ -2134,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "tsgo-runner"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "blake3",
  "camino",
@@ -2147,6 +2162,7 @@ dependencies = [
  "swc_common",
  "swc_ecma_ast",
  "swc_ecma_parser",
+ "swc_ecma_visit",
  "tempfile",
  "thiserror",
  "tokio",
