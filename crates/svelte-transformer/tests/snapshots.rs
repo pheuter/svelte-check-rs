@@ -1440,3 +1440,105 @@ fn test_each_complex_destructure_transform() {
 {/each}"#,
     );
 }
+
+// ============================================================================
+// SNIPPET TRAILING COMMA TESTS (Issue #57)
+// ============================================================================
+
+#[test]
+fn test_snippet_typed_destructure_trailing_comma() {
+    // Issue #57: Snippet with typed destructuring parameters and trailing comma
+    transform_snapshot(
+        "snippet_typed_destructure_trailing_comma",
+        r#"<script lang="ts">
+    interface Props {
+        x: number
+        y: number
+    }
+</script>
+
+{#snippet content(
+    { x, y }: Props,
+)}
+    <div>{x}, {y}</div>
+{/snippet}
+
+{@render content({ x: 1, y: 2 })}"#,
+    );
+}
+
+#[test]
+fn test_snippet_typed_destructure_multiline_trailing_comma() {
+    // Issue #57: Snippet with multiline typed destructuring and trailing comma
+    transform_snapshot(
+        "snippet_typed_destructure_multiline_trailing_comma",
+        r#"<script lang="ts">
+    interface UserContentProps {
+        x_scale: (n: number) => number
+        y_scale: (n: number) => number
+        width: number
+        height: number
+        padding: { top: number; left: number }
+    }
+</script>
+
+{#snippet user_content(
+  { x_scale, y_scale, width, height, padding }: UserContentProps,
+)}
+  {@const x0 = x_scale(0)}
+  {@const y0 = y_scale(0)}
+  <line x1={padding.left} x2={width} y1={y0} y2={y0} />
+{/snippet}
+
+{@render user_content({
+    x_scale: (n) => n * 100,
+    y_scale: (n) => n * 50,
+    width: 400,
+    height: 300,
+    padding: { top: 10, left: 20 },
+})}"#,
+    );
+}
+
+#[test]
+fn test_snippet_array_destructure_trailing_comma() {
+    // Snippet with array destructuring and trailing comma
+    transform_snapshot(
+        "snippet_array_destructure_trailing_comma",
+        r#"<script lang="ts">
+    type Pair = [number, string];
+</script>
+
+{#snippet pair(
+    [num, str]: Pair,
+)}
+    <span>{num}: {str}</span>
+{/snippet}
+
+{@render pair([42, "hello"])}"#,
+    );
+}
+
+#[test]
+fn test_snippet_component_prop_trailing_comma() {
+    // Snippet passed as component prop with trailing comma
+    transform_snapshot(
+        "snippet_component_prop_trailing_comma",
+        r#"<script lang="ts">
+    import Table from './Table.svelte';
+
+    interface RowProps {
+        id: number
+        name: string
+    }
+</script>
+
+<Table>
+    {#snippet row(
+        { id, name }: RowProps,
+    )}
+        <tr><td>{id}</td><td>{name}</td></tr>
+    {/snippet}
+</Table>"#,
+    );
+}
