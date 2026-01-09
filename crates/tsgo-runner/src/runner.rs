@@ -269,8 +269,6 @@ pub struct TsgoCacheStats {
     pub kit_skipped: usize,
     pub patched_written: usize,
     pub patched_skipped: usize,
-    pub shim_written: usize,
-    pub shim_skipped: usize,
     pub tsconfig_written: usize,
     pub tsconfig_skipped: usize,
     pub source_entries: usize,
@@ -1188,7 +1186,6 @@ impl TsgoRunner {
         project_root: &Utf8Path,
         project_src: &Utf8Path,
         temp_src: &Utf8Path,
-        apply_tsgo_fixes: bool,
         stats: &mut TsgoCacheStats,
     ) -> Result<Vec<Utf8PathBuf>, TsgoError> {
         // Always create temp_src so shim can be written even if project has no src dir
@@ -1234,22 +1231,18 @@ impl TsgoRunner {
                 if let Some(kind) = kit::kit_file_kind(path, project_root) {
                     let source = std::fs::read_to_string(path)
                         .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-                    let mut transformed = kit::transform_kit_source(kind, path, &source)
+                    let transformed = kit::transform_kit_source(kind, path, &source)
                         .unwrap_or_else(|| source.clone());
-                    if apply_tsgo_fixes {
-                        if let Some(patched) = patch_promise_all_empty_arrays(&transformed) {
-                            transformed = patched;
-                        }
-                    }
                     // Always cache SvelteKit files so relative imports resolve within temp_src.
                     write_contents = Some(transformed);
                     is_kit_file = true;
-                } else if apply_tsgo_fixes && is_ts_like_file(path) {
+                } else if is_ts_like_file(path) {
+                    // For non-kit TypeScript files, apply Promise.all empty array fix if needed
                     if let Ok(content) = std::fs::read_to_string(path) {
-                        if content.contains("Promise.all") {
-                            if let Some(patched) = patch_promise_all_empty_arrays(&content) {
-                                write_contents = Some(patched);
-                            }
+                        if let Some(patched) =
+                            kit::transform_promise_all_empty_arrays(path, &content)
+                        {
+                            write_contents = Some(patched);
                         }
                     }
                 }
@@ -1347,15 +1340,8 @@ impl TsgoRunner {
     ) -> Result<TsgoCheckOutput, TsgoError> {
         let total_start = Instant::now();
         let mut stats = TsgoCheckStats::default();
-        let strict_function_types =
-            read_env_bool("SVELTE_CHECK_RS_TSGO_STRICT_FUNCTION_TYPES").unwrap_or(false);
-        let apply_tsgo_fixes = !strict_function_types;
         let cache_root = Self::project_cache_root_for(&self.project_root)?;
         let mut tsconfig_overrides = Map::new();
-        tsconfig_overrides.insert(
-            "strictFunctionTypes".to_string(),
-            Value::Bool(strict_function_types),
-        );
 
         // Enable incremental builds for faster subsequent runs
         tsconfig_overrides.insert("incremental".to_string(), Value::Bool(true));
@@ -1491,23 +1477,9 @@ impl TsgoRunner {
             &self.project_root,
             &project_src,
             &temp_src,
-            apply_tsgo_fixes,
             &mut stats.cache,
         )?;
         stats.timings.source_tree_time = source_start.elapsed();
-
-        // Add a local shim for tsgo-only helpers used in patched sources.
-        // Placing this under src keeps it within typical tsconfig include globs.
-        let shim_path = temp_src.join("__svelte_check_rs_shims.d.ts");
-        let shim_content =
-            "declare function __svelte_empty_array<T>(value: () => T): Awaited<T>;\n";
-        let wrote = write_if_changed(&shim_path, shim_content.as_bytes(), "write shim")?;
-        if wrote {
-            stats.cache.shim_written += 1;
-        } else {
-            stats.cache.shim_skipped += 1;
-        }
-        tsconfig_files.push(shim_path.clone());
 
         let helpers_path = temp_path.join(SHARED_HELPERS_FILENAME);
         let _ = write_if_changed(
@@ -1575,15 +1547,6 @@ impl TsgoRunner {
         stats.timings.total_time = total_start.elapsed();
 
         Ok(TsgoCheckOutput { diagnostics, stats })
-    }
-}
-
-fn read_env_bool(name: &str) -> Option<bool> {
-    let value = std::env::var(name).ok()?;
-    match value.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
     }
 }
 
@@ -1920,494 +1883,6 @@ fn is_ts_like_file(path: &Utf8Path) -> bool {
     )
 }
 
-/// Work around tsgo's inference bug for conditional empty arrays inside Promise.all.
-/// This rewrites `? [] :` / `: []` branches to `([] as Awaited<typeof (<other branch>)>)`
-/// inside Promise.all calls so the empty array branch inherits the sibling type.
-fn patch_promise_all_empty_arrays(input: &str) -> Option<String> {
-    if !input.contains("Promise.all") {
-        return None;
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct Depth {
-        paren: i32,
-        bracket: i32,
-        brace: i32,
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    struct TernaryPair {
-        question: usize,
-        colon: usize,
-        depth: Depth,
-    }
-
-    fn is_ternary_question(bytes: &[u8], i: usize) -> bool {
-        if bytes[i] != b'?' {
-            return false;
-        }
-        let prev = if i == 0 { None } else { Some(bytes[i - 1]) };
-        let next = bytes.get(i + 1).copied();
-        if prev == Some(b'?') || next == Some(b'?') || next == Some(b'.') {
-            return false;
-        }
-        true
-    }
-
-    fn scan_ternary_pairs(
-        input: &str,
-    ) -> (
-        Vec<TernaryPair>,
-        std::collections::HashMap<usize, usize>,
-        std::collections::HashMap<usize, usize>,
-    ) {
-        let bytes = input.as_bytes();
-        let mut pairs = Vec::new();
-        let mut question_map = std::collections::HashMap::new();
-        let mut colon_map = std::collections::HashMap::new();
-        let mut stack: Vec<(usize, Depth)> = Vec::new();
-        let mut depth = Depth {
-            paren: 0,
-            bracket: 0,
-            brace: 0,
-        };
-        let mut i = 0usize;
-        let mut in_string: Option<u8> = None;
-        let mut in_line_comment = false;
-        let mut in_block_comment = false;
-
-        while i < bytes.len() {
-            let b = bytes[i];
-
-            if in_line_comment {
-                if b == b'\n' {
-                    in_line_comment = false;
-                }
-                i += 1;
-                continue;
-            }
-
-            if in_block_comment {
-                if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                    i += 2;
-                    in_block_comment = false;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-
-            if let Some(quote) = in_string {
-                if b == b'\\' {
-                    i = (i + 2).min(bytes.len());
-                    continue;
-                }
-                if b == quote {
-                    in_string = None;
-                }
-                i += 1;
-                continue;
-            }
-
-            if b == b'/' && i + 1 < bytes.len() {
-                if bytes[i + 1] == b'/' {
-                    in_line_comment = true;
-                    i += 2;
-                    continue;
-                }
-                if bytes[i + 1] == b'*' {
-                    in_block_comment = true;
-                    i += 2;
-                    continue;
-                }
-            }
-
-            if b == b'\'' || b == b'"' || b == b'`' {
-                in_string = Some(b);
-                i += 1;
-                continue;
-            }
-
-            match b {
-                b'(' => depth.paren += 1,
-                b')' => depth.paren = depth.paren.saturating_sub(1),
-                b'[' => depth.bracket += 1,
-                b']' => depth.bracket = depth.bracket.saturating_sub(1),
-                b'{' => depth.brace += 1,
-                b'}' => depth.brace = depth.brace.saturating_sub(1),
-                b'?' if is_ternary_question(bytes, i) => {
-                    stack.push((i, depth));
-                }
-                b':' => {
-                    if let Some(&(q_pos, q_depth)) = stack.last() {
-                        if depth == q_depth {
-                            stack.pop();
-                            let pair = TernaryPair {
-                                question: q_pos,
-                                colon: i,
-                                depth,
-                            };
-                            let idx = pairs.len();
-                            pairs.push(pair);
-                            question_map.insert(q_pos, idx);
-                            colon_map.insert(i, idx);
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            i += 1;
-        }
-
-        (pairs, question_map, colon_map)
-    }
-
-    fn trim_span(input: &str, start: usize, end: usize) -> Option<&str> {
-        if start >= end || end > input.len() {
-            return None;
-        }
-        let mut s = start;
-        let mut e = end;
-        let bytes = input.as_bytes();
-        while s < e && bytes[s].is_ascii_whitespace() {
-            s += 1;
-        }
-        while e > s && bytes[e - 1].is_ascii_whitespace() {
-            e -= 1;
-        }
-        if s >= e {
-            None
-        } else {
-            Some(&input[s..e])
-        }
-    }
-
-    fn scan_false_branch_end(input: &str, start: usize, base_depth: Depth) -> usize {
-        let bytes = input.as_bytes();
-        let mut i = start;
-        let mut depth = base_depth;
-        let mut in_string: Option<u8> = None;
-        let mut in_line_comment = false;
-        let mut in_block_comment = false;
-        let mut ternary_depth = 0usize;
-
-        while i < bytes.len() {
-            let b = bytes[i];
-
-            if in_line_comment {
-                if b == b'\n' {
-                    in_line_comment = false;
-                }
-                i += 1;
-                continue;
-            }
-
-            if in_block_comment {
-                if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                    i += 2;
-                    in_block_comment = false;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-
-            if let Some(quote) = in_string {
-                if b == b'\\' {
-                    i = (i + 2).min(bytes.len());
-                    continue;
-                }
-                if b == quote {
-                    in_string = None;
-                }
-                i += 1;
-                continue;
-            }
-
-            if b == b'/' && i + 1 < bytes.len() {
-                if bytes[i + 1] == b'/' {
-                    in_line_comment = true;
-                    i += 2;
-                    continue;
-                }
-                if bytes[i + 1] == b'*' {
-                    in_block_comment = true;
-                    i += 2;
-                    continue;
-                }
-            }
-
-            if b == b'\'' || b == b'"' || b == b'`' {
-                in_string = Some(b);
-                i += 1;
-                continue;
-            }
-
-            if b == b'?' && is_ternary_question(bytes, i) {
-                ternary_depth += 1;
-                i += 1;
-                continue;
-            }
-
-            if b == b':' && ternary_depth > 0 {
-                ternary_depth -= 1;
-                i += 1;
-                continue;
-            }
-
-            if ternary_depth == 0
-                && depth == base_depth
-                && matches!(b, b',' | b')' | b']' | b'}' | b';')
-            {
-                break;
-            }
-
-            match b {
-                b'(' => depth.paren += 1,
-                b')' => depth.paren = depth.paren.saturating_sub(1),
-                b'[' => depth.bracket += 1,
-                b']' => depth.bracket = depth.bracket.saturating_sub(1),
-                b'{' => depth.brace += 1,
-                b'}' => depth.brace = depth.brace.saturating_sub(1),
-                _ => {}
-            }
-
-            i += 1;
-        }
-
-        i
-    }
-
-    let (pairs, question_map, colon_map) = scan_ternary_pairs(input);
-
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0usize;
-    let mut in_string: Option<u8> = None;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut depth = Depth {
-        paren: 0,
-        bracket: 0,
-        brace: 0,
-    };
-    struct PromiseAllContext {
-        paren_depth: i32,
-        array_bracket_depth: Option<i32>,
-        base_brace: i32,
-    }
-    let mut promise_all_stack: Vec<PromiseAllContext> = Vec::new();
-    let mut pending_promise_all = false;
-    let mut last_non_ws: Option<u8> = None;
-    let mut last_non_ws_idx: Option<usize> = None;
-    let mut changed = false;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-
-        if in_line_comment {
-            out.push(b as char);
-            if b == b'\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_block_comment {
-            out.push(b as char);
-            if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                out.push('/');
-                i += 2;
-                in_block_comment = false;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if let Some(quote) = in_string {
-            out.push(b as char);
-            if b == b'\\' && i + 1 < bytes.len() {
-                out.push(bytes[i + 1] as char);
-                i += 2;
-                continue;
-            }
-            if b == quote {
-                in_string = None;
-            }
-            i += 1;
-            continue;
-        }
-
-        if b == b'/' && i + 1 < bytes.len() {
-            if bytes[i + 1] == b'/' {
-                out.push('/');
-                out.push('/');
-                i += 2;
-                in_line_comment = true;
-                continue;
-            }
-            if bytes[i + 1] == b'*' {
-                out.push('/');
-                out.push('*');
-                i += 2;
-                in_block_comment = true;
-                continue;
-            }
-        }
-
-        if b == b'\'' || b == b'"' || b == b'`' {
-            out.push(b as char);
-            in_string = Some(b);
-            i += 1;
-            continue;
-        }
-
-        if bytes[i..].starts_with(b"Promise.all") {
-            let prev = if i == 0 { None } else { Some(bytes[i - 1]) };
-            let next = bytes.get(i + "Promise.all".len()).copied();
-            let prev_ok = prev.map_or(true, |c| !is_ident_char(c));
-            let next_ok = next.map_or(true, |c| !is_ident_char(c));
-            if prev_ok && next_ok {
-                out.push_str("Promise.all");
-                i += "Promise.all".len();
-                pending_promise_all = true;
-                last_non_ws = Some(b'l');
-                last_non_ws_idx = Some(i.saturating_sub(1));
-                continue;
-            }
-        }
-
-        if b == b'(' {
-            depth.paren += 1;
-            out.push('(');
-            if pending_promise_all {
-                promise_all_stack.push(PromiseAllContext {
-                    paren_depth: depth.paren,
-                    array_bracket_depth: None,
-                    base_brace: depth.brace,
-                });
-                pending_promise_all = false;
-            }
-            last_non_ws = Some(b'(');
-            last_non_ws_idx = Some(i);
-            i += 1;
-            continue;
-        }
-
-        if b == b')' {
-            out.push(')');
-            if promise_all_stack
-                .last()
-                .is_some_and(|ctx| ctx.paren_depth == depth.paren)
-            {
-                promise_all_stack.pop();
-            }
-            depth.paren = depth.paren.saturating_sub(1);
-            last_non_ws = Some(b')');
-            last_non_ws_idx = Some(i);
-            i += 1;
-            continue;
-        }
-
-        if pending_promise_all && !b.is_ascii_whitespace() {
-            pending_promise_all = false;
-        }
-
-        if b == b'[' && !promise_all_stack.is_empty() {
-            if let Some(ctx) = promise_all_stack.last_mut() {
-                if ctx.array_bracket_depth.is_none()
-                    && depth.paren == ctx.paren_depth
-                    && depth.brace == ctx.base_brace
-                {
-                    ctx.array_bracket_depth = Some(depth.bracket + 1);
-                }
-            }
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b']' {
-                let can_patch = promise_all_stack.last().is_some_and(|ctx| {
-                    ctx.array_bracket_depth == Some(depth.bracket) && depth.brace == ctx.base_brace
-                });
-                if can_patch && matches!(last_non_ws, Some(b'?' | b':')) {
-                    let mut other_expr = None;
-                    if let Some(last_idx) = last_non_ws_idx {
-                        if last_non_ws == Some(b'?') {
-                            if let Some(&pair_idx) = question_map.get(&last_idx) {
-                                let pair = pairs[pair_idx];
-                                let start = pair.colon + 1;
-                                let end = scan_false_branch_end(input, start, pair.depth);
-                                if let Some(expr) = trim_span(input, start, end) {
-                                    if expr != "[]" {
-                                        other_expr = Some(expr.to_string());
-                                    }
-                                }
-                            }
-                        } else if let Some(&pair_idx) = colon_map.get(&last_idx) {
-                            let pair = pairs[pair_idx];
-                            if let Some(expr) = trim_span(input, pair.question + 1, pair.colon) {
-                                if expr != "[]" {
-                                    other_expr = Some(expr.to_string());
-                                }
-                            }
-                        }
-                    }
-                    if let Some(expr) = other_expr {
-                        out.push_str("__svelte_empty_array(() => (");
-                        out.push_str(&expr);
-                        out.push_str("))");
-                    } else {
-                        out.push_str("([] as any[])");
-                    }
-                    changed = true;
-                    i = j + 1;
-                    last_non_ws = Some(b')');
-                    last_non_ws_idx = Some(j);
-                    continue;
-                }
-            }
-        }
-
-        if b == b'[' {
-            depth.bracket += 1;
-        } else if b == b']' {
-            depth.bracket = depth.bracket.saturating_sub(1);
-            if let Some(ctx) = promise_all_stack.last_mut() {
-                if let Some(array_depth) = ctx.array_bracket_depth {
-                    if depth.bracket < array_depth {
-                        ctx.array_bracket_depth = None;
-                    }
-                }
-            }
-        } else if b == b'{' {
-            depth.brace += 1;
-        } else if b == b'}' {
-            depth.brace = depth.brace.saturating_sub(1);
-        }
-
-        out.push(b as char);
-        if !b.is_ascii_whitespace() {
-            last_non_ws = Some(b);
-            last_non_ws_idx = Some(i);
-        }
-        i += 1;
-    }
-
-    if changed {
-        Some(out)
-    } else {
-        None
-    }
-}
-
-fn is_ident_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
-}
-
 /// A transformed file ready for type-checking.
 #[derive(Debug, Clone)]
 pub struct TransformedFile {
@@ -2479,31 +1954,5 @@ mod tests {
         assert!(files
             .find_by_original(Utf8Path::new("src/App.svelte"))
             .is_some());
-    }
-
-    #[test]
-    fn test_patch_promise_all_empty_arrays() {
-        let input = "const [a] = await Promise.all([cond ? foo() : []]);";
-        let patched = patch_promise_all_empty_arrays(input).unwrap();
-        assert!(
-            patched.contains("cond ? foo() : __svelte_empty_array(() => (foo()))"),
-            "patched: {patched}"
-        );
-    }
-
-    #[test]
-    fn test_patch_promise_all_empty_arrays_other_branch() {
-        let input = "const [a] = await Promise.all([cond ? [] : foo()]);";
-        let patched = patch_promise_all_empty_arrays(input).unwrap();
-        assert!(
-            patched.contains("cond ? __svelte_empty_array(() => (foo())) : foo()"),
-            "patched: {patched}"
-        );
-    }
-
-    #[test]
-    fn test_patch_promise_all_empty_arrays_ignores_other_calls() {
-        let input = "const value = cond ? [] : foo();";
-        assert!(patch_promise_all_empty_arrays(input).is_none());
     }
 }

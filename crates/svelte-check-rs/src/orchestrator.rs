@@ -831,13 +831,11 @@ async fn run_single_check(
                 }
                 if let Some(stats) = &tsgo_stats {
                     eprintln!(
-                        "tsgo write cache: tsx {}/{} stubs {}/{} shim {}/{} tsconfig {}/{}",
+                        "tsgo write cache: tsx {}/{} stubs {}/{} tsconfig {}/{}",
                         stats.cache.tsx_written,
                         stats.cache.tsx_written + stats.cache.tsx_skipped,
                         stats.cache.stub_written,
                         stats.cache.stub_written + stats.cache.stub_skipped,
-                        stats.cache.shim_written,
-                        stats.cache.shim_written + stats.cache.shim_skipped,
                         stats.cache.tsconfig_written,
                         stats.cache.tsconfig_written + stats.cache.tsconfig_skipped
                     );
@@ -876,10 +874,6 @@ async fn run_single_check(
             eprintln!(
                 "Stub files:    {} written, {} skipped",
                 stats.cache.stub_written, stats.cache.stub_skipped
-            );
-            eprintln!(
-                "Shim files:    {} written, {} skipped",
-                stats.cache.shim_written, stats.cache.shim_skipped
             );
             eprintln!(
                 "Kit files:     {} written, {} skipped",
@@ -1141,8 +1135,6 @@ fn timings_json(
                 "kit_skipped": stats.cache.kit_skipped,
                 "patched_written": stats.cache.patched_written,
                 "patched_skipped": stats.cache.patched_skipped,
-                "shim_written": stats.cache.shim_written,
-                "shim_skipped": stats.cache.shim_skipped,
                 "tsconfig_written": stats.cache.tsconfig_written,
                 "tsconfig_skipped": stats.cache.tsconfig_skipped,
                 "source_entries": stats.cache.source_entries,

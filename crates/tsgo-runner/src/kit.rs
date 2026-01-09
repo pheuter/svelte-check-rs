@@ -2,10 +2,11 @@ use camino::Utf8Path;
 use std::sync::Arc;
 use swc_common::{FileName, SourceMap, Span, Spanned};
 use swc_ecma_ast::{
-    BlockStmtOrExpr, Decl, ExportDecl, FnDecl, Function, Module, ModuleDecl, ModuleItem, Pat,
-    VarDecl, VarDeclarator,
+    ArrayLit, BlockStmtOrExpr, CallExpr, Callee, CondExpr, Decl, ExportDecl, Expr, ExprOrSpread,
+    FnDecl, Function, MemberProp, Module, ModuleDecl, ModuleItem, Pat, VarDecl, VarDeclarator,
 };
 use swc_ecma_parser::{EsSyntax, Parser, StringInput, Syntax, TsSyntax};
+use swc_ecma_visit::{Visit, VisitWith};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum KitFileKind {
@@ -107,6 +108,9 @@ pub(crate) fn transform_kit_source(
             apply_params_transforms(&module, source, &mut insertions);
         }
     }
+
+    // Handle Promise.all with conditional empty arrays (tsgo inference workaround)
+    find_promise_all_empty_arrays(&module, source, &mut insertions);
 
     if insertions.is_empty() {
         return None;
@@ -721,11 +725,13 @@ fn pat_end(pat: &Pat) -> Option<usize> {
 }
 
 fn span_lo(span: Span) -> usize {
-    span.lo.0 as usize
+    // swc BytePos is 1-indexed, convert to 0-indexed for string slicing
+    (span.lo.0 as usize).saturating_sub(1)
 }
 
 fn span_hi(span: Span) -> usize {
-    span.hi.0 as usize
+    // swc BytePos is 1-indexed, convert to 0-indexed for string slicing
+    (span.hi.0 as usize).saturating_sub(1)
 }
 
 #[derive(Debug)]
@@ -733,11 +739,171 @@ struct Insertion {
     pos: usize,
     text: String,
     order: usize,
+    /// If set, delete from `pos` to `delete_until` before inserting text.
+    delete_until: Option<usize>,
 }
 
 fn push_insertion(insertions: &mut Vec<Insertion>, pos: usize, text: String) {
     let order = insertions.len();
-    insertions.push(Insertion { pos, text, order });
+    insertions.push(Insertion {
+        pos,
+        text,
+        order,
+        delete_until: None,
+    });
+}
+
+fn push_replacement(insertions: &mut Vec<Insertion>, start: usize, end: usize, text: String) {
+    let order = insertions.len();
+    insertions.push(Insertion {
+        pos: start,
+        text,
+        order,
+        delete_until: Some(end),
+    });
+}
+
+// ============================================================================
+// Promise.all empty array handling
+// ============================================================================
+//
+// tsgo has an inference bug where `Promise.all([cond ? fetch() : []])` infers
+// the empty array branch as `never[]`. This visitor finds such patterns and
+// rewrites `[]` to `__svelte_empty_array(() => (other_branch))` which uses the
+// other branch's type for inference.
+
+const EMPTY_ARRAY_HELPER: &str =
+    "declare function __svelte_empty_array<T>(value: () => T): Awaited<T>;\n";
+
+/// AST visitor that finds Promise.all calls with conditional empty arrays.
+struct PromiseAllVisitor<'a> {
+    source: &'a str,
+    replacements: Vec<(usize, usize, String)>,
+}
+
+impl<'a> PromiseAllVisitor<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            replacements: Vec::new(),
+        }
+    }
+
+    /// Extracts the source text for a span.
+    fn span_text(&self, span: Span) -> Option<&'a str> {
+        self.source.get(span_lo(span)..span_hi(span))
+    }
+
+    /// If the conditional has an empty array branch, returns (start, end, replacement).
+    fn empty_array_replacement(&self, cond: &CondExpr) -> Option<(usize, usize, String)> {
+        let (empty_branch, other_branch) =
+            match (is_empty_array(&cond.cons), is_empty_array(&cond.alt)) {
+                (true, false) => (&cond.cons, &cond.alt),
+                (false, true) => (&cond.alt, &cond.cons),
+                _ => return None,
+            };
+
+        let other_text = self.span_text(other_branch.span())?;
+        let replacement = format!("__svelte_empty_array(() => ({}))", other_text);
+
+        Some((
+            span_lo(empty_branch.span()),
+            span_hi(empty_branch.span()),
+            replacement,
+        ))
+    }
+}
+
+impl Visit for PromiseAllVisitor<'_> {
+    fn visit_call_expr(&mut self, call: &CallExpr) {
+        call.visit_children_with(self);
+
+        if !is_promise_all_call(call) {
+            return;
+        }
+
+        let Some(ExprOrSpread {
+            expr: first_arg,
+            spread: None,
+        }) = call.args.first()
+        else {
+            return;
+        };
+        let Expr::Array(array) = first_arg.as_ref() else {
+            return;
+        };
+
+        for elem in &array.elems {
+            let Some(ExprOrSpread { expr, spread: None }) = elem else {
+                continue;
+            };
+            if let Expr::Cond(cond) = expr.as_ref() {
+                if let Some(replacement) = self.empty_array_replacement(cond) {
+                    self.replacements.push(replacement);
+                }
+            }
+        }
+    }
+}
+
+/// Checks if a call expression is `Promise.all(...)`.
+fn is_promise_all_call(call: &CallExpr) -> bool {
+    let Callee::Expr(callee) = &call.callee else {
+        return false;
+    };
+    let Expr::Member(member) = callee.as_ref() else {
+        return false;
+    };
+    let Expr::Ident(obj) = member.obj.as_ref() else {
+        return false;
+    };
+    let MemberProp::Ident(prop) = &member.prop else {
+        return false;
+    };
+
+    obj.sym.as_ref() == "Promise" && prop.sym.as_ref() == "all"
+}
+
+/// Check if an expression is an empty array literal []
+fn is_empty_array(expr: &Expr) -> bool {
+    matches!(expr, Expr::Array(ArrayLit { elems, .. }) if elems.is_empty())
+}
+
+/// Finds Promise.all calls with conditional empty arrays and generates insertions.
+fn find_promise_all_empty_arrays(module: &Module, source: &str, insertions: &mut Vec<Insertion>) {
+    let mut visitor = PromiseAllVisitor::new(source);
+    module.visit_with(&mut visitor);
+
+    if visitor.replacements.is_empty() {
+        return;
+    }
+
+    push_insertion(insertions, 0, EMPTY_ARRAY_HELPER.to_string());
+
+    for (start, end, text) in visitor.replacements {
+        push_replacement(insertions, start, end, text);
+    }
+}
+
+/// Transform any TypeScript file to fix Promise.all empty array inference issues.
+/// Returns None if no transformation is needed.
+pub(crate) fn transform_promise_all_empty_arrays(path: &Utf8Path, source: &str) -> Option<String> {
+    // Quick check to avoid parsing files that don't need transformation
+    if !source.contains("Promise.all") {
+        return None;
+    }
+
+    let is_ts = matches!(path.extension(), Some("ts") | Some("tsx"));
+    let module = parse_module(path, source, is_ts)?;
+    let mut insertions: Vec<Insertion> = Vec::new();
+
+    find_promise_all_empty_arrays(&module, source, &mut insertions);
+
+    if insertions.is_empty() {
+        return None;
+    }
+
+    Some(apply_insertions(source, insertions))
 }
 
 fn apply_insertions(source: &str, mut insertions: Vec<Insertion>) -> String {
@@ -750,10 +916,63 @@ fn apply_insertions(source: &str, mut insertions: Vec<Insertion>) -> String {
         if ins.pos > source.len() {
             continue;
         }
+        // Don't go backwards (can happen with overlapping replacements)
+        if ins.pos < last {
+            continue;
+        }
         out.push_str(&source[last..ins.pos]);
         out.push_str(&ins.text);
-        last = ins.pos;
+        // If this is a replacement, skip the deleted portion
+        last = ins.delete_until.unwrap_or(ins.pos);
     }
     out.push_str(&source[last..]);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_promise_all_empty_array_transform() {
+        let source = r#"const [a, b] = await Promise.all([
+    cond ? foo() : [],
+    other()
+]);"#;
+        let path = Utf8Path::new("test.ts");
+        let result = transform_promise_all_empty_arrays(path, source).expect("should transform");
+
+        assert!(result.contains("__svelte_empty_array"));
+        assert!(result.contains("__svelte_empty_array(() => (foo()))"));
+        assert!(!result.contains(": []"));
+    }
+
+    #[test]
+    fn test_promise_all_no_transform_needed() {
+        let source = "const x = await Promise.all([foo(), bar()]);";
+        let path = Utf8Path::new("test.ts");
+        let result = transform_promise_all_empty_arrays(path, source);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_span_indexing() {
+        let source = "const x = [];";
+        let path = Utf8Path::new("test.ts");
+        let module = parse_module(path, source, true).unwrap();
+
+        struct SpanChecker<'a>(&'a str, bool);
+        impl Visit for SpanChecker<'_> {
+            fn visit_array_lit(&mut self, arr: &ArrayLit) {
+                let slice = self.0.get(span_lo(arr.span())..span_hi(arr.span()));
+                assert_eq!(slice, Some("[]"));
+                self.1 = true;
+            }
+        }
+
+        let mut checker = SpanChecker(source, false);
+        module.visit_with(&mut checker);
+        assert!(checker.1, "should have visited array literal");
+    }
 }
