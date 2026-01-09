@@ -146,6 +146,43 @@ fn test_new_test_fixtures() {
     }
 }
 
+/// Regression tests for issues #52 and #54:
+/// - #52: {#each} with destructuring defaults spanning multiple lines
+/// - #54: {#each ... as const as [destructuring with defaults]} on multiple lines
+#[test]
+fn test_each_multiline_as_whitespace() {
+    let fixtures_dir = get_fixtures_dir().join("valid").join("parser");
+
+    let issue_fixtures = [
+        (
+            "issue-52-each-multiline-destructure-default.svelte",
+            "multi-line destructuring with defaults",
+        ),
+        (
+            "issue-54-each-as-const-multiline.svelte",
+            "as const with multi-line destructuring",
+        ),
+    ];
+
+    for (fixture_name, description) in issue_fixtures {
+        let path = fixtures_dir.join(fixture_name);
+        assert!(path.exists(), "Fixture {} should exist", fixture_name);
+
+        let source = fs::read_to_string(&path).expect("Failed to read file");
+        let result = parse(&source);
+
+        assert!(
+            result.errors.is_empty(),
+            "Fixture {} ({}) should parse without errors, but got: {:?}",
+            fixture_name,
+            description,
+            result.errors
+        );
+
+        println!("OK: {} - {}", fixture_name, description);
+    }
+}
+
 #[test]
 fn test_edge_cases() {
     // Test various edge cases that shouldn't panic

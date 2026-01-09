@@ -739,6 +739,53 @@ impl<'src> Parser<'src> {
         None
     }
 
+    /// Finds " as" followed by any whitespace in an expression at depth 0.
+    /// Returns (position, match_length) where match_length includes the trailing whitespace.
+    /// This handles multi-line expressions where " as " may be " as\n" or " as\t".
+    ///
+    /// Note: This is a specialized variant of `find_keyword_in_expr` that handles
+    /// flexible trailing whitespace for the " as" keyword in {#each} blocks.
+    fn find_as_keyword_in_expr(expr: &str) -> Option<(usize, usize)> {
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut string_char = ' ';
+        let bytes = expr.as_bytes();
+
+        let mut i = 0;
+        while i < expr.len() {
+            let c = expr[i..].chars().next().unwrap();
+
+            if in_string {
+                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                if c == string_char && !is_escaped {
+                    in_string = false;
+                }
+                i += c.len_utf8();
+                continue;
+            }
+
+            match c {
+                '"' | '\'' | '`' => {
+                    in_string = true;
+                    string_char = c;
+                }
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' => depth = depth.saturating_sub(1),
+                ' ' if depth == 0 && expr[i..].starts_with(" as") => {
+                    // Check if followed by whitespace (space, tab, newline, etc.)
+                    if let Some(ws_char) = expr.get(i + 3..).and_then(|s| s.chars().next()) {
+                        if ws_char.is_whitespace() {
+                            return Some((i, 3 + ws_char.len_utf8()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += c.len_utf8();
+        }
+        None
+    }
+
     /// Finds a character in an expression at depth 0, respecting nesting.
     fn find_char_in_expr(expr: &str, target: char) -> Option<usize> {
         let mut depth: i32 = 0;
@@ -2052,23 +2099,26 @@ impl<'src> Parser<'src> {
         // Use brace-aware parsing to find " as " - we need to find the LAST " as "
         // that separates the expression from the pattern, since the expression itself
         // may contain TypeScript " as " casts.
+        // Note: " as" may be followed by any whitespace (space, newline, tab).
         let (expression, expression_span, rest, rest_offset) = {
-            // Find all occurrences of " as " and use the last one
-            let mut last_as_pos = None;
+            // Find all occurrences of " as" followed by whitespace and use the last one
+            let mut last_as_match: Option<(usize, usize)> = None;
             let mut search_start = 0;
-            while let Some(pos) = Self::find_keyword_in_expr(&full_expr[search_start..], " as ") {
+            while let Some((pos, match_len)) =
+                Self::find_as_keyword_in_expr(&full_expr[search_start..])
+            {
                 let absolute_pos = search_start + pos;
-                last_as_pos = Some(absolute_pos);
-                search_start = absolute_pos + 4;
+                last_as_match = Some((absolute_pos, match_len));
+                search_start = absolute_pos + match_len;
             }
 
-            if let Some(as_pos) = last_as_pos {
+            if let Some((as_pos, match_len)) = last_as_match {
                 let expr = full_expr[..as_pos].trim().to_string();
                 let expr_span = Span::new(
                     expr_start,
                     TextSize::from(u32::from(expr_start) + as_pos as u32),
                 );
-                let rest_start = as_pos + 4; // " as " is 4 chars
+                let rest_start = as_pos + match_len;
                 (expr, expr_span, &full_expr[rest_start..], rest_start)
             } else {
                 (full_expr.trim().to_string(), full_span, "", 0)
