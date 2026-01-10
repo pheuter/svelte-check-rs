@@ -24,6 +24,7 @@ pub mod a11y;
 pub mod component;
 pub mod css;
 mod diagnostic;
+pub mod state_analysis;
 
 pub use component::ComponentCheckOptions;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};

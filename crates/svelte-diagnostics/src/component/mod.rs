@@ -4,11 +4,13 @@
 //! - Invalid rune usage
 //! - Component naming conventions
 //! - Missing declarations
+//! - State referenced locally (Svelte 5 runes)
 
+use crate::state_analysis;
 use crate::{Diagnostic, DiagnosticCode};
 use svelte_parser::{
-    AwaitBlock, EachBlock, ElseBranch, Fragment, IfBlock, KeyBlock, SnippetBlock, SvelteDocument,
-    SvelteElement, TemplateNode,
+    AwaitBlock, EachBlock, ElseBranch, Fragment, IfBlock, KeyBlock, ScriptLang, SnippetBlock,
+    SvelteDocument, SvelteElement, TemplateNode,
 };
 
 /// Rune function names that are only valid in specific contexts.
@@ -42,6 +44,16 @@ pub fn check(doc: &SvelteDocument, _options: &ComponentCheckOptions) -> Vec<Diag
 
     // Check for invalid rune usage outside script blocks
     diagnostics.extend(check_template_rune_usage(doc));
+
+    // Check for state_referenced_locally in script blocks
+    if let Some(script) = &doc.script {
+        let is_typescript = matches!(script.lang, ScriptLang::TypeScript);
+        diagnostics.extend(state_analysis::analyze_script(
+            &script.content,
+            script.content_span,
+            is_typescript,
+        ));
+    }
 
     diagnostics
 }
