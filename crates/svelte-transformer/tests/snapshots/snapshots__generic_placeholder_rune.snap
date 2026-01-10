@@ -127,7 +127,7 @@ declare const __svelte_any: any;
 // === INSTANCE SCRIPT ===
 function __svelte_render<T>() {
 
-    let count = 0;
+    let count = $state(0);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

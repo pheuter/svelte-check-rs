@@ -141,7 +141,7 @@ declare const __svelte_any: any;
             return { destroy() {} };
         }
     };
-    let opts = {};
+    let opts = $state({});
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

@@ -51,6 +51,33 @@ declare global {
   declare function __svelte_effect_pre(fn: () => void | (() => void)): void;
   declare function __svelte_effect_root(fn: (...args: any[]) => any): void;
 
+  // Svelte 5 rune type declarations
+  // These match the ambient declarations in svelte/types/index.d.ts
+  declare function $state<T>(initial: T): T;
+  declare function $state<T>(): T | undefined;
+  declare namespace $state {
+    export function raw<T>(initial: T): T;
+    export function raw<T>(): T | undefined;
+    export function snapshot<T>(value: T): T;
+  }
+
+  declare function $derived<T>(expression: T): T;
+  declare namespace $derived {
+    export function by<T>(fn: () => T): T;
+  }
+
+  declare function $effect(fn: () => void | (() => void)): void;
+  declare namespace $effect {
+    export function pre(fn: () => void | (() => void)): void;
+    export function root(fn: () => (() => void)): () => void;
+    export function tracking(): boolean;
+  }
+
+  declare function $props<T>(): T;
+  declare function $bindable<T>(fallback?: T): T;
+  declare function $inspect<T>(...values: T[]): { with: (fn: (type: 'init' | 'update', ...values: T[]) => void) => void };
+  declare function $host<T extends HTMLElement = HTMLElement>(): T;
+
   type __StoreValue<S> = S extends { subscribe(fn: (value: infer T) => void): any } ? T : never;
 
   type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;

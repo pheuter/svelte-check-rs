@@ -140,7 +140,7 @@ declare const __svelte_any: any;
     import tippy from 'tippy.js';
     import Button from './Button.svelte';
 
-    let content = 'Hello!';
+    let content = $state('Hello!');
 
     function tooltip(content: string) {
         return (element: HTMLElement) => {

@@ -145,7 +145,7 @@ declare const __svelte_any: any;
     import ListItem from './ListItem.svelte';
 
     type Item = { id: string; title: string; completed: boolean };
-    let items: Item[] = [];
+    let items: Item[] = $state([]);
 
     function toggle(id: string) {
         items = items.map(item =>

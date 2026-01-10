@@ -151,7 +151,7 @@ declare const __svelte_any: any;
     import DataTable from './DataTable.svelte';
 
     type Row = { id: number; name: string; email: string };
-    let rows: Row[] = [];
+    let rows: Row[] = $state([]);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

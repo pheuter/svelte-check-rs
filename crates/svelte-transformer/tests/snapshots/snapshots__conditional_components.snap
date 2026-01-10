@@ -149,7 +149,7 @@ declare const __svelte_any: any;
         | { status: 'error'; error: Error }
         | { status: 'success'; data: string[] };
 
-    let state: State = { status: 'loading' };
+    let state: State = $state({ status: 'loading' });
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

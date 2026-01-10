@@ -182,19 +182,19 @@ const itemDefault: __SvelteSnippet<Parameters<typeof __svelte_snippet_params_ite
 
     let {
         mode,
-        value = (mode === 'multiple' ? [] : '') as ValueType<TMode>,
+        value = $bindable((mode === 'multiple' ? [] : '') as ValueType<TMode>),
         options,
         item = itemDefault,
     }: Props = ({} as __SvelteLoosen<Props>);
 
-    const selectedOptions = (() => {
+    const selectedOptions = $derived.by(() => {
         if (mode === 'multiple') {
             return options.filter((opt) => (value as string[]).includes(opt.value));
         } else {
             const found = options.find((f) => f.value === value);
             return found ? [found] : [];
         }
-    })();
+    });
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

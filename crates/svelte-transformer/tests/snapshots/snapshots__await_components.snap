@@ -141,7 +141,7 @@ declare const __svelte_any: any;
     import ErrorAlert from './ErrorAlert.svelte';
 
     type User = { id: number; name: string; avatar: string };
-    let userPromise: Promise<User> = fetch('/api/user').then(r => r.json());
+    let userPromise: Promise<User> = $state(fetch('/api/user').then(r => r.json()));
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

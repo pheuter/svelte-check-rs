@@ -133,7 +133,7 @@ declare const __svelte_any: any;
 // === INSTANCE SCRIPT ===
 function __svelte_render<T extends { id: string; label: string }>() {
 
-    let { options, selected = undefined as any } = ({} as __SvelteLoosen<{
+    let { options, selected = $bindable() } = ({} as __SvelteLoosen<{
         options: T[];
         selected?: T;
     }>);

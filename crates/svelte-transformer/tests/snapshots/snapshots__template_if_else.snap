@@ -131,7 +131,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let status: 'loading' | 'ready' | 'error' = 'loading';
+    let status: 'loading' | 'ready' | 'error' = $state('loading');
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

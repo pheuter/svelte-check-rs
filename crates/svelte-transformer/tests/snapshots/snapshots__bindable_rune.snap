@@ -125,7 +125,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let { value = "default" } = ({} as __SvelteLoosen<{ value?: string }>);
+    let { value = $bindable("default") } = ({} as __SvelteLoosen<{ value?: string }>);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

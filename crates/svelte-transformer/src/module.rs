@@ -305,8 +305,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("let count = 0;"));
-        assert!(!result.code.contains("$state"));
+        // Runes are now preserved for proper TypeScript type inference
+        assert!(result.code.contains("let count = $state(0);"));
         assert!(result.has_runes);
         assert!(result.errors.is_empty());
     }
@@ -319,8 +319,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("let count = (0 as number);"));
-        assert!(!result.code.contains("$state"));
+        // Rune is preserved with generic type
+        assert!(result.code.contains("let count = $state<number>(0);"));
         assert!(result.has_runes);
     }
 
@@ -333,9 +333,9 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("let count = 0;"));
-        assert!(result.code.contains("let doubled = (count * 2);"));
-        assert!(!result.code.contains("$derived"));
+        // Runes are preserved
+        assert!(result.code.contains("let count = $state(0);"));
+        assert!(result.code.contains("let doubled = $derived(count * 2);"));
         assert!(result.has_runes);
     }
 
@@ -347,10 +347,10 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
+        // $derived.by is now preserved (no IIFE transformation)
         assert!(result
             .code
-            .contains("let value = (() => expensiveComputation())();"));
-        assert!(!result.code.contains("$derived.by"));
+            .contains("let value = $derived.by(() => expensiveComputation());"));
     }
 
     #[test]
@@ -364,8 +364,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("__svelte_effect("));
-        assert!(!result.code.contains("$effect("));
+        // $effect is now preserved
+        assert!(result.code.contains("$effect("));
         assert!(result.has_runes);
     }
 
@@ -378,8 +378,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("__svelte_effect_pre("));
-        assert!(!result.code.contains("$effect.pre("));
+        // $effect.pre is now preserved
+        assert!(result.code.contains("$effect.pre("));
     }
 
     #[test]
@@ -393,8 +393,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("__svelte_effect_root("));
-        assert!(!result.code.contains("$effect.root("));
+        // $effect.root is now preserved
+        assert!(result.code.contains("$effect.root("));
     }
 
     #[test]
@@ -405,8 +405,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("let items = [1, 2, 3];"));
-        assert!(!result.code.contains("$state.raw"));
+        // $state.raw is now preserved
+        assert!(result.code.contains("let items = $state.raw([1, 2, 3]);"));
     }
 
     #[test]
@@ -416,8 +416,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("return (obj);"));
-        assert!(!result.code.contains("$state.snapshot"));
+        // $state.snapshot is now preserved
+        assert!(result.code.contains("return $state.snapshot(obj);"));
     }
 
     #[test]
@@ -457,8 +457,8 @@ mod tests {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("void 0;"));
-        assert!(!result.code.contains("$inspect"));
+        // $inspect is now preserved
+        assert!(result.code.contains("$inspect(count);"));
     }
 
     #[test]
@@ -540,12 +540,12 @@ export function createCounter(initial: number = 0) {
 
         assert!(result.has_runes);
         assert!(result.errors.is_empty());
-        assert!(result.code.contains("let count = initial;"));
-        assert!(result.code.contains("let doubled = (count * 2);"));
-        // $state<number[]>([]) transforms to ([] as number[])
-        assert!(result.code.contains("let history = ([] as number[]);"));
-        assert!(result.code.contains("__svelte_effect("));
-        assert!(result.code.contains("return (history);"));
+        // Runes are preserved
+        assert!(result.code.contains("let count = $state(initial);"));
+        assert!(result.code.contains("let doubled = $derived(count * 2);"));
+        assert!(result.code.contains("let history = $state<number[]>([]);"));
+        assert!(result.code.contains("$effect("));
+        assert!(result.code.contains("return $state.snapshot(history);"));
     }
 
     #[test]
@@ -585,8 +585,8 @@ export function createState() {
         assert!(result
             .code
             .contains("// $state in a comment should not be transformed"));
-        // But the actual $state call should be transformed
-        assert!(result.code.contains("let value = 0;"));
+        // The actual $state call is preserved as a rune
+        assert!(result.code.contains("let value = $state(0);"));
     }
 
     #[test]
@@ -610,7 +610,8 @@ export function updateStore() {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("let a = 1, b = 2;"));
+        // Runes are preserved
+        assert!(result.code.contains("let a = $state(1), b = $state(2);"));
         assert!(result.has_runes);
     }
 
@@ -628,8 +629,9 @@ export function updateStore() {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("let outerCount = 0;"));
-        assert!(result.code.contains("let innerCount = 0;"));
+        // Runes are preserved
+        assert!(result.code.contains("let outerCount = $state(0);"));
+        assert!(result.code.contains("let innerCount = $state(0);"));
     }
 
     #[test]
@@ -644,8 +646,9 @@ export function updateStore() {
 }"#;
         let result = transform_module(source, None, None);
 
-        assert!(result.code.contains("count = 0;"));
-        assert!(result.code.contains("doubled = (this.count * 2);"));
+        // Runes are preserved
+        assert!(result.code.contains("count = $state(0);"));
+        assert!(result.code.contains("doubled = $derived(this.count * 2);"));
         assert!(result.has_runes);
     }
 }
