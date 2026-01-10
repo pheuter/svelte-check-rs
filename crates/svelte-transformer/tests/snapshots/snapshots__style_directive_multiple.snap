@@ -133,7 +133,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let darkMode = false;
+    let darkMode = $state(false);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

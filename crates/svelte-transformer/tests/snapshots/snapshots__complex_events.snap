@@ -150,7 +150,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let items = ([] as string[]);
+    let items = $state<string[]>([]);
 
     function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Enter' || event.key === ' ') {

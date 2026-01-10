@@ -125,7 +125,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let message = "Hello \"world\" with 'quotes' and \n newlines";
+    let message = $state("Hello \"world\" with 'quotes' and \n newlines");
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

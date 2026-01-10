@@ -189,12 +189,12 @@ declare const __svelte_any: any;
     }
   }>)
 
-  let step_label_positions = ((): number[] => {
+  let step_label_positions = $derived.by((): number[] => {
     const total_frames = 100
     return [1, 2, 3]
       .map((t) => Math.round(t))
       .filter((t, i, arr) => t >= 0 && t < total_frames && arr.indexOf(t) === i)
-  })()
+  })
 
 
 // === COMPONENT TYPE EXPORT ===

@@ -132,8 +132,8 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let show = true;
-    let user: { name: string } | null = null;
+    let show = $state(true);
+    let user: { name: string } | null = $state(null);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

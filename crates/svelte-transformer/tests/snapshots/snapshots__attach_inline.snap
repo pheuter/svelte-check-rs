@@ -132,7 +132,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let color = 'red';
+    let color = $state('red');
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

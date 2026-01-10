@@ -142,9 +142,9 @@ declare const __svelte_any: any;
 
     let { onsubmit } = ({} as __SvelteLoosen<{ onsubmit: (data: { email: string; password: string }) => void }>);
 
-    let email = "";
-    let password = "";
-    let isValid = (email.includes('@') && password.length >= 8);
+    let email = $state("");
+    let password = $state("");
+    let isValid = $derived(email.includes('@') && password.length >= 8);
 
     function handleSubmit(e: SubmitEvent) {
         e.preventDefault();

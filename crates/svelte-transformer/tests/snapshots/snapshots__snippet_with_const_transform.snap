@@ -138,7 +138,7 @@ const example: __SvelteSnippet<Parameters<typeof __svelte_snippet_params_example
 
 // === INSTANCE SCRIPT ===
 
-    let key = 'test';
+    let key = $state('test');
 
     function check(val: string): boolean {
         return val.length > 0;

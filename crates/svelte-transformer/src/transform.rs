@@ -1559,7 +1559,8 @@ mod tests {
     fn test_transform_with_script() {
         let doc = parse("<script>let x = $state(0);</script>").document;
         let result = transform(&doc, TransformOptions::default());
-        assert!(result.tsx_code.contains("let x = 0"));
+        // Runes are preserved
+        assert!(result.tsx_code.contains("let x = $state(0)"));
     }
 
     #[test]
@@ -1573,7 +1574,8 @@ mod tests {
     fn test_transform_with_typescript() {
         let doc = parse("<script lang=\"ts\">let x: number = $state(0);</script>").document;
         let result = transform(&doc, TransformOptions::default());
-        assert!(result.tsx_code.contains("let x: number = 0"));
+        // Runes are preserved
+        assert!(result.tsx_code.contains("let x: number = $state(0)"));
     }
 
     #[test]

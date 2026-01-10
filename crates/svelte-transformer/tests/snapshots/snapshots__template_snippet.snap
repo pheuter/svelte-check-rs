@@ -137,7 +137,7 @@ const item: __SvelteSnippet<Parameters<typeof __svelte_snippet_params_item>> = n
 
 // === INSTANCE SCRIPT ===
 
-    let items = ['a', 'b', 'c'];
+    let items = $state(['a', 'b', 'c']);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

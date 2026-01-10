@@ -142,15 +142,15 @@ declare const __svelte_any: any;
 // === INSTANCE SCRIPT ===
 
     let { initial = 0 } = ({} as __SvelteLoosen<{ initial?: number }>);
-    let count = initial;
+    let count = $state(initial);
 
-    const doubled = (count * 2);
+    const doubled = $derived(count * 2);
 
     function increment() {
         count += 1;
     }
 
-    __svelte_effect(() => {
+    $effect(() => {
         console.log('Count changed:', count);
     });
 

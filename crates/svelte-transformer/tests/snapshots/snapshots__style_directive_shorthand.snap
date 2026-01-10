@@ -126,8 +126,8 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let color = 'red';
-    let opacity = 0.5;
+    let color = $state('red');
+    let opacity = $state(0.5);
 
 
 // === COMPONENT TYPE EXPORT ===

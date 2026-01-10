@@ -261,19 +261,25 @@ fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
 
 /// Transforms rune expressions in script content.
 ///
-/// This function identifies rune calls and transforms them for type-checking:
-/// - `$state(init)` → `init`
-/// - `$state.raw(init)` → `init`
-/// - `$state.snapshot(x)` → `(x)`
-/// - `$derived(expr)` → `(expr)`
-/// - `$derived.by(fn)` → `(fn)()`
-/// - `$effect(() => {...})` → `__svelte_effect(() => {...})`
-/// - `$effect.pre(() => {...})` → `__svelte_effect_pre(() => {...})`
-/// - `$effect.root(fn)` → `__svelte_effect_root(fn)`
-/// - `$bindable(default?)` → `default` or nothing
-/// - `$inspect(...)` → `void 0`
-/// - `$host()` → `this`
-/// - `$props()` → preserved (handled during type extraction)
+/// This function identifies rune calls and preserves them for type-checking.
+/// The transformed output relies on ambient type declarations (in the helpers file)
+/// that match Svelte's official rune signatures. This approach ensures TypeScript
+/// understands the reactive semantics without false "used before assigned" errors.
+///
+/// Runes are preserved as-is (with trailing comma stripping for validity):
+/// - `$state(init)` → `$state(init)`
+/// - `$state<T>(init)` → `$state<T>(init)`
+/// - `$state.raw(init)` → `$state.raw(init)`
+/// - `$state.snapshot(x)` → `$state.snapshot(x)`
+/// - `$derived(expr)` → `$derived(expr)`
+/// - `$derived.by(fn)` → `$derived.by(fn)`
+/// - `$effect(fn)` → `$effect(fn)`
+/// - `$effect.pre(fn)` → `$effect.pre(fn)`
+/// - `$effect.root(fn)` → `$effect.root(fn)`
+/// - `$bindable(default?)` → `$bindable(default?)`
+/// - `$inspect(...)` → `$inspect(...)`
+/// - `$host()` → `$host()`
+/// - `$props()` → `({} as __SvelteLoosen<Type>)` (special handling for component props)
 ///
 /// The `default_props_type` parameter specifies the type to use for untyped `$props()`.
 /// For SvelteKit route files, this would be "PageData" or "LayoutData".
@@ -914,120 +920,122 @@ impl<'a> RuneScanner<'a> {
         let gen_start = self.output_pos;
 
         match rune_match.kind {
-            RuneKind::State | RuneKind::StateRaw => {
-                // $state(init) → init, or undefined if empty
-                let generic = rune_match.generic.as_deref();
-                if let Some(content) = &rune_match.content {
-                    if content.trim().is_empty() {
-                        if let Some(generic) = generic {
-                            self.push_str("undefined as unknown as (");
-                            self.push_str(generic);
-                            self.push_str(" | undefined)");
-                        } else {
-                            self.push_str("undefined as any");
-                        }
-                    } else if let Some(generic) = generic {
-                        // Strip trailing comma from content (issue #35)
-                        // e.g., $state<Type>(\n    value,\n) → (value as Type)
-                        let (body, _trailing) = Self::strip_trailing_comma(content);
-                        self.push_char('(');
-                        self.push_str(body);
-                        self.push_str(" as ");
-                        self.push_str(generic);
-                        self.push_char(')');
-                    } else {
-                        // No generic - strip trailing comma for consistency
-                        let (body, _trailing) = Self::strip_trailing_comma(content);
-                        self.push_str(body);
-                    }
-                } else if let Some(generic) = generic {
-                    self.push_str("undefined as unknown as (");
+            RuneKind::State => {
+                // $state(init) → $state(init) - preserve rune call
+                // TypeScript uses ambient declaration: $state<T>(initial: T): T
+                if let Some(generic) = rune_match.generic.as_deref() {
+                    self.push_str("$state<");
                     self.push_str(generic);
-                    self.push_str(" | undefined)");
+                    self.push_str(">(");
                 } else {
-                    self.push_str("undefined as any");
+                    self.push_str("$state(");
                 }
+                if let Some(content) = &rune_match.content {
+                    let (body, _trailing) = Self::strip_trailing_comma(content);
+                    self.push_str(body);
+                }
+                self.push_char(')');
+            }
+            RuneKind::StateRaw => {
+                // $state.raw(init) → $state.raw(init) - preserve rune call
+                if let Some(generic) = rune_match.generic.as_deref() {
+                    self.push_str("$state.raw<");
+                    self.push_str(generic);
+                    self.push_str(">(");
+                } else {
+                    self.push_str("$state.raw(");
+                }
+                if let Some(content) = &rune_match.content {
+                    let (body, _trailing) = Self::strip_trailing_comma(content);
+                    self.push_str(body);
+                }
+                self.push_char(')');
             }
             RuneKind::StateSnapshot => {
-                // $state.snapshot(x) → (x)
-                self.push_char('(');
+                // $state.snapshot(x) → $state.snapshot(x) - preserve rune call
+                self.push_str("$state.snapshot(");
                 if let Some(content) = &rune_match.content {
                     self.push_str(content);
                 }
                 self.push_char(')');
             }
             RuneKind::Derived => {
-                // $derived(expr) → (expr)
-                self.push_char('(');
+                // $derived(expr) → $derived(expr) - preserve rune call
+                // TypeScript uses ambient declaration: $derived<T>(expression: T): T
+                if let Some(generic) = rune_match.generic.as_deref() {
+                    self.push_str("$derived<");
+                    self.push_str(generic);
+                    self.push_str(">(");
+                } else {
+                    self.push_str("$derived(");
+                }
                 if let Some(content) = &rune_match.content {
-                    // Strip trailing comma from content (issue #35)
                     let (body, _trailing) = Self::strip_trailing_comma(content);
                     self.push_str(body);
                 }
                 self.push_char(')');
-                if let Some(generic) = rune_match.generic.as_deref() {
-                    self.push_str(" as ");
-                    self.push_str(generic);
-                }
             }
             RuneKind::DerivedBy => {
-                // $derived.by(fn) → (fn)()
-                self.push_char('(');
+                // $derived.by(fn) → $derived.by(fn) - preserve rune call
+                // TypeScript uses ambient declaration: $derived.by<T>(fn: () => T): T
+                if let Some(generic) = rune_match.generic.as_deref() {
+                    self.push_str("$derived.by<");
+                    self.push_str(generic);
+                    self.push_str(">(");
+                } else {
+                    self.push_str("$derived.by(");
+                }
                 if let Some(content) = &rune_match.content {
-                    // Strip trailing comma from content (issue #35)
                     let (body, _trailing) = Self::strip_trailing_comma(content);
                     self.push_str(body);
                 }
-                self.push_str(")()");
-                if let Some(generic) = rune_match.generic.as_deref() {
-                    self.push_str(" as ");
-                    self.push_str(generic);
-                }
+                self.push_char(')');
             }
             RuneKind::Effect => {
-                // $effect(fn) → __svelte_effect(fn)
-                self.push_str("__svelte_effect(");
+                // $effect(fn) → $effect(fn) - preserve rune call
+                self.push_str("$effect(");
                 if let Some(content) = &rune_match.content {
                     self.push_str(content);
                 }
                 self.push_str(")");
             }
             RuneKind::EffectPre => {
-                // $effect.pre(fn) → __svelte_effect_pre(fn)
-                self.push_str("__svelte_effect_pre(");
+                // $effect.pre(fn) → $effect.pre(fn) - preserve rune call
+                self.push_str("$effect.pre(");
                 if let Some(content) = &rune_match.content {
                     self.push_str(content);
                 }
                 self.push_str(")");
             }
             RuneKind::EffectRoot => {
-                // $effect.root(fn) → __svelte_effect_root(fn)
-                self.push_str("__svelte_effect_root(");
+                // $effect.root(fn) → $effect.root(fn) - preserve rune call
+                self.push_str("$effect.root(");
                 if let Some(content) = &rune_match.content {
                     self.push_str(content);
                 }
                 self.push_str(")");
             }
             RuneKind::Bindable => {
-                // $bindable(default?) → default or undefined
+                // $bindable(default?) → $bindable(default?) - preserve rune call
+                // TypeScript uses ambient declaration: $bindable<T>(fallback?: T): T
+                self.push_str("$bindable(");
                 if let Some(content) = &rune_match.content {
                     let (body, _trailing) = Self::strip_trailing_comma(content);
-                    if !body.trim().is_empty() {
-                        self.push_str(body);
-                    } else {
-                        self.push_str("undefined as any");
-                    }
-                } else {
-                    self.push_str("undefined as any");
+                    self.push_str(body);
                 }
+                self.push_char(')');
             }
             RuneKind::Inspect => {
-                // $inspect(...) → void 0
-                self.push_str("void 0");
+                // $inspect(...) → $inspect(...) - preserve rune call
+                self.push_str("$inspect(");
+                if let Some(content) = &rune_match.content {
+                    self.push_str(content);
+                }
+                self.push_char(')');
             }
             RuneKind::Host => {
-                // $host() → this
-                self.push_str("this");
+                // $host() → $host() - preserve rune call
+                self.push_str("$host()");
             }
             RuneKind::Props => {
                 // Transform $props() to valid TypeScript
@@ -1413,7 +1421,7 @@ mod tests {
     #[test]
     fn test_transform_state() {
         let result = transform_runes("let count = $state(0);", 0);
-        assert_eq!(result.output, "let count = 0;");
+        assert_eq!(result.output, "let count = $state(0);");
         assert_eq!(result.runes.len(), 1);
         assert_eq!(result.runes[0].kind, RuneKind::State);
     }
@@ -1421,41 +1429,44 @@ mod tests {
     #[test]
     fn test_transform_state_with_object() {
         let result = transform_runes("let obj = $state({ a: 1 });", 0);
-        assert_eq!(result.output, "let obj = { a: 1 };");
+        assert_eq!(result.output, "let obj = $state({ a: 1 });");
     }
 
     #[test]
     fn test_transform_state_raw() {
         let result = transform_runes("let arr = $state.raw([1, 2, 3]);", 0);
-        assert_eq!(result.output, "let arr = [1, 2, 3];");
+        assert_eq!(result.output, "let arr = $state.raw([1, 2, 3]);");
         assert_eq!(result.runes[0].kind, RuneKind::StateRaw);
     }
 
     #[test]
     fn test_transform_state_snapshot() {
         let result = transform_runes("const snap = $state.snapshot(obj);", 0);
-        assert_eq!(result.output, "const snap = (obj);");
+        assert_eq!(result.output, "const snap = $state.snapshot(obj);");
         assert_eq!(result.runes[0].kind, RuneKind::StateSnapshot);
     }
 
     #[test]
     fn test_transform_derived() {
         let result = transform_runes("let double = $derived(count * 2);", 0);
-        assert_eq!(result.output, "let double = (count * 2);");
+        assert_eq!(result.output, "let double = $derived(count * 2);");
         assert_eq!(result.runes[0].kind, RuneKind::Derived);
     }
 
     #[test]
     fn test_transform_derived_by() {
         let result = transform_runes("let value = $derived.by(() => compute());", 0);
-        assert_eq!(result.output, "let value = (() => compute())();");
+        assert_eq!(result.output, "let value = $derived.by(() => compute());");
         assert_eq!(result.runes[0].kind, RuneKind::DerivedBy);
     }
 
     #[test]
     fn test_transform_derived_by_generic() {
         let result = transform_runes("let value = $derived.by<number>(() => compute());", 0);
-        assert_eq!(result.output, "let value = (() => compute())() as number;");
+        assert_eq!(
+            result.output,
+            "let value = $derived.by<number>(() => compute());"
+        );
         assert_eq!(result.runes[0].kind, RuneKind::DerivedBy);
     }
 
@@ -1469,48 +1480,45 @@ mod tests {
         return sum;
     });"#;
         let result = transform_runes(input, 0);
-        // Should wrap function in parens and invoke it
-        assert!(result.output.starts_with("let total = (() => {"));
-        assert!(result.output.ends_with("})();"));
-        assert!(!result.output.contains("$derived"));
+        // Rune is preserved
+        assert!(result.output.starts_with("let total = $derived.by(() => {"));
+        assert!(result.output.ends_with("});"));
+        assert!(result.output.contains("$derived.by"));
         assert_eq!(result.runes[0].kind, RuneKind::DerivedBy);
     }
 
     #[test]
     fn test_transform_effect() {
         let result = transform_runes("$effect(() => console.log(count));", 0);
-        assert_eq!(result.output, "__svelte_effect(() => console.log(count));");
+        assert_eq!(result.output, "$effect(() => console.log(count));");
         assert_eq!(result.runes[0].kind, RuneKind::Effect);
     }
 
     #[test]
     fn test_transform_effect_pre() {
         let result = transform_runes("$effect.pre(() => setup());", 0);
-        assert_eq!(result.output, "__svelte_effect_pre(() => setup());");
+        assert_eq!(result.output, "$effect.pre(() => setup());");
         assert_eq!(result.runes[0].kind, RuneKind::EffectPre);
     }
 
     #[test]
     fn test_transform_effect_root() {
         let result = transform_runes("const cleanup = $effect.root(() => {});", 0);
-        assert_eq!(
-            result.output,
-            "const cleanup = __svelte_effect_root(() => {});"
-        );
+        assert_eq!(result.output, "const cleanup = $effect.root(() => {});");
         assert_eq!(result.runes[0].kind, RuneKind::EffectRoot);
     }
 
     #[test]
     fn test_transform_host() {
         let result = transform_runes("$host().dispatchEvent(event);", 0);
-        assert_eq!(result.output, "this.dispatchEvent(event);");
+        assert_eq!(result.output, "$host().dispatchEvent(event);");
         assert_eq!(result.runes[0].kind, RuneKind::Host);
     }
 
     #[test]
     fn test_transform_inspect() {
         let result = transform_runes("$inspect(value);", 0);
-        assert_eq!(result.output, "void 0;");
+        assert_eq!(result.output, "$inspect(value);");
         assert_eq!(result.runes[0].kind, RuneKind::Inspect);
     }
 
@@ -1519,7 +1527,7 @@ mod tests {
         let result = transform_runes("let { value = $bindable(0) } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { value = 0 } = ({} as __SvelteLoosen<Record<string, unknown>>);"
+            "let { value = $bindable(0) } = ({} as __SvelteLoosen<Record<string, unknown>>);"
         );
         assert_eq!(result.runes.len(), 2);
         assert_eq!(result.runes[0].kind, RuneKind::Bindable);
@@ -1531,7 +1539,7 @@ mod tests {
         let result = transform_runes("let { value = $bindable() } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { value = undefined as any } = ({} as __SvelteLoosen<Record<string, unknown>>);"
+            "let { value = $bindable() } = ({} as __SvelteLoosen<Record<string, unknown>>);"
         );
     }
 
@@ -1636,7 +1644,7 @@ mod tests {
     #[test]
     fn test_nested_parens() {
         let result = transform_runes("let x = $state(fn(a, b));", 0);
-        assert_eq!(result.output, "let x = fn(a, b);");
+        assert_eq!(result.output, "let x = $state(fn(a, b));");
     }
 
     #[test]
@@ -1645,7 +1653,10 @@ mod tests {
             "let count = $state(0); let doubled = $derived(count * 2);",
             0,
         );
-        assert_eq!(result.output, "let count = 0; let doubled = (count * 2);");
+        assert_eq!(
+            result.output,
+            "let count = $state(0); let doubled = $derived(count * 2);"
+        );
         assert_eq!(result.runes.len(), 2);
     }
 
@@ -1656,9 +1667,9 @@ mod tests {
         // Original: "$state(0)" at position 8-17
         assert_eq!(u32::from(result.mappings[0].original.start), 8);
         assert_eq!(u32::from(result.mappings[0].original.end), 17);
-        // Generated: "0" at position 8-9
+        // Generated: "$state(0)" at position 8-17 (preserved)
         assert_eq!(u32::from(result.mappings[0].generated.start), 8);
-        assert_eq!(u32::from(result.mappings[0].generated.end), 9);
+        assert_eq!(u32::from(result.mappings[0].generated.end), 17);
     }
 
     #[test]
@@ -1671,9 +1682,9 @@ mod tests {
 
     #[test]
     fn test_template_expression_with_rune() {
-        // Runes inside template expressions should be transformed
+        // Runes inside template expressions are preserved
         let result = transform_runes("let x = `value: ${$state(0)}`;", 0);
-        assert_eq!(result.output, "let x = `value: ${0}`;");
+        assert_eq!(result.output, "let x = `value: ${$state(0)}`;");
         assert_eq!(result.runes.len(), 1);
     }
 
@@ -1836,11 +1847,8 @@ let { data } = $props();"#,
     // Issue #35: Multiline $state<T>(value) with trailing commas
     // =========================================================================
     // These tests verify that multiline rune expressions with trailing commas
-    // are correctly transformed. The bug was that trailing commas were preserved
-    // in the output, producing invalid TypeScript like:
-    //   eventOrder = ('status-start-title', as 'status-start-title' | ...)
-    // instead of:
-    //   eventOrder = ('status-start-title' as 'status-start-title' | ...)
+    // are correctly handled. Trailing commas are stripped from the content to
+    // produce valid TypeScript within the preserved rune call.
 
     #[test]
     fn test_state_multiline_with_trailing_comma() {
@@ -1852,20 +1860,16 @@ let { data } = $props();"#,
             0,
         );
 
-        // The output should NOT contain a comma before "as"
+        // The rune should be preserved with trailing comma stripped
         assert!(
-            !result.output.contains(", as"),
-            "Trailing comma should be stripped before 'as' keyword. Got:\n{}",
+            result.output.contains("$state<"),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
-
-        // The output should contain valid TypeScript with proper 'as' cast
-        // (whitespace may be preserved from original formatting)
+        // No trailing comma before the closing paren
         assert!(
-            result
-                .output
-                .contains("'status-start-title' as 'status-start-title' | 'start-title' | 'title'"),
-            "Expected proper 'as' cast. Got:\n{}",
+            !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -1880,16 +1884,15 @@ let { data } = $props();"#,
             0,
         );
 
+        // Rune preserved, trailing comma stripped
         assert!(
-            !result.output.contains(", as"),
-            "Trailing comma should be stripped. Got:\n{}",
+            result.output.contains("$state<number>("),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
-
-        // The value and type should be present (whitespace may vary)
         assert!(
-            result.output.contains("42 as number"),
-            "Expected proper 'as' cast. Got:\n{}",
+            !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -1905,15 +1908,13 @@ let { data } = $props();"#,
         );
 
         assert!(
-            !result.output.contains(", as"),
-            "Trailing comma should be stripped. Got:\n{}",
+            result.output.contains("$state<(() => void) | null>("),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
-
-        // The value and type should be present (whitespace may vary)
         assert!(
-            result.output.contains("null as (() => void) | null"),
-            "Expected proper 'as' cast. Got:\n{}",
+            !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -1928,16 +1929,16 @@ let { data } = $props();"#,
             0,
         );
 
-        assert!(
-            !result.output.contains("}, as"),
-            "Outer trailing comma should be stripped. Got:\n{}",
-            result.output
-        );
-
         // The inner trailing comma inside the object should be preserved
         assert!(
             result.output.contains("{ enabled: true, }"),
             "Inner object comma should be preserved. Got:\n{}",
+            result.output
+        );
+        // But no trailing comma after the object
+        assert!(
+            !result.output.ends_with(",);"),
+            "Outer trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -1946,7 +1947,7 @@ let { data } = $props();"#,
     fn test_state_single_line_no_trailing_comma() {
         // Ensure single-line without trailing comma still works
         let result = transform_runes("let x = $state<number>(42);", 0);
-        assert_eq!(result.output, "let x = (42 as number);");
+        assert_eq!(result.output, "let x = $state<number>(42);");
     }
 
     #[test]
@@ -1955,8 +1956,13 @@ let { data } = $props();"#,
         let result = transform_runes("let x = $state<number>(42,);", 0);
 
         assert!(
-            !result.output.contains(", as") && !result.output.contains(",)"),
+            !result.output.contains(",)"),
             "Trailing comma should be stripped. Got:\n{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("$state<number>(42)"),
+            "Rune should be preserved with stripped comma. Got:\n{}",
             result.output
         );
     }
@@ -1972,14 +1978,13 @@ let { data } = $props();"#,
         );
 
         assert!(
-            !result.output.contains(", as") && !result.output.contains(",)()"),
-            "Trailing comma should be stripped. Got:\n{}",
+            result.output.contains("$derived.by<number>("),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
-
         assert!(
-            result.output.contains("() => count * 2)() as number"),
-            "Expected proper transformation. Got:\n{}",
+            !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -1995,14 +2000,13 @@ let { data } = $props();"#,
         );
 
         assert!(
-            !result.output.contains(", as") && !result.output.contains(",)"),
-            "Trailing comma should be stripped. Got:\n{}",
+            result.output.contains("$derived<number>("),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
-
         assert!(
-            result.output.contains("count * 2) as number"),
-            "Expected proper transformation. Got:\n{}",
+            !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -2018,16 +2022,13 @@ let { data } = $props();"#,
         );
 
         assert!(
-            !result.output.contains(", as"),
-            "Trailing comma should be stripped. Got:\n{}",
+            result.output.contains("$derived<string | number>("),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
-
         assert!(
-            result
-                .output
-                .contains("someCondition ? 'text' : 42) as string | number"),
-            "Expected proper transformation. Got:\n{}",
+            !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -2042,16 +2043,15 @@ let { data } = $props();"#,
             0,
         );
 
-        // Bindable should output just the value without trailing comma
-        // The output preserves leading whitespace but strips the trailing comma
+        // Bindable rune should be preserved with stripped trailing comma
         assert!(
-            !result.output.contains("42,"),
-            "Trailing comma should be stripped from bindable. Got:\n{}",
+            result.output.contains("$bindable("),
+            "Bindable rune should be preserved. Got:\n{}",
             result.output
         );
         assert!(
-            result.output.contains("42 }"),
-            "Value should be preserved. Got:\n{}",
+            !result.output.contains("42,"),
+            "Trailing comma should be stripped from bindable. Got:\n{}",
             result.output
         );
     }
@@ -2063,14 +2063,17 @@ let { data } = $props();"#,
     #[test]
     fn test_state_raw_with_generic() {
         let result = transform_runes("let items = $state.raw<number[]>([1, 2, 3]);", 0);
-        assert_eq!(result.output, "let items = ([1, 2, 3] as number[]);");
+        assert_eq!(
+            result.output,
+            "let items = $state.raw<number[]>([1, 2, 3]);"
+        );
         assert_eq!(result.runes[0].kind, RuneKind::StateRaw);
     }
 
     #[test]
     fn test_state_raw_with_generic_empty() {
         let result = transform_runes("let items = $state.raw<string[]>([]);", 0);
-        assert_eq!(result.output, "let items = ([] as string[]);");
+        assert_eq!(result.output, "let items = $state.raw<string[]>([]);");
     }
 
     #[test]
@@ -2083,14 +2086,13 @@ let { data } = $props();"#,
         );
 
         assert!(
-            !result.output.contains(", as"),
-            "Trailing comma should be stripped. Got:\n{}",
+            result.output.contains("$state.raw<number[]>("),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
-
         assert!(
-            result.output.contains("[1, 2, 3] as number[]"),
-            "Expected proper 'as' cast. Got:\n{}",
+            !result.output.contains(",)"),
+            "Trailing comma should be stripped. Got:\n{}",
             result.output
         );
     }
@@ -2104,8 +2106,8 @@ let { data } = $props();"#,
         assert!(
             result
                 .output
-                .contains("(new Map() as Map<string, { id: number; name: string }>)"),
-            "Expected proper 'as' cast with complex type. Got:\n{}",
+                .contains("$state.raw<Map<string, { id: number; name: string }>>(new Map())"),
+            "Rune should be preserved. Got:\n{}",
             result.output
         );
     }

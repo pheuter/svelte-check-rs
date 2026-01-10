@@ -125,7 +125,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let text = "";
+    let text = $state("");
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

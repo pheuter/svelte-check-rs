@@ -129,8 +129,8 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let compensate = 0;
-    let theme = 'dark';
+    let compensate = $state(0);
+    let theme = $state('dark');
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===
@@ -152,11 +152,11 @@ export default __SvelteComponent_Test_;
 
 === Source Map Mappings (9) ===
   0: generated 4572..4594 -> original 18..40
-  1: generated 4594..4595 -> original 40..49
-  2: generated 4595..4613 -> original 49..67
-  3: generated 4613..4619 -> original 67..81
-  4: generated 4619..4621 -> original 81..83
-  5: generated 4752..4795 -> original 124..167
-  6: generated 4841..4842 -> original 180..181
-  7: generated 4856..4861 -> original 214..219
-  8: generated 4865..4870 -> original 238..241
+  1: generated 4594..4603 -> original 40..49
+  2: generated 4603..4621 -> original 49..67
+  3: generated 4621..4635 -> original 67..81
+  4: generated 4635..4637 -> original 81..83
+  5: generated 4768..4811 -> original 124..167
+  6: generated 4857..4858 -> original 180..181
+  7: generated 4872..4877 -> original 214..219
+  8: generated 4881..4886 -> original 238..241

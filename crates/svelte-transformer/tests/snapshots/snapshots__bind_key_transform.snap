@@ -127,7 +127,7 @@ declare const __svelte_any: any;
 // === INSTANCE SCRIPT ===
 
     import Component from './Component.svelte';
-    let selectedKey = 'default';
+    let selectedKey = $state('default');
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

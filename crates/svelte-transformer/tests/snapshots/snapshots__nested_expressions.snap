@@ -129,7 +129,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let items = [{ children: [1, 2, 3] }];
+    let items = $state([{ children: [1, 2, 3] }]);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

@@ -127,9 +127,9 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let count = 0;
-    let name = "hello";
-    let data = { x: 1, y: 2 };
+    let count = $state(0);
+    let name = $state("hello");
+    let data = $state({ x: 1, y: 2 });
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

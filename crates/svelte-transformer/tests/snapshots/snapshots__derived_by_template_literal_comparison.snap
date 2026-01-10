@@ -140,7 +140,7 @@ declare const __svelte_any: any;
   let total_frames = 100
   let step_labels = 5 as number | number[]
 
-  let step_label_positions = ((): number[] => {
+  let step_label_positions = $derived.by((): number[] => {
     if (typeof step_labels === `number`) {
       if (step_labels > 0) {
         return [1, 2, 3]
@@ -149,7 +149,7 @@ declare const __svelte_any: any;
       }
     }
     return []
-  })()
+  })
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

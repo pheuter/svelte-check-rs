@@ -145,7 +145,7 @@ declare const __svelte_any: any;
     import * as Dialog from '$lib/components/ui/dialog';
     import * as Popover from '$lib/components/ui/popover';
 
-    let open = false;
+    let open = $state(false);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

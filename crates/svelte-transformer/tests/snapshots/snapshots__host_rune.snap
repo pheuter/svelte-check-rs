@@ -125,7 +125,7 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    const el = this;
+    const el = $host();
 
 
 // === COMPONENT TYPE EXPORT ===

@@ -139,7 +139,7 @@ declare const __svelte_any: any;
     import Middle from './Middle.svelte';
     import Inner from './Inner.svelte';
 
-    let data = { value: 42 };
+    let data = $state({ value: 42 });
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

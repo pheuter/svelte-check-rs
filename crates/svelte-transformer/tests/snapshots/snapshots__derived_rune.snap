@@ -127,9 +127,9 @@ declare const __svelte_any: any;
 
 // === INSTANCE SCRIPT ===
 
-    let count = 0;
-    let doubled = (count * 2);
-    let computed = (() => count * 3)();
+    let count = $state(0);
+    let doubled = $derived(count * 2);
+    let computed = $derived.by(() => count * 3);
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

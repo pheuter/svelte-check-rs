@@ -131,7 +131,7 @@ declare const __svelte_any: any;
     function tooltip(node: HTMLElement, content: string) {
         return { destroy() {} };
     }
-    let content = "Hello";
+    let content = $state("Hello");
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===
