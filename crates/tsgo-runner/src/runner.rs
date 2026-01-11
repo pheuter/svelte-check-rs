@@ -10,6 +10,7 @@ use source_map::SourceMap;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
+use tempfile::Builder;
 use thiserror::Error;
 use tokio::process::Command;
 use walkdir::WalkDir;
@@ -284,6 +285,8 @@ pub struct TsgoRunner {
     extra_paths: HashMap<String, Vec<String>>,
     /// Whether to cache .svelte-kit contents in a stable location.
     use_sveltekit_cache: bool,
+    /// Whether to use the persistent cache directory and incremental build info.
+    use_cache: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -376,6 +379,7 @@ impl TsgoRunner {
         tsconfig_path: Option<Utf8PathBuf>,
         extra_paths: HashMap<String, Vec<String>>,
         use_sveltekit_cache: bool,
+        use_cache: bool,
     ) -> Self {
         Self {
             tsgo_path,
@@ -383,6 +387,7 @@ impl TsgoRunner {
             tsconfig_path,
             extra_paths,
             use_sveltekit_cache,
+            use_cache,
         }
     }
 
@@ -576,11 +581,18 @@ impl TsgoRunner {
     /// 3. Run `svelte-kit sync` to generate/update types
     ///
     /// Returns `Ok(true)` if sync was run, `Ok(false)` if skipped (not a SvelteKit project).
-    pub async fn ensure_sveltekit_sync(project_root: &Utf8Path) -> Result<bool, TsgoError> {
+    pub async fn ensure_sveltekit_sync(
+        project_root: &Utf8Path,
+        use_cache: bool,
+    ) -> Result<bool, TsgoError> {
         // Check if this is a SvelteKit project by searching for @sveltejs/kit
         // in node_modules, including parent directories for monorepo support
         if !Self::is_sveltekit_project(project_root) {
             return Ok(false);
+        }
+
+        if !use_cache {
+            return Self::run_sveltekit_sync(project_root, None).await;
         }
 
         let cache_root = Self::project_cache_root_for(project_root)?;
@@ -1367,36 +1379,66 @@ impl TsgoRunner {
     ) -> Result<TsgoCheckOutput, TsgoError> {
         let total_start = Instant::now();
         let mut stats = TsgoCheckStats::default();
-        let cache_root = Self::project_cache_root_for(&self.project_root)?;
+        let cache_root = if self.use_cache {
+            Some(Self::project_cache_root_for(&self.project_root)?)
+        } else {
+            None
+        };
         let mut tsconfig_overrides = Map::new();
 
-        // Enable incremental builds for faster subsequent runs
-        tsconfig_overrides.insert("incremental".to_string(), Value::Bool(true));
-        let tsbuildinfo_path = cache_root.join("tsgo.tsbuildinfo");
-        tsconfig_overrides.insert(
-            "tsBuildInfoFile".to_string(),
-            Value::String(tsbuildinfo_path.to_string()),
-        );
+        if self.use_cache {
+            // Enable incremental builds for faster subsequent runs
+            tsconfig_overrides.insert("incremental".to_string(), Value::Bool(true));
+            let tsbuildinfo_path = cache_root
+                .as_ref()
+                .expect("cache_root set when use_cache is true")
+                .join("tsgo.tsbuildinfo");
+            tsconfig_overrides.insert(
+                "tsBuildInfoFile".to_string(),
+                Value::String(tsbuildinfo_path.to_string()),
+            );
+        } else {
+            // Force incremental off to avoid writing tsbuildinfo files.
+            tsconfig_overrides.insert("incremental".to_string(), Value::Bool(false));
+        }
 
         // Verify tsgo exists
         if !self.tsgo_path.exists() {
             return Err(TsgoError::NotFound(self.tsgo_path.clone()));
         }
 
-        // Use a stable cache directory for transformed files under node_modules/.cache.
-        // This enables tsgo incremental builds (file paths stay the same between runs)
-        // and avoids the overhead of creating/deleting temp directories.
-        let cache_path = cache_root;
-        std::fs::create_dir_all(&cache_path)
+        let temp_dir = if self.use_cache {
+            None
+        } else {
+            Some(
+                Builder::new()
+                    .prefix("svelte-check-rs-")
+                    .tempdir()
+                    .map_err(|e| TsgoError::TempFileFailed(format!("create temp dir: {e}")))?,
+            )
+        };
+
+        // Use a stable cache directory for transformed files under node_modules/.cache when enabled.
+        // Otherwise, use a fresh temp directory per run.
+        let temp_path = if let Some(cache_root) = &cache_root {
+            cache_root.clone()
+        } else if let Some(dir) = &temp_dir {
+            Utf8PathBuf::try_from(dir.path().to_path_buf())
+                .map_err(|_| TsgoError::TempFileFailed("temp dir path is not valid UTF-8".into()))?
+        } else {
+            return Err(TsgoError::TempFileFailed("temp dir not available".into()));
+        };
+
+        std::fs::create_dir_all(&temp_path)
             .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
-        let temp_path = &cache_path;
+        let cache_path = temp_path.as_path();
 
         let write_start = Instant::now();
         // Write transformed files
         let mut tsconfig_files: Vec<Utf8PathBuf> = Vec::new();
         let mut cache_files: HashSet<Utf8PathBuf> = HashSet::new();
         let mut cache_dirs: HashSet<Utf8PathBuf> = HashSet::new();
-        cache_dirs.insert(cache_path.clone());
+        cache_dirs.insert(cache_path.to_owned());
 
         for (virtual_path, file) in &files.files {
             let full_path = temp_path.join(virtual_path);
@@ -1405,7 +1447,7 @@ impl TsgoRunner {
                     .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
                 // Track all parent directories
                 let mut dir = parent.to_owned();
-                while dir.starts_with(&cache_path) && dir != cache_path {
+                while dir.starts_with(cache_path) && dir != cache_path {
                     cache_dirs.insert(dir.clone());
                     if let Some(p) = dir.parent() {
                         dir = p.to_owned();
@@ -1443,7 +1485,7 @@ impl TsgoRunner {
         // Clean up stale cache files (from deleted .svelte files)
         // Note: we only clean .svelte.ts and .svelte.d.ts here.
         // Other source files are cleaned in write_source_patches.
-        for entry in WalkDir::new(&cache_path).follow_links(false).into_iter() {
+        for entry in WalkDir::new(cache_path).follow_links(false).into_iter() {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => continue,
@@ -1526,7 +1568,7 @@ impl TsgoRunner {
         let project_tsconfig = self.resolve_tsconfig_path()?;
         let tsconfig_start = Instant::now();
         let overlay_options = TsconfigOverlayOptions {
-            temp_root: temp_path,
+            temp_root: temp_path.as_path(),
             tsconfig_path: &project_tsconfig,
             overrides: Some(&tsconfig_overrides),
             kit_include: kit_include.as_deref(),

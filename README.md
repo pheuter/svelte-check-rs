@@ -88,6 +88,10 @@ svelte-check-rs --output human-verbose
 | `--fail-on-warnings` | Exit with error on warnings |
 | `--diagnostic-sources <LIST>` | Which diagnostics: `js`, `svelte` |
 | `--ignore <PATTERNS>` | Glob patterns to ignore |
+| `--no-cache` | Disable per-project cache + incremental builds (fresh run) |
+| `--disable-sveltekit-cache` | Disable cached .svelte-kit mirror |
+
+**Caching:** By default, svelte-check-rs writes transformed files and tsgo incremental build info to `node_modules/.cache/svelte-check-rs/`. Use `--no-cache` for a fully fresh run (useful in CI).
 
 ## Project Structure
 

@@ -18,6 +18,7 @@
 //!         None,
 //!         HashMap::new(),
 //!         true,
+//!         true,
 //!     );
 //!
 //!     let files = TransformedFiles::new();

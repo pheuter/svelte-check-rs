@@ -725,10 +725,11 @@ async fn run_single_check(
         transformed_count = transformed.files.len();
 
         if !transformed.files.is_empty() {
+            let use_cache = !args.no_cache;
             // Ensure SvelteKit types are generated before running tsgo
             let tsgo_start = Instant::now();
             let sync_start = Instant::now();
-            let sync_ran = match TsgoRunner::ensure_sveltekit_sync(workspace).await {
+            let sync_ran = match TsgoRunner::ensure_sveltekit_sync(workspace, use_cache).await {
                 Ok(ran) => ran,
                 Err(e) => {
                     eprintln!("Warning: {}", e);
@@ -937,12 +938,15 @@ async fn run_tsgo_check(
         .await
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))?;
 
+    let use_cache = !args.no_cache;
+    let use_sveltekit_cache = use_cache && !args.disable_sveltekit_cache;
     let runner = TsgoRunner::new(
         tsgo_path,
         workspace.to_owned(),
         args.tsconfig.clone(),
         extra_paths.clone(),
-        !args.disable_sveltekit_cache,
+        use_sveltekit_cache,
+        use_cache,
     );
 
     runner
