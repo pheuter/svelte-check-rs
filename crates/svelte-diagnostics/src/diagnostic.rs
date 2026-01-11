@@ -126,6 +126,8 @@ pub enum DiagnosticCode {
     MissingDeclaration,
     /// `invalid-rune-usage`
     InvalidRuneUsage,
+    /// `state-referenced-locally`
+    StateReferencedLocally,
 
     // === Parse Codes ===
     /// `parse-error`: Syntax error during parsing
@@ -171,6 +173,7 @@ impl DiagnosticCode {
             // CSS warnings
             DiagnosticCode::CssUnusedSelector => Severity::Warning,
             DiagnosticCode::CssInvalidGlobal => Severity::Warning,
+            DiagnosticCode::StateReferencedLocally => Severity::Warning,
 
             // Component hints
             DiagnosticCode::UnusedExportLet => Severity::Hint,
@@ -218,6 +221,7 @@ impl DiagnosticCode {
             DiagnosticCode::UnusedExportLet => "unused-export-let",
             DiagnosticCode::MissingDeclaration => "missing-declaration",
             DiagnosticCode::InvalidRuneUsage => "invalid-rune-usage",
+            DiagnosticCode::StateReferencedLocally => "state-referenced-locally",
             DiagnosticCode::ParseError => "parse-error",
         }
     }
