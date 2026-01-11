@@ -11,6 +11,8 @@ use svelte_parser::{
     SvelteElement, TemplateNode,
 };
 
+mod state_referenced_locally;
+
 /// Rune function names that are only valid in specific contexts.
 const RUNES: &[&str] = &[
     "$state",
@@ -42,6 +44,7 @@ pub fn check(doc: &SvelteDocument, _options: &ComponentCheckOptions) -> Vec<Diag
 
     // Check for invalid rune usage outside script blocks
     diagnostics.extend(check_template_rune_usage(doc));
+    diagnostics.extend(check_state_referenced_locally(doc));
 
     diagnostics
 }
@@ -167,6 +170,10 @@ fn check_snippet_block_for_runes(snippet_block: &SnippetBlock, diagnostics: &mut
     check_fragment_for_runes(&snippet_block.body, diagnostics);
 }
 
+fn check_state_referenced_locally(doc: &SvelteDocument) -> Vec<Diagnostic> {
+    state_referenced_locally::check(doc)
+}
+
 /// Checks if an expression contains a rune function call.
 fn contains_rune_call(expr: &str, rune: &str) -> bool {
     // Simple check: look for the rune name followed by (
@@ -198,6 +205,24 @@ mod tests {
         let doc = parse("").document;
         let diagnostics = check(&doc, &ComponentCheckOptions::default());
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_state_referenced_locally_warns() {
+        let source = r#"
+<script lang="ts">
+  let { data } = $props();
+  const { form } = data;
+  let items = $state(data.items);
+</script>
+"#;
+        let doc = parse(source).document;
+        let diagnostics = check(&doc, &ComponentCheckOptions::default());
+        let count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.code, DiagnosticCode::StateReferencedLocally))
+            .count();
+        assert_eq!(count, 2);
     }
 
     // TODO: Add component name checking
