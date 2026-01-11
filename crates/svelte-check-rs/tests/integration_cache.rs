@@ -78,18 +78,28 @@ struct JsonPosition {
 
 /// Runs svelte-check-rs on a fixture with JSON output
 fn run_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
+    run_check_json_with_args(fixture_path, &[])
+}
+
+/// Runs svelte-check-rs on a fixture with JSON output and extra CLI args
+fn run_check_json_with_args(
+    fixture_path: &PathBuf,
+    extra_args: &[&str],
+) -> (i32, Vec<JsonDiagnostic>) {
     // Build if necessary
     let _ = Command::new("cargo")
         .args(["build", "-p", "svelte-check-rs"])
         .output();
 
-    let output = Command::new(binary_path())
+    let mut command = Command::new(binary_path());
+    let output = command
         .arg("--workspace")
         .arg(fixture_path)
         .arg("--diagnostic-sources")
         .arg("js")
         .arg("--output")
         .arg("json")
+        .args(extra_args)
         .output()
         .expect("Failed to execute svelte-check-rs");
 
@@ -168,6 +178,41 @@ fn test_cache_migration_from_legacy_path() {
     assert!(
         cache_path.exists(),
         "New cache directory should be created during migration"
+    );
+}
+
+/// Test that --no-cache avoids writing to the project cache directory.
+#[test]
+#[serial]
+fn test_no_cache_does_not_write_cache() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+
+    // Ensure dependencies are installed
+    let node_modules = fixture_path.join("node_modules");
+    if !node_modules.exists() {
+        let output = Command::new("bun")
+            .arg("install")
+            .current_dir(&fixture_path)
+            .output()
+            .expect("Failed to run bun install");
+        assert!(output.status.success(), "bun install failed");
+    }
+
+    // Run svelte-kit sync
+    let _ = Command::new("bunx")
+        .args(["svelte-kit", "sync"])
+        .current_dir(&fixture_path)
+        .output();
+
+    // Clean cache to start fresh
+    let cache_path = cache_root(&fixture_path);
+    let _ = fs::remove_dir_all(&cache_path);
+
+    let (_exit_code, _diagnostics) = run_check_json_with_args(&fixture_path, &["--no-cache"]);
+
+    assert!(
+        !cache_path.exists(),
+        "Cache directory should not be created when --no-cache is used"
     );
 }
 

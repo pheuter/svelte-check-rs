@@ -68,6 +68,10 @@ pub struct Args {
     #[arg(long = "disable-sveltekit-cache")]
     pub disable_sveltekit_cache: bool,
 
+    /// Disable all caching (tsgo cache, incremental build info, and svelte-kit cache)
+    #[arg(long = "no-cache")]
+    pub no_cache: bool,
+
     /// Show tsgo version and installation path
     #[arg(long = "tsgo-version")]
     pub tsgo_version: bool,
@@ -244,6 +248,10 @@ mod tests {
         // Test --cache-stats
         let args = Args::parse_from(["svelte-check-rs", "--cache-stats"]);
         assert!(args.cache_stats);
+
+        // Test --no-cache
+        let args = Args::parse_from(["svelte-check-rs", "--no-cache"]);
+        assert!(args.no_cache);
     }
 
     #[test]
