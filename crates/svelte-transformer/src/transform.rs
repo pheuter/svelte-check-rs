@@ -1117,13 +1117,15 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
 
     // Add helper functions for template type-checking
     let helpers = r#"// Helper functions for template type-checking
+type __SvelteCssProps = { [K in `--${string}`]?: string | number };
+
 type __SvelteComponent<
   Props extends Record<string, any> = {},
   Exports extends Record<string, any> = {}
 > = {
-  (this: void, internals: __SvelteComponentInternals, props: Props): {
+  (this: void, internals: __SvelteComponentInternals, props: Props & __SvelteCssProps): {
     $on?(type: string, callback: (e: any) => void): () => void;
-    $set?(props: Partial<Props>): void;
+    $set?(props: Partial<Props & __SvelteCssProps>): void;
   } & Exports;
   element?: typeof HTMLElement;
   z_$$bindings?: string;

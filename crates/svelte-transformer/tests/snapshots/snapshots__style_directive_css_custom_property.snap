@@ -22,13 +22,15 @@ import type { ComponentInternals as __SvelteComponentInternals, Snippet as __Sve
 import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';
 
 // Helper functions for template type-checking
+type __SvelteCssProps = { [K in `--${string}`]?: string | number };
+
 type __SvelteComponent<
   Props extends Record<string, any> = {},
   Exports extends Record<string, any> = {}
 > = {
-  (this: void, internals: __SvelteComponentInternals, props: Props): {
+  (this: void, internals: __SvelteComponentInternals, props: Props & __SvelteCssProps): {
     $on?(type: string, callback: (e: any) => void): () => void;
-    $set?(props: Partial<Props>): void;
+    $set?(props: Partial<Props & __SvelteCssProps>): void;
   } & Exports;
   element?: typeof HTMLElement;
   z_$$bindings?: string;
@@ -151,12 +153,12 @@ export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (9) ===
-  0: generated 4572..4594 -> original 18..40
-  1: generated 4594..4603 -> original 40..49
-  2: generated 4603..4621 -> original 49..67
-  3: generated 4621..4635 -> original 67..81
-  4: generated 4635..4637 -> original 81..83
-  5: generated 4768..4811 -> original 124..167
-  6: generated 4857..4858 -> original 180..181
-  7: generated 4872..4877 -> original 214..219
-  8: generated 4881..4886 -> original 238..241
+  0: generated 4679..4701 -> original 18..40
+  1: generated 4701..4710 -> original 40..49
+  2: generated 4710..4728 -> original 49..67
+  3: generated 4728..4742 -> original 67..81
+  4: generated 4742..4744 -> original 81..83
+  5: generated 4875..4918 -> original 124..167
+  6: generated 4964..4965 -> original 180..181
+  7: generated 4979..4984 -> original 214..219
+  8: generated 4988..4993 -> original 238..241

@@ -1275,6 +1275,8 @@ impl<'a> RuneScanner<'a> {
             && first_char != '{'
             && first_char != '('
             && first_char != '['
+            && first_char != '&'
+            && first_char != '|'
         {
             return None;
         }
@@ -1549,6 +1551,19 @@ mod tests {
         assert_eq!(
             result.output,
             "let { a, b } = ({} as __SvelteLoosen<Record<string, unknown>>);"
+        );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_intersection_type_on_lhs() {
+        let result = transform_runes(
+            "let { element, ...rest }: & HTMLAttributes<HTMLDivElement> & { element: { name: string } } = $props();",
+            0,
+        );
+        assert_eq!(
+            result.output,
+            "let { element, ...rest }: & HTMLAttributes<HTMLDivElement> & { element: { name: string } } = ({} as __SvelteLoosen<& HTMLAttributes<HTMLDivElement> & { element: { name: string } }>);"
         );
         assert_eq!(result.runes[0].kind, RuneKind::Props);
     }

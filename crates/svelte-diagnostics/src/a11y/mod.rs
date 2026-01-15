@@ -507,6 +507,7 @@ fn has_attribute(attrs: &[Attribute], name: &str) -> bool {
     attrs.iter().any(|attr| match attr {
         Attribute::Normal(a) => a.name.as_str() == name,
         Attribute::Directive(d) => d.name.as_str() == name,
+        Attribute::Shorthand(s) => s.name.as_str() == name,
         _ => false,
     })
 }
@@ -558,6 +559,7 @@ fn collect_attributes(attrs: &[Attribute]) -> Vec<(String, Option<String>)> {
                 };
                 Some((format!("{}:{}", kind, d.name), None))
             }
+            Attribute::Shorthand(s) => Some((s.name.to_string(), None)),
             _ => None,
         })
         .collect()
@@ -602,6 +604,21 @@ mod tests {
     #[test]
     fn test_img_with_alt() {
         let doc = parse(r#"<img src="photo.jpg" alt="A photo">"#).document;
+        let diagnostics = check(&doc);
+        assert!(!diagnostics
+            .iter()
+            .any(|d| matches!(d.code, DiagnosticCode::A11yMissingAttribute)));
+    }
+
+    #[test]
+    fn test_img_with_shorthand_alt() {
+        let doc = parse(
+            r#"<script>
+  let alt = "A photo";
+</script>
+<img src="photo.jpg" {alt}>"#,
+        )
+        .document;
         let diagnostics = check(&doc);
         assert!(!diagnostics
             .iter()

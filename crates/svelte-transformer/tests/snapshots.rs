@@ -550,6 +550,18 @@ fn test_complete_form_component() {
 }
 
 #[test]
+fn test_component_css_custom_props() {
+    transform_snapshot(
+        "component_css_custom_props",
+        r#"<script lang="ts">
+  import Box from './Box.svelte';
+</script>
+
+<Box --some-css-var="blue" />"#,
+    );
+}
+
+#[test]
 fn test_module_script() {
     transform_snapshot(
         "module_script",
