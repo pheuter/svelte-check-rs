@@ -421,6 +421,42 @@ fn test_non_excluded_files_still_checked() {
     assert_diagnostic_present(&diagnostics, &expected);
 }
 
+// ============================================================================
+// ISSUE #68: REST SPREAD PROPS TYPE ANNOTATIONS
+// ============================================================================
+// These tests verify that props destructuring with rest spread and an
+// intersection type annotation is accepted, and that genuine type errors
+// in the same pattern are still reported.
+//
+// Test files:
+// - test-fixtures/projects/sveltekit-bundler/src/routes/issue-68-rest-props/+page.svelte
+// - test-fixtures/projects/sveltekit-bundler/src/routes/issue-68-rest-props-invalid/+page.svelte
+#[test]
+#[serial]
+fn test_issue_68_rest_props_no_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    // Verify no TS diagnostics exist for the valid rest props fixture
+    assert_no_diagnostics_in_file(&diagnostics, "issue-68-rest-props/+page.svelte");
+}
+
+#[test]
+#[serial]
+fn test_issue_68_rest_props_reports_type_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    // Verify a deliberate type error is still reported for the invalid fixture
+    let expected = ExpectedDiagnostic {
+        filename: "issue-68-rest-props-invalid/+page.svelte",
+        line: 8,
+        code: "TS2322",
+        message_contains: "not assignable",
+    };
+    assert_diagnostic_present(&diagnostics, &expected);
+}
+
 /// Test that wildcard exclude patterns work correctly.
 ///
 /// Tests patterns like:
