@@ -24,13 +24,15 @@ import type { ComponentInternals as __SvelteComponentInternals, Snippet as __Sve
 import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';
 
 // Helper functions for template type-checking
+type __SvelteCssProps = { [K in `--${string}`]?: string | number };
+
 type __SvelteComponent<
   Props extends Record<string, any> = {},
   Exports extends Record<string, any> = {}
 > = {
-  (this: void, internals: __SvelteComponentInternals, props: Props): {
+  (this: void, internals: __SvelteComponentInternals, props: Props & __SvelteCssProps): {
     $on?(type: string, callback: (e: any) => void): () => void;
-    $set?(props: Partial<Props>): void;
+    $set?(props: Partial<Props & __SvelteCssProps>): void;
   } & Exports;
   element?: typeof HTMLElement;
   z_$$bindings?: string;
@@ -151,5 +153,5 @@ export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (2) ===
-  0: generated 4572..4692 -> original 18..138
-  1: generated 4871..4883 -> original 159..171
+  0: generated 4679..4799 -> original 18..138
+  1: generated 4978..4990 -> original 159..171
