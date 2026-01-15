@@ -335,6 +335,13 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2322",
             message_contains: "number",
         },
+        // Issue #68 rest spread props type error (intentional negative case)
+        ExpectedError {
+            filename: "src/routes/issue-68-rest-props-invalid/+page.svelte",
+            line: 8,
+            code: "TS2322",
+            message_contains: "not assignable",
+        },
         ExpectedError {
             filename: "src/routes/action-attribute/+page.svelte",
             line: 11,
@@ -864,8 +871,8 @@ fn test_all_configs_have_expected_error_counts() {
         .filter(|d| d.diagnostic_type == "Error")
         .count();
 
-    // Bundler: 10 original + 3 use directive errors + 2 snippet generic errors = 15
-    assert_eq!(bundler_errors, 15, "Bundler should have exactly 15 errors");
+    // Bundler: 10 original + 3 use directive + 2 snippet generic + 1 issue-68 = 16
+    assert_eq!(bundler_errors, 16, "Bundler should have exactly 16 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"
