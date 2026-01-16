@@ -1089,7 +1089,7 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     // Add Svelte imports - alias to avoid collisions with user imports
     if helpers_import_path.is_none() {
         let imports = String::from(
-            "import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n\
+            "import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet, ComponentProps as __SvelteComponentPropsBase } from 'svelte';\n\
 import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';\n",
         );
         output.push_str(&imports);
@@ -1130,6 +1130,13 @@ type __SvelteComponent<
   element?: typeof HTMLElement;
   z_$$bindings?: string;
 };
+
+type __SvelteComponentProps<C> = __SvelteComponentPropsBase<C> & __SvelteCssProps;
+
+declare function __svelte_component_props<C>(
+  component: C,
+  props: __SvelteComponentProps<C>
+): __SvelteComponentProps<C>;
 
 type __SvelteEachItem<T> =
   T extends ArrayLike<infer U> ? U :
@@ -1221,6 +1228,8 @@ declare function __svelte_create_element<K extends string, T>(
   actionAttrs: T,
   attrs: __SvelteElementAttributes<K> & T
 ): void;
+
+declare function __svelte_css_prop(props: __SvelteCssProps): __SvelteCssProps;
 
 declare const __svelte_any: any;
 
