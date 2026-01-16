@@ -16,23 +16,32 @@ use tokio::process::Command;
 use walkdir::WalkDir;
 
 const SHARED_HELPERS_FILENAME: &str = "__svelte_check_rs_helpers.d.ts";
-const SHARED_HELPERS_DTS: &str = r#"import type { ComponentInternals as SvelteComponentInternals, Snippet as SvelteSnippet } from "svelte";
+const SHARED_HELPERS_DTS: &str = r#"import type { ComponentInternals as SvelteComponentInternals, Snippet as SvelteSnippet, ComponentProps as SvelteComponentProps } from "svelte";
 import type { SvelteHTMLElements as SvelteHTMLElements, HTMLAttributes as SvelteHTMLAttributes } from "svelte/elements";
 
 export {};
 
 declare global {
+  type __SvelteCssProps = { [K in `--${string}`]?: string | number };
+
   type __SvelteComponent<
     Props extends Record<string, any> = {},
     Exports extends Record<string, any> = {}
   > = {
-    (this: void, internals: SvelteComponentInternals, props: Props): {
+    (this: void, internals: SvelteComponentInternals, props: Props & __SvelteCssProps): {
       $on?(type: string, callback: (e: any) => void): () => void;
-      $set?(props: Partial<Props>): void;
+      $set?(props: Partial<Props & __SvelteCssProps>): void;
     } & Exports;
     element?: typeof HTMLElement;
     z_$$bindings?: string;
   };
+
+  type __SvelteComponentProps<C> = SvelteComponentProps<C> & __SvelteCssProps;
+
+  declare function __svelte_component_props<C>(
+    component: C,
+    props: __SvelteComponentProps<C>
+  ): __SvelteComponentProps<C>;
 
   type __SvelteSnippet<T extends any[] = any[]> = SvelteSnippet<T>;
 
@@ -142,6 +151,8 @@ declare global {
     actionAttrs: T,
     attrs: __SvelteElementAttributes<K> & T
   ): void;
+
+  declare function __svelte_css_prop(props: __SvelteCssProps): __SvelteCssProps;
 
   declare const __svelte_any: any;
 

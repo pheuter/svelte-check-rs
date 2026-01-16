@@ -1317,7 +1317,10 @@ impl TemplateContext {
         let indent_str = self.indent_str();
         self.output.push_str(&indent_str);
         self.record_mapping_at_current_pos(name, name_span);
-        self.output.push_str(&format!("{}(null as any, {{\n", name));
+        self.output.push_str(&format!(
+            "{}(null as any, __svelte_component_props({}, {{\n",
+            name, name
+        ));
         self.indent += 1;
 
         // First pass: build the props object with Normal, Shorthand, Spread, and bind directives
@@ -1456,10 +1459,10 @@ impl TemplateContext {
                     self.output.push_str(",\n");
                 }
                 Attribute::CssCustomProperty { name, value, span } => {
-                    // CSS custom property: --name="value" => "--name": value
+                    // CSS custom property: --name="value" => ...__svelte_css_prop({ "--name": value })
                     let indent_str = self.indent_str();
                     self.output.push_str(&indent_str);
-                    // Emit as "--name": value
+                    self.output.push_str("...__svelte_css_prop({ ");
                     self.output.push_str(&format!("\"--{}\": ", name));
                     match value {
                         Some(AttributeValue::Expression(expr)) => {
@@ -1512,7 +1515,7 @@ impl TemplateContext {
                             self.output.push_str(&template);
                         }
                     }
-                    self.output.push_str(",\n");
+                    self.output.push_str(" }),\n");
                     // Suppress unused variable warning
                     let _ = span;
                 }
@@ -1536,21 +1539,13 @@ impl TemplateContext {
                     self.indent -= 1;
                     self.emit("},");
                 } else {
-                    let snippet_param = format!("__snippet_params_{}", self.next_id());
-                    self.emit(&format!("{}: ({}) => {{", snippet_name, snippet_param));
-                    self.indent += 1;
-                    // Emit the destructuring with source mapping for the parameters
                     let indent_str = self.indent_str();
-                    let prefix = format!("{}const ", indent_str);
-                    let const_params = strip_trailing_comma(trimmed_params);
-                    let generated_start = self.output.len() + prefix.len();
-                    let generated_end = generated_start + const_params.len();
-                    self.mappings.push(GeneratedMapping {
-                        generated_start,
-                        generated_end,
-                        original_span: block.parameters_span,
-                    });
-                    self.emit(&format!("const {} = {};", const_params, snippet_param));
+                    self.output.push_str(&indent_str);
+                    self.output.push_str(&format!("{}: (", snippet_name));
+                    self.record_mapping_at_current_pos(&transformed_params, block.parameters_span);
+                    self.output.push_str(&transformed_params);
+                    self.output.push_str(") => {\n");
+                    self.indent += 1;
                     self.generate_fragment(&block.body);
                     self.emit("return __svelte_snippet_return;");
                     self.indent -= 1;
@@ -1570,7 +1565,7 @@ impl TemplateContext {
 
         // Close the props object and component call
         self.indent -= 1;
-        self.emit("});");
+        self.emit("}));");
 
         // Second pass: handle directives separately (bindings, events, etc.)
         for attr in attrs {
