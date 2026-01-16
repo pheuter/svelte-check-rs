@@ -500,6 +500,31 @@ fn test_bundler_variant_type_error() {
     );
 }
 
+/// Regression test for issue #72 fix regression.
+///
+/// The fix for CSS custom properties in v0.6.7 wrapped all component props with
+/// `__svelte_component_props()` which caused TypeScript to incorrectly flag valid
+/// props as errors (TS2353: 'variant' does not exist in type '__SvelteCssProps').
+///
+/// This test verifies that valid Button usage with typed props produces no errors.
+#[test]
+#[serial]
+fn test_bundler_valid_component_props_no_false_positives() {
+    let (_exit_code, diagnostics) = run_check_json("sveltekit-bundler");
+
+    // Line 27: <Button variant="primary" onclick={() => console.log('clicked')}>
+    // This is VALID usage and should produce NO TypeScript errors
+    let false_positive = diagnostics.iter().find(|d| {
+        d.filename == "src/routes/+page.svelte" && d.start.line == 27 && d.code.starts_with("TS")
+    });
+
+    assert!(
+        false_positive.is_none(),
+        "REGRESSION: Valid Button usage on line 27 should have no TS errors, but found: {:?}",
+        false_positive
+    );
+}
+
 #[test]
 #[serial]
 fn test_bundler_no_errors_in_valid_files() {
