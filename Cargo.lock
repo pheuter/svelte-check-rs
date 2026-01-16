@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "source-map"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -1768,7 +1768,7 @@ checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
 name = "svelte-check-rs"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "camino",
  "clap",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-diagnostics"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -1814,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-parser"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "insta",
  "logos",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-transformer"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "tsgo-runner"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "blake3",
  "camino",

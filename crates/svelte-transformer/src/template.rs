@@ -1317,10 +1317,7 @@ impl TemplateContext {
         let indent_str = self.indent_str();
         self.output.push_str(&indent_str);
         self.record_mapping_at_current_pos(name, name_span);
-        self.output.push_str(&format!(
-            "{}(null as any, __svelte_component_props({}, {{\n",
-            name, name
-        ));
+        self.output.push_str(&format!("{}(null as any, {{\n", name));
         self.indent += 1;
 
         // First pass: build the props object with Normal, Shorthand, Spread, and bind directives
@@ -1565,7 +1562,7 @@ impl TemplateContext {
 
         // Close the props object and component call
         self.indent -= 1;
-        self.emit("}));");
+        self.emit("});");
 
         // Second pass: handle directives separately (bindings, events, etc.)
         for attr in attrs {
