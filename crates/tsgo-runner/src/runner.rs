@@ -16,7 +16,7 @@ use tokio::process::Command;
 use walkdir::WalkDir;
 
 const SHARED_HELPERS_FILENAME: &str = "__svelte_check_rs_helpers.d.ts";
-const SHARED_HELPERS_DTS: &str = r#"import type { ComponentInternals as SvelteComponentInternals, Snippet as SvelteSnippet } from "svelte";
+const SHARED_HELPERS_DTS: &str = r#"import type { Component as SvelteComponentType, ComponentInternals as SvelteComponentInternals, Snippet as SvelteSnippet } from "svelte";
 import type { SvelteHTMLElements as SvelteHTMLElements, HTMLAttributes as SvelteHTMLAttributes } from "svelte/elements";
 
 export {};
@@ -27,14 +27,7 @@ declare global {
   type __SvelteComponent<
     Props extends Record<string, any> = {},
     Exports extends Record<string, any> = {}
-  > = {
-    (this: void, internals: SvelteComponentInternals, props: Props & __SvelteCssProps): {
-      $on?(type: string, callback: (e: any) => void): () => void;
-      $set?(props: Partial<Props & __SvelteCssProps>): void;
-    } & Exports;
-    element?: typeof HTMLElement;
-    z_$$bindings?: string;
-  };
+  > = SvelteComponentType<Props & __SvelteCssProps, Exports>;
 
   type __SvelteSnippet<T extends any[] = any[]> = SvelteSnippet<T>;
 
@@ -88,7 +81,7 @@ declare global {
   type __SvelteLoosen<T> =
     T extends (...args: any) => any ? T :
     T extends readonly any[] ? T :
-    T extends object ? T & Record<string, unknown> : T;
+    T extends object ? { [K in keyof T]: T[K]; [key: string]: unknown } : T;
 
   type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;
 
@@ -150,6 +143,15 @@ declare global {
   declare const __svelte_any: any;
 
   declare function __svelte_catch_error<T>(value: T): unknown;
+}
+
+declare module "svelte" {
+  export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
+    component: __SvelteComponent<Props, Exports>,
+    options: Omit<MountOptions<Props>, "props"> & {
+      props: __SvelteLoosen<Props>;
+    }
+  ): Exports;
 }
 "#;
 

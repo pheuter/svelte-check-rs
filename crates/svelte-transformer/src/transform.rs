@@ -1089,7 +1089,7 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     // Add Svelte imports - alias to avoid collisions with user imports
     if helpers_import_path.is_none() {
         let imports = String::from(
-            "import type { ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n\
+            "import type { Component as __SvelteComponentType, ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n\
 import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';\n",
         );
         output.push_str(&imports);
@@ -1122,14 +1122,7 @@ type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 type __SvelteComponent<
   Props extends Record<string, any> = {},
   Exports extends Record<string, any> = {}
-> = {
-  (this: void, internals: __SvelteComponentInternals, props: Props & __SvelteCssProps): {
-    $on?(type: string, callback: (e: any) => void): () => void;
-    $set?(props: Partial<Props & __SvelteCssProps>): void;
-  } & Exports;
-  element?: typeof HTMLElement;
-  z_$$bindings?: string;
-};
+> = __SvelteComponentType<Props & __SvelteCssProps, Exports>;
 
 type __SvelteEachItem<T> =
   T extends ArrayLike<infer U> ? U :
@@ -1159,7 +1152,7 @@ type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, 
 type __SvelteLoosen<T> =
   T extends (...args: any) => any ? T :
   T extends readonly any[] ? T :
-  T extends object ? T & Record<string, unknown> : T;
+  T extends object ? { [K in keyof T]: T[K]; [key: string]: unknown } : T;
 
 // Helper for $props.<name>() accessors.
 type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;
@@ -1225,6 +1218,15 @@ declare function __svelte_create_element<K extends string, T>(
 declare function __svelte_css_prop(props: Record<string, any>): {};
 
 declare const __svelte_any: any;
+
+declare module "svelte" {
+  export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
+    component: __SvelteComponent<Props, Exports>,
+    options: Omit<MountOptions<Props>, "props"> & {
+      props: __SvelteLoosen<Props>;
+    }
+  ): Exports;
+}
 
 "#;
     if let Some(import_path) = helpers_import_path {

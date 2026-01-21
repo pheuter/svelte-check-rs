@@ -457,6 +457,38 @@ fn test_issue_68_rest_props_reports_type_error() {
     assert_diagnostic_present(&diagnostics, &expected);
 }
 
+// ============================================================================
+// ISSUE #74: COMPUTED PROPERTY NAMES IN MOUNT PROPS
+// ============================================================================
+// This test verifies that computed property names in mount() props do not
+// produce type errors for valid component props.
+//
+// Test file:
+// - test-fixtures/projects/sveltekit-bundler/src/lib/issue-74-mount.ts
+#[test]
+#[serial]
+fn test_issue_74_computed_props_in_mount_no_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(&diagnostics, "lib/issue-74-mount.ts");
+}
+
+#[test]
+#[serial]
+fn test_issue_74_computed_props_missing_required_prop_reports_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    let expected = ExpectedDiagnostic {
+        filename: "lib/issue-74-mount-invalid.ts",
+        line: 9,
+        code: "TS2769",
+        message_contains: "No overload matches this call",
+    };
+    assert_diagnostic_present(&diagnostics, &expected);
+}
+
 /// Test that wildcard exclude patterns work correctly.
 ///
 /// Tests patterns like:
