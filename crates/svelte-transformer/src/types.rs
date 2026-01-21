@@ -53,13 +53,10 @@ impl ComponentExports {
     pub fn generate_typescript_export(&self, component_name: &str) -> String {
         let internal_name = format!("__SvelteComponent_{}_", component_name);
         let props_name = format!("__SvelteProps_{}_", component_name);
+        let props_type = format!("__SvelteLoosen<{}>", self.props_or_default());
         format!(
             "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
-            props_name,
-            self.props_or_default(),
-            internal_name,
-            props_name,
-            internal_name
+            props_name, props_type, internal_name, props_name, internal_name
         )
     }
 
@@ -75,9 +72,10 @@ impl ComponentExports {
     pub fn generate_javascript_export(&self, component_name: &str) -> String {
         let internal_name = format!("__SvelteComponent_{}_", component_name);
         let props_name = format!("__SvelteProps_{}_", component_name);
+        let props_type = "__SvelteLoosen<{}>";
         format!(
-            "type {} = {{}};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
-            props_name, internal_name, props_name, internal_name
+            "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
+            props_name, props_type, internal_name, props_name, internal_name
         )
     }
 
@@ -185,7 +183,7 @@ mod tests {
         let exports = ComponentExports::new();
         let export_line = exports.generate_javascript_export("Button");
         // Uses internal name to avoid conflicts with imports
-        assert!(export_line.contains("type __SvelteProps_Button_ = {};"));
+        assert!(export_line.contains("type __SvelteProps_Button_ = __SvelteLoosen<{}>;"));
         assert!(export_line.contains(
             "declare const __SvelteComponent_Button_: __SvelteComponent<__SvelteProps_Button_>"
         ));
