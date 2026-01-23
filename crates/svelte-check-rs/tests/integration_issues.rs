@@ -1,4 +1,4 @@
-//! Integration tests for issues #19, #20, #21.
+//! Integration tests for issues #19, #20, #21 (and others as they are added).
 //!
 //! These tests verify that:
 //! - Issue #21: Imports with colons (like `virtual:pwa-register`) don't cause parsing errors
@@ -487,6 +487,40 @@ fn test_issue_74_computed_props_missing_required_prop_reports_error() {
         message_contains: "No overload matches this call",
     };
     assert_diagnostic_present(&diagnostics, &expected);
+}
+
+// ============================================================================
+// ISSUE #77: MULTI-LINE QUOTED STYLE DIRECTIVE VALUES
+// ============================================================================
+// This test verifies that multi-line quoted style directive values do not
+// produce TypeScript parse errors in the generated output.
+//
+// Test file:
+// - test-fixtures/projects/sveltekit-bundler/src/routes/issue-77-multiline-style/+page.svelte
+#[test]
+#[serial]
+fn test_issue_77_multiline_style_directive_no_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-77-multiline-style/+page.svelte");
+}
+
+// ============================================================================
+// ISSUE #77: MULTI-LINE QUOTED NORMAL ATTRIBUTE VALUES
+// ============================================================================
+// This test verifies that multi-line quoted normal attributes do not
+// produce TypeScript parse errors in the generated output.
+//
+// Test file:
+// - test-fixtures/projects/sveltekit-bundler/src/routes/issue-77-multiline-attr/+page.svelte
+#[test]
+#[serial]
+fn test_issue_77_multiline_normal_attribute_no_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-77-multiline-attr/+page.svelte");
 }
 
 /// Test that wildcard exclude patterns work correctly.
