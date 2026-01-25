@@ -11,25 +11,32 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 - `crates/svelte-transformer`: Svelte-to-TypeScript transformation for type-checking.
 - `crates/svelte-diagnostics`: Svelte-specific diagnostics (a11y, CSS, component).
 - `crates/tsgo-runner`: Bridge to `tsgo` for TypeScript type-checking.
+- `crates/bun-runner`: Bridge to bun-managed Svelte compiler diagnostics.
 - `crates/svelte-check-rs`: Main CLI and orchestration logic.
 - `test-fixtures/`: Svelte component fixtures for testing.
-- `node_modules/.cache/svelte-check-rs/`: Per-project cache (transformed files, tsgo incremental build info).
+- `node_modules/.cache/svelte-check-rs/`: Per-project cache (transformed files, tsgo incremental build info, bun runner script).
 
 ## Architecture
 
-**Pipeline** (orchestrator.rs): File discovery → Parse → Svelte diagnostics → Transform to TS → tsgo type-check
+**Pipeline** (orchestrator.rs): File discovery → Parse → Svelte diagnostics → Svelte compiler diagnostics (bun) → Transform to TS → tsgo type-check
 
 1. **Discovery**: Walk workspace, filter by `.svelte`/`.svelte.ts`/`.svelte.js`, respect `tsconfig.json` excludes
 2. **Parse**: `svelte_parser::parse()` → AST + parse errors (parallel via `rayon`)
 3. **Diagnostics**: A11y, CSS, component checks on AST
-4. **Transform**: `svelte_transformer::transform()` → TypeScript with source maps
-5. **Type-check**: Send all transformed files to `tsgo` subprocess, map errors back via source maps
+4. **Compiler**: Run Svelte compiler diagnostics via bun on original sources
+5. **Transform**: `svelte_transformer::transform()` → TypeScript with source maps
+6. **Type-check**: Send all transformed files to `tsgo` subprocess, map errors back via source maps
 
 **tsgo Integration** (tsgo-runner crate):
 - External TypeScript type-checker (Go-based, faster than tsc)
 - Auto-installed to cache dir on first run if not found
 - Communication: JSON over stdin/stdout
 - Incremental builds via `node_modules/.cache/svelte-check-rs/tsgo.tsbuildinfo`
+
+**Svelte Compiler Integration** (bun-runner crate):
+- bun-managed persistent workers that call `svelte/compiler`
+- Auto-installed to cache dir on first run if not found
+- Diagnostics reported against original `.svelte` sources (no extra source maps)
 
 **SvelteKit Support**:
 - Detects route files (`+page.svelte`, `+layout.svelte`, etc.) for proper prop types
@@ -55,11 +62,14 @@ cargo run -p svelte-check-rs -- --workspace ./path/to/project [--emit-ts]
 - `--cache-stats`: Show cache statistics (files written/skipped)
 - `--no-cache`: Disable per-project cache + incremental builds (fresh run)
 - `--watch`: File watcher mode (uses `notify` crate, 1s polling)
-- `--debug-paths`: Show resolved tsgo, package manager, svelte-kit paths
+- `--debug-paths`: Show resolved tsgo, bun, package manager, svelte-kit paths
 - `--show-config`: Print resolved configuration (tsconfig, svelte.config.js, excludes)
 - `--list-files`: List files that would be checked, then exit
 - `--single-file <path>`: Process only a single file (isolate issues)
 - `--skip-tsgo`: Skip TypeScript type-checking, only run Svelte diagnostics (faster iteration)
+- `--skip-svelte-compiler`: Skip Svelte compiler diagnostics
+- `--bun-version`: Show installed bun version/path
+- `--bun-update[=<ver>]`: Update bun to latest or specific version
 
 ## Testing
 
@@ -142,8 +152,10 @@ Rules support `<!-- svelte-ignore code -->` comments (both `kebab-case` and `sna
 **Git**: Use [Conventional Commits](https://www.conventionalcommits.org/).
 
 - Types: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`
-- Scopes: `parser`, `transformer`, `diagnostics`, `a11y`, `css`, `cli`, `tsgo`
+- Scopes: optional; use semantic scopes as needed (examples: `parser`, `transformer`, `diagnostics`, `a11y`, `css`, `cli`, `tsgo`, `bun`, `compiler`). Not a closed list.
 - Example: `feat(parser): add support for snippet blocks`
+- GitHub CLI: `gh` is available and already authenticated; use it to investigate issues, create PRs, and perform GitHub operations as needed.
+- Pull requests: use descriptive Markdown formatting for PR bodies (clear headings like **Summary**, **Details**, **Why**, **Testing**) to keep them concise and legible.
 
 **Code**:
 
@@ -169,3 +181,9 @@ gh run watch
 ```
 
 **Important**: Do NOT manually create GitHub releases. Monitor with: `gh run list` or `gh run watch`
+
+**Release notes format**: Follow the existing release style on GitHub. Use a consistent Markdown structure such as:
+- `## What's Changed` with short bullet points (grouped by headings like **Bug Fixes**, **Features**, **Tests** when helpful)
+- `## Full Changelog` with the compare link
+- Do not include install guides, download tables, or CLI boilerplate in release notes—only the actual release notes.
+- Before writing release notes, review the full diff and related PRs/issues; link and include relevant ones in the notes.

@@ -1,0 +1,8 @@
+{
+  "name": "compiler-errors",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "svelte": "^5.0.0"
+  }
+}

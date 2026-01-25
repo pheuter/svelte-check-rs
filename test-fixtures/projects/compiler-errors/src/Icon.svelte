@@ -1,0 +1,1 @@
+<span>Icon</span>

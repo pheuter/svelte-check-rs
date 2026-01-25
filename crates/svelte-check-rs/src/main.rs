@@ -5,6 +5,7 @@ mod config;
 mod orchestrator;
 mod output;
 
+use bun_runner::BunRunner;
 use camino::Utf8Path;
 use clap::Parser;
 use cli::Args;
@@ -33,10 +34,40 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle bun version command
+    if args.bun_version {
+        match BunRunner::get_bun_version().await {
+            Ok((version, path)) => {
+                println!("bun {}", version);
+                println!("path: {}", path);
+                if let Some(cache_dir) = BunRunner::get_cache_dir() {
+                    println!("cache: {}", cache_dir);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     // Handle tsgo update command
     if let Some(version_opt) = &args.tsgo_update {
         let version = version_opt.as_deref();
         match TsgoRunner::update_tsgo(version).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Handle bun update command
+    if let Some(version_opt) = &args.bun_update {
+        let version = version_opt.as_deref();
+        match BunRunner::update_bun(version).await {
             Ok(_) => return Ok(()),
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -115,5 +146,18 @@ fn print_debug_paths(workspace: &Utf8Path) {
     match TsgoRunner::find_sveltekit_binary(&workspace) {
         Ok(path) => println!("  resolved: {}", path),
         Err(_) => println!("  resolved: (not found - not a SvelteKit project or not installed)"),
+    }
+
+    println!();
+
+    // bun binary
+    println!("bun:");
+    if let Some(path) = BunRunner::find_bun(Some(&workspace)) {
+        println!("  resolved: {}", path);
+    } else {
+        println!("  resolved: (not found - will be auto-installed on first run)");
+        if let Some(cache_dir) = BunRunner::get_cache_dir() {
+            println!("  cache:    {}/node_modules/.bin/bun", cache_dir);
+        }
     }
 }
