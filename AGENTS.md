@@ -154,6 +154,8 @@ Rules support `<!-- svelte-ignore code -->` comments (both `kebab-case` and `sna
 - Types: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`
 - Scopes: optional; use semantic scopes as needed (examples: `parser`, `transformer`, `diagnostics`, `a11y`, `css`, `cli`, `tsgo`, `bun`, `compiler`). Not a closed list.
 - Example: `feat(parser): add support for snippet blocks`
+- GitHub CLI: `gh` is available and already authenticated; use it to investigate issues, create PRs, and perform GitHub operations as needed.
+- Pull requests: use descriptive Markdown formatting for PR bodies (clear headings like **Summary**, **Details**, **Why**, **Testing**) to keep them concise and legible.
 
 **Code**:
 
@@ -179,3 +181,9 @@ gh run watch
 ```
 
 **Important**: Do NOT manually create GitHub releases. Monitor with: `gh run list` or `gh run watch`
+
+**Release notes format**: Follow the existing release style on GitHub. Use a consistent Markdown structure such as:
+- `## What's Changed` with short bullet points (grouped by headings like **Bug Fixes**, **Features**, **Tests** when helpful)
+- `## Full Changelog` with the compare link
+- Do not include install guides, download tables, or CLI boilerplate in release notes—only the actual release notes.
+- Before writing release notes, review the full diff and related PRs/issues; link and include relevant ones in the notes.
