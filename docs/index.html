@@ -235,6 +235,18 @@
             <div class="arch-step">
               <div class="arch-num">02</div>
               <div class="arch-content">
+                <h3>Svelte Compiler (bun)</h3>
+                <p>Persistent bun workers run Svelte compiler diagnostics directly on source.</p>
+              </div>
+            </div>
+            <div class="arch-arrow">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M5 12h14M12 5l7 7-7 7"/>
+              </svg>
+            </div>
+            <div class="arch-step">
+              <div class="arch-num">03</div>
+              <div class="arch-content">
                 <h3>Parallel Transform</h3>
                 <p>Svelte to TypeScript via rayon. All CPU cores. Source maps preserved.</p>
               </div>
@@ -245,7 +257,7 @@
               </svg>
             </div>
             <div class="arch-step">
-              <div class="arch-num">03</div>
+              <div class="arch-num">04</div>
               <div class="arch-content">
                 <h3>tsgo Compiler</h3>
                 <p>Microsoft's native Go port of TypeScript. 10x faster than tsc.</p>
@@ -322,7 +334,7 @@ bun pm trust svelte-check-rs</code>
               <div class="cli-table">
                 <div class="cli-row">
                   <code>--diagnostic-sources</code>
-                  <span>js,svelte</span>
+                  <span>js,svelte,css</span>
                 </div>
                 <div class="cli-row">
                   <code>--threshold</code>
@@ -335,6 +347,14 @@ bun pm trust svelte-check-rs</code>
                 <div class="cli-row">
                   <code>--ignore &lt;glob&gt;</code>
                   <span>Skip matching files</span>
+                </div>
+                <div class="cli-row">
+                  <code>--skip-tsgo</code>
+                  <span>Skip TypeScript type-checking</span>
+                </div>
+                <div class="cli-row">
+                  <code>--skip-svelte-compiler</code>
+                  <span>Skip Svelte compiler diagnostics</span>
                 </div>
               </div>
             </div>
@@ -351,7 +371,7 @@ bun pm trust svelte-check-rs</code>
                 </div>
                 <div class="cli-row">
                   <code>--debug-paths</code>
-                  <span>Show resolved binaries</span>
+                  <span>Show resolved binaries (tsgo, bun)</span>
                 </div>
                 <div class="cli-row">
                   <code>--emit-ts</code>
@@ -376,6 +396,23 @@ bun pm trust svelte-check-rs</code>
                 </div>
                 <div class="cli-row">
                   <code>--tsgo-update=&lt;ver&gt;</code>
+                  <span>Install specific version</span>
+                </div>
+              </div>
+            </div>
+            <div class="cli-group">
+              <h3>bun</h3>
+              <div class="cli-table">
+                <div class="cli-row">
+                  <code>--bun-version</code>
+                  <span>Show installed bun version</span>
+                </div>
+                <div class="cli-row">
+                  <code>--bun-update</code>
+                  <span>Update bun to latest</span>
+                </div>
+                <div class="cli-row">
+                  <code>--bun-update=&lt;ver&gt;</code>
                   <span>Install specific version</span>
                 </div>
               </div>

@@ -3,6 +3,7 @@
 use crate::cli::{Args, TimingFormat};
 use crate::config::{SvelteConfig, SvelteFileKind, TsConfig};
 use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
+use bun_runner::{BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunInput, BunRunner};
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
@@ -171,6 +172,14 @@ pub enum OrchestratorError {
     /// tsgo error.
     #[error("tsgo error: {0}")]
     TsgoError(String),
+
+    /// bun error.
+    #[error("bun error: {0}")]
+    BunError(String),
+
+    /// Compiler warnings config error.
+    #[error("compiler warnings config error: {0}")]
+    CompilerConfigError(String),
 }
 
 /// Runs the check on all files.
@@ -187,6 +196,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     // Load configuration
     let svelte_config = SvelteConfig::load(&workspace);
     let extra_paths = svelte_alias_paths(&svelte_config);
+    let compiler_runes = svelte_config.compiler_options.runes;
 
     // Load tsconfig to detect module resolution strategy
     let ts_config_path = if let Some(ref custom_path) = args.tsconfig {
@@ -363,6 +373,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
+            compiler_runes,
             &extra_paths,
         )
         .await
@@ -373,6 +384,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
+            compiler_runes,
             &extra_paths,
         )
         .await
@@ -386,6 +398,7 @@ async fn run_single_check(
     files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
+    compiler_runes: Option<bool>,
     extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     let total_start = Instant::now();
@@ -396,6 +409,7 @@ async fn run_single_check(
     let output_json = matches!(args.output, crate::cli::OutputFormat::Json);
     let error_count = AtomicUsize::new(0);
     let warning_count = AtomicUsize::new(0);
+    let compiler_warning_settings = parse_compiler_warnings(args.compiler_warnings.as_deref())?;
 
     // Base diagnostic options (filename will be set per-file)
     let base_diag_options = DiagnosticOptions {
@@ -413,6 +427,7 @@ async fn run_single_check(
     struct FileResult {
         output: Option<FileOutput>,
         transformed: Option<(Utf8PathBuf, TransformedFile)>,
+        compiler_input: Option<BunInput>,
     }
 
     // Separate files by kind: components (.svelte) vs modules (.svelte.ts/.svelte.js)
@@ -433,6 +448,7 @@ async fn run_single_check(
                     return FileResult {
                         output: None,
                         transformed: None,
+                        compiler_input: None,
                     };
                 }
             };
@@ -571,9 +587,24 @@ async fn run_single_check(
                 })
             };
 
+            let compiler_input = if args.include_svelte() && !args.skip_svelte_compiler {
+                Some(BunInput {
+                    filename: file_path.clone(),
+                    source: source.clone(),
+                    options: BunCompileOptions {
+                        runes: compiler_runes,
+                        dev: None,
+                        generate: None,
+                    },
+                })
+            } else {
+                None
+            };
+
             FileResult {
                 output,
                 transformed,
+                compiler_input,
             }
         })
         .collect();
@@ -589,6 +620,7 @@ async fn run_single_check(
                     return FileResult {
                         output: None,
                         transformed: None,
+                        compiler_input: None,
                     };
                 }
             };
@@ -674,6 +706,7 @@ async fn run_single_check(
             FileResult {
                 output,
                 transformed,
+                compiler_input: None,
             }
         })
         .collect();
@@ -681,6 +714,8 @@ async fn run_single_check(
     // Combine outputs and transformed files from both component and module files
     let mut outputs: Vec<FileOutput> = Vec::new();
     let mut transformed_files = TransformedFiles::new();
+    let mut compiler_inputs: Vec<BunInput> = Vec::new();
+    let mut compiler_sources: HashMap<Utf8PathBuf, String> = HashMap::new();
     for result in component_results
         .into_iter()
         .chain(module_results.into_iter())
@@ -690,6 +725,10 @@ async fn run_single_check(
         }
         if let Some((virtual_path, transformed_file)) = result.transformed {
             transformed_files.add(virtual_path, transformed_file);
+        }
+        if let Some(input) = result.compiler_input {
+            compiler_sources.insert(input.filename.clone(), input.source.clone());
+            compiler_inputs.push(input);
         }
     }
 
@@ -711,6 +750,46 @@ async fn run_single_check(
                 print!("{}", text);
             }
         }
+    }
+
+    let mut compiler_total_time = None;
+
+    // Run Svelte compiler diagnostics (bun) if enabled
+    if args.include_svelte() && !args.skip_svelte_compiler && !compiler_inputs.is_empty() {
+        let bun_start = Instant::now();
+        match run_bun_check(workspace, compiler_inputs).await {
+            Ok(mut diagnostics) => {
+                apply_compiler_warning_settings(&mut diagnostics, &compiler_warning_settings);
+                diagnostics.retain(|diag| include_compiler_severity(diag.severity, args.threshold));
+
+                // Count and print compiler diagnostics
+                for diag in &diagnostics {
+                    match diag.severity {
+                        BunDiagnosticSeverity::Error => {
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        BunDiagnosticSeverity::Warning => {
+                            warning_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+
+                if output_json {
+                    json_output.extend(format_compiler_diagnostics_json(
+                        &diagnostics,
+                        workspace,
+                        &compiler_sources,
+                    ));
+                } else {
+                    let output = format_compiler_diagnostics(&diagnostics, workspace, args.output);
+                    print!("{}", output);
+                }
+            }
+            Err(e) => {
+                eprintln!("Svelte compiler checking failed: {}", e);
+            }
+        }
+        compiler_total_time = Some(bun_start.elapsed());
     }
 
     let mut transformed_count = 0usize;
@@ -802,6 +881,7 @@ async fn run_single_check(
                     svelte_time,
                     total_file_count,
                     transformed_count,
+                    compiler_total_time,
                     sveltekit_sync_time,
                     sveltekit_sync_ran,
                     tsgo_total_time,
@@ -819,6 +899,9 @@ async fn run_single_check(
                     "svelte phase: {:?} ({} files, {} transformed)",
                     svelte_time, total_file_count, transformed_count
                 );
+                if let Some(compiler_time) = compiler_total_time {
+                    eprintln!("svelte compiler: {:?}", compiler_time);
+                }
                 if let (Some(sync_time), Some(sync_ran)) = (sveltekit_sync_time, sveltekit_sync_ran)
                 {
                     eprintln!(
@@ -955,6 +1038,41 @@ async fn run_tsgo_check(
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))
 }
 
+/// Runs Svelte compiler diagnostics using bun.
+async fn run_bun_check(
+    workspace: &Utf8Path,
+    inputs: Vec<BunInput>,
+) -> Result<Vec<BunDiagnostic>, OrchestratorError> {
+    let bun_path = BunRunner::ensure_bun(Some(workspace))
+        .await
+        .map_err(|e| OrchestratorError::BunError(e.to_string()))?;
+
+    let worker_count = bun_worker_count();
+    let runner = BunRunner::new(bun_path, workspace.to_owned(), worker_count)
+        .map_err(|e| OrchestratorError::BunError(e.to_string()))?;
+
+    runner
+        .check_files(inputs)
+        .await
+        .map_err(|e| OrchestratorError::BunError(e.to_string()))
+}
+
+fn bun_worker_count() -> usize {
+    let from_env = std::env::var("SVELTE_CHECK_RS_BUN_WORKERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0);
+
+    if let Some(count) = from_env {
+        return count;
+    }
+
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    std::cmp::min(available, 4)
+}
+
 /// Formats TypeScript diagnostics for output.
 fn format_ts_diagnostics(
     diagnostics: &[TsgoDiagnostic],
@@ -1051,9 +1169,131 @@ fn format_ts_diagnostics_json(
         .collect()
 }
 
+/// Formats Svelte compiler diagnostics for output.
+fn format_compiler_diagnostics(
+    diagnostics: &[BunDiagnostic],
+    workspace: &Utf8Path,
+    format: crate::cli::OutputFormat,
+) -> String {
+    let mut output = String::new();
+
+    for diag in diagnostics {
+        let relative_file = diag
+            .file
+            .strip_prefix(workspace)
+            .unwrap_or(&diag.file)
+            .to_string();
+
+        let severity = match diag.severity {
+            BunDiagnosticSeverity::Error => "Error",
+            BunDiagnosticSeverity::Warning => "Warning",
+        };
+
+        match format {
+            crate::cli::OutputFormat::Human | crate::cli::OutputFormat::HumanVerbose => {
+                output.push_str(&format!(
+                    "{}:{}:{}\n{}: {} ({})\n\n",
+                    relative_file,
+                    diag.start.line,
+                    diag.start.column,
+                    severity,
+                    diag.message,
+                    diag.code
+                ));
+            }
+            crate::cli::OutputFormat::Machine => {
+                output.push_str(&format!(
+                    "{} {}:{}:{}:{}:{} {} ({})\n",
+                    severity.to_uppercase(),
+                    relative_file,
+                    diag.start.line,
+                    diag.start.column,
+                    diag.end.line,
+                    diag.end.column,
+                    diag.message,
+                    diag.code
+                ));
+            }
+            crate::cli::OutputFormat::Json => {
+                // JSON format handled separately
+            }
+        }
+    }
+
+    output
+}
+
+/// Formats Svelte compiler diagnostics into JSON-ready structs.
+fn format_compiler_diagnostics_json(
+    diagnostics: &[BunDiagnostic],
+    workspace: &Utf8Path,
+    sources: &HashMap<Utf8PathBuf, String>,
+) -> Vec<FormattedDiagnostic> {
+    diagnostics
+        .iter()
+        .map(|diag| {
+            let relative_file = diag
+                .file
+                .strip_prefix(workspace)
+                .unwrap_or(&diag.file)
+                .to_string();
+
+            let severity = match diag.severity {
+                BunDiagnosticSeverity::Error => "Error",
+                BunDiagnosticSeverity::Warning => "Warning",
+            };
+
+            let offset = sources
+                .get(&diag.file)
+                .map(|source| {
+                    line_column_to_offset(
+                        source,
+                        diag.start.line as usize,
+                        diag.start.column as usize,
+                    )
+                })
+                .unwrap_or(0);
+            let end_offset = sources
+                .get(&diag.file)
+                .map(|source| {
+                    line_column_to_offset(source, diag.end.line as usize, diag.end.column as usize)
+                })
+                .unwrap_or(offset);
+
+            FormattedDiagnostic {
+                diagnostic_type: severity.to_string(),
+                filename: relative_file,
+                start: Position {
+                    line: diag.start.line,
+                    column: diag.start.column,
+                    offset,
+                },
+                end: Position {
+                    line: diag.end.line,
+                    column: diag.end.column,
+                    offset: end_offset,
+                },
+                message: diag.message.clone(),
+                code: diag.code.clone(),
+                source: "svelte".to_string(),
+            }
+        })
+        .collect()
+}
+
 fn include_svelte_severity(severity: Severity, threshold: crate::cli::Threshold) -> bool {
     match threshold {
         crate::cli::Threshold::Error => matches!(severity, Severity::Error),
+        crate::cli::Threshold::Warning => true,
+    }
+}
+
+fn include_compiler_severity(
+    severity: BunDiagnosticSeverity,
+    threshold: crate::cli::Threshold,
+) -> bool {
+    match threshold {
+        crate::cli::Threshold::Error => matches!(severity, BunDiagnosticSeverity::Error),
         crate::cli::Threshold::Warning => true,
     }
 }
@@ -1070,6 +1310,54 @@ fn include_ts_severity(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompilerWarningLevel {
+    Ignore,
+    Error,
+}
+
+fn parse_compiler_warnings(
+    raw: Option<&str>,
+) -> Result<HashMap<String, CompilerWarningLevel>, OrchestratorError> {
+    let Some(raw) = raw else {
+        return Ok(HashMap::new());
+    };
+
+    let map: HashMap<String, String> = serde_json::from_str(raw)
+        .map_err(|e| OrchestratorError::CompilerConfigError(e.to_string()))?;
+
+    let mut out = HashMap::new();
+    for (code, level) in map {
+        match level.to_ascii_lowercase().as_str() {
+            "ignore" => {
+                out.insert(code, CompilerWarningLevel::Ignore);
+            }
+            "error" => {
+                out.insert(code, CompilerWarningLevel::Error);
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+fn apply_compiler_warning_settings(
+    diagnostics: &mut Vec<BunDiagnostic>,
+    settings: &HashMap<String, CompilerWarningLevel>,
+) {
+    diagnostics.retain_mut(|diag| {
+        if let Some(level) = settings.get(&diag.code) {
+            match level {
+                CompilerWarningLevel::Ignore => return false,
+                CompilerWarningLevel::Error => {
+                    diag.severity = BunDiagnosticSeverity::Error;
+                }
+            }
+        }
+        true
+    });
+}
+
 fn duration_ms(duration: std::time::Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
@@ -1080,6 +1368,7 @@ fn timings_json(
     svelte_time: std::time::Duration,
     file_count: usize,
     transformed_count: usize,
+    compiler_total_time: Option<std::time::Duration>,
     sveltekit_sync_time: Option<std::time::Duration>,
     sveltekit_sync_ran: Option<bool>,
     tsgo_total_time: Option<std::time::Duration>,
@@ -1105,6 +1394,13 @@ fn timings_json(
     root.insert(
         "transformed_count".to_string(),
         serde_json::Value::from(transformed_count as u64),
+    );
+    root.insert(
+        "compiler_ms".to_string(),
+        compiler_total_time
+            .map(duration_ms)
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
     );
     root.insert(
         "sveltekit_sync_ms".to_string(),
@@ -1191,6 +1487,7 @@ async fn run_watch_mode(
     initial_files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
+    compiler_runes: Option<bool>,
     extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -1205,6 +1502,7 @@ async fn run_watch_mode(
         initial_files.clone(),
         file_scan_time,
         use_nodenext_imports,
+        compiler_runes,
         extra_paths,
     )
     .await?;
@@ -1252,6 +1550,7 @@ async fn run_watch_mode(
                 initial_files.clone(),
                 file_scan_time,
                 use_nodenext_imports,
+                compiler_runes,
                 extra_paths,
             )
             .await;

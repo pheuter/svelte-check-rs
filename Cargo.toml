@@ -6,6 +6,7 @@ members = [
     "crates/svelte-transformer",
     "crates/svelte-diagnostics",
     "crates/tsgo-runner",
+    "crates/bun-runner",
     "crates/svelte-check-rs",
 ]
 
@@ -22,6 +23,7 @@ svelte-parser = { path = "crates/svelte-parser" }
 svelte-transformer = { path = "crates/svelte-transformer" }
 svelte-diagnostics = { path = "crates/svelte-diagnostics" }
 tsgo-runner = { path = "crates/tsgo-runner" }
+bun-runner = { path = "crates/bun-runner" }
 
 # Parsing
 logos = "0.16"

@@ -56,6 +56,14 @@ pub struct Args {
     #[arg(long = "tsgo-diagnostics")]
     pub tsgo_diagnostics: bool,
 
+    /// Show bun version and installation path
+    #[arg(long = "bun-version")]
+    pub bun_version: bool,
+
+    /// Update bun to latest or specified version (e.g., --bun-update or --bun-update=1.3.6)
+    #[arg(long = "bun-update")]
+    pub bun_update: Option<Option<String>>,
+
     /// Print timing breakdowns
     #[arg(long)]
     pub timings: bool,
@@ -92,6 +100,10 @@ pub struct Args {
     /// Skip TypeScript type-checking (tsgo), only run Svelte diagnostics (a11y, CSS, component)
     #[arg(long = "skip-tsgo")]
     pub skip_tsgo: bool,
+
+    /// Skip Svelte compiler diagnostics (bun)
+    #[arg(long = "skip-svelte-compiler")]
+    pub skip_svelte_compiler: bool,
 
     /// Process only a single file (useful for isolating issues)
     #[arg(long = "single-file")]
@@ -226,6 +238,10 @@ mod tests {
         let args = Args::parse_from(["svelte-check-rs", "--skip-tsgo"]);
         assert!(args.skip_tsgo);
 
+        // Test --skip-svelte-compiler
+        let args = Args::parse_from(["svelte-check-rs", "--skip-svelte-compiler"]);
+        assert!(args.skip_svelte_compiler);
+
         // Test --single-file
         let args = Args::parse_from(["svelte-check-rs", "--single-file", "src/App.svelte"]);
         assert_eq!(
@@ -262,12 +278,14 @@ mod tests {
             "--emit-ts",
             "--emit-source-map",
             "--skip-tsgo",
+            "--skip-svelte-compiler",
             "--single-file",
             "test.svelte",
         ]);
         assert!(args.emit_ts);
         assert!(args.emit_source_map);
         assert!(args.skip_tsgo);
+        assert!(args.skip_svelte_compiler);
         assert_eq!(
             args.single_file.as_ref().map(|p| p.as_str()),
             Some("test.svelte")

@@ -7,7 +7,7 @@ A high-performance, Rust-powered diagnostic engine designed as a drop-in replace
 ## Features
 
 - 🚀 **Fast**: 10-100x faster than `svelte-check` through Rust's zero-cost abstractions and parallel processing
-- ✅ **Accurate**: Full feature parity with `svelte-check` - same diagnostics, same behavior
+- ✅ **Accurate**: Matches `svelte-check` diagnostics, including Svelte compiler errors via bun
 - 🔄 **Compatible**: Drop-in CLI replacement, identical output formats
 - 🔧 **Maintainable**: Clean separation of concerns, comprehensive test suite
 
@@ -86,10 +86,17 @@ svelte-check-rs --output human-verbose
 | `--watch` | Watch mode |
 | `--preserveWatchOutput` | Don't clear screen in watch mode |
 | `--fail-on-warnings` | Exit with error on warnings |
-| `--diagnostic-sources <LIST>` | Which diagnostics: `js`, `svelte` |
+| `--diagnostic-sources <LIST>` | Which diagnostics: `js`, `svelte`, `css` |
 | `--ignore <PATTERNS>` | Glob patterns to ignore |
 | `--no-cache` | Disable per-project cache + incremental builds (fresh run) |
 | `--disable-sveltekit-cache` | Disable cached .svelte-kit mirror |
+| `--skip-tsgo` | Skip TypeScript type-checking |
+| `--skip-svelte-compiler` | Skip Svelte compiler diagnostics |
+| `--tsgo-version` | Show installed tsgo version + path |
+| `--tsgo-update[=<VER>]` | Update tsgo to latest or specific version |
+| `--bun-version` | Show installed bun version + path |
+| `--bun-update[=<VER>]` | Update bun to latest or specific version |
+| `--debug-paths` | Show resolved binaries (tsgo, bun, svelte-kit) |
 
 **Caching:** By default, svelte-check-rs writes transformed files and tsgo incremental build info to `node_modules/.cache/svelte-check-rs/`. Use `--no-cache` for a fully fresh run (useful in CI).
 
@@ -102,6 +109,7 @@ crates/
 ├── svelte-transformer/   # Svelte → TypeScript transformation
 ├── svelte-diagnostics/   # A11y, CSS, and component checks
 ├── tsgo-runner/          # tsgo process management
+├── bun-runner/           # bun-managed Svelte compiler bridge
 └── svelte-check-rs/      # CLI binary
 ```
 
