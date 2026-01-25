@@ -156,6 +156,7 @@ Rules support `<!-- svelte-ignore code -->` comments (both `kebab-case` and `sna
 - Example: `feat(parser): add support for snippet blocks`
 - GitHub CLI: `gh` is available and already authenticated; use it to investigate issues, create PRs, and perform GitHub operations as needed.
 - Pull requests: use descriptive Markdown formatting for PR bodies (clear headings like **Summary**, **Details**, **Why**, **Testing**) to keep them concise and legible.
+- When merging PRs, use **squash** merges and delete the branch (local + remote).
 
 **Code**:
 
