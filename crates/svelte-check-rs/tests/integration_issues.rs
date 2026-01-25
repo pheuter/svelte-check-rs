@@ -523,6 +523,23 @@ fn test_issue_77_multiline_normal_attribute_no_error() {
     assert_no_diagnostics_in_file(&diagnostics, "issue-77-multiline-attr/+page.svelte");
 }
 
+// ============================================================================
+// ISSUE #79: MOUNT() RETURN TYPE INCLUDES COMPONENT EXPORTS
+// ============================================================================
+// This test verifies that component exports declared via `export { ... }`
+// are reflected in the type of the object returned from `mount()`.
+//
+// Test file:
+// - test-fixtures/projects/sveltekit-bundler/src/lib/issue-79-mount.ts
+#[test]
+#[serial]
+fn test_issue_79_mount_exports_no_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(&diagnostics, "lib/issue-79-mount.ts");
+}
+
 /// Test that wildcard exclude patterns work correctly.
 ///
 /// Tests patterns like:

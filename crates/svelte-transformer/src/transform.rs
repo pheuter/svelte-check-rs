@@ -1,5 +1,6 @@
 //! Main transformation logic.
 
+use crate::component_exports::{build_exports_type, extract_component_exports};
 use crate::props::{extract_props_info, generate_props_type};
 use crate::runes::transform_runes_with_options;
 use crate::snippets::split_snippet_name;
@@ -1334,6 +1335,11 @@ declare module "svelte" {
             exports.props_type = Some(ty.clone());
         }
 
+        let export_names = extract_component_exports(&instance.content);
+        if let Some(exports_type) = build_exports_type(&export_names) {
+            exports.exports_type = Some(exports_type);
+        }
+
         let mut script_output = rune_result.output;
         let mut script_mappings = rune_result.mappings;
         let mut edits = Vec::new();
@@ -1447,7 +1453,10 @@ declare module "svelte" {
                 .unwrap_or("Record<string, unknown>");
             let return_stmt = format!(
                 "return {{ props: null as any as {}, exports: {}, slots: {}, events: {} }};\n",
-                render_props_type, "{}", "{}", "{}"
+                render_props_type,
+                exports.exports_or_default(),
+                "{}",
+                "{}"
             );
             output.push_str(&return_stmt);
             builder.add_generated(&return_stmt);

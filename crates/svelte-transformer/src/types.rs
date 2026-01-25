@@ -7,6 +7,8 @@ use std::path::Path;
 pub struct ComponentExports {
     /// The props type (extracted from `$props()`).
     pub props_type: Option<String>,
+    /// The exports type (from `export { ... }` in instance script).
+    pub exports_type: Option<String>,
     /// The events type.
     pub events_type: Option<String>,
     /// The slots type.
@@ -29,6 +31,11 @@ impl ComponentExports {
     /// Returns the events type or a default empty object type.
     pub fn events_or_default(&self) -> &str {
         self.events_type.as_deref().unwrap_or("{}")
+    }
+
+    /// Returns the exports type or a default empty object type.
+    pub fn exports_or_default(&self) -> &str {
+        self.exports_type.as_deref().unwrap_or("{}")
     }
 
     /// Returns the slots type or a default empty object type.
@@ -54,9 +61,23 @@ impl ComponentExports {
         let internal_name = format!("__SvelteComponent_{}_", component_name);
         let props_name = format!("__SvelteProps_{}_", component_name);
         let props_type = format!("__SvelteLoosen<{}>", self.props_or_default());
+        if self.exports_type.is_none() {
+            return format!(
+                "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
+                props_name, props_type, internal_name, props_name, internal_name
+            );
+        }
+        let exports_name = format!("__SvelteExports_{}_", component_name);
         format!(
-            "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
-            props_name, props_type, internal_name, props_name, internal_name
+            "type {props_name} = {props_type};\n\
+type {exports_name} = {exports_type};\n\
+declare const {internal_name}: __SvelteComponent<{props_name}, {exports_name}>;\n\
+export default {internal_name};\n",
+            props_name = props_name,
+            props_type = props_type,
+            exports_name = exports_name,
+            exports_type = self.exports_or_default(),
+            internal_name = internal_name
         )
     }
 
@@ -73,9 +94,23 @@ impl ComponentExports {
         let internal_name = format!("__SvelteComponent_{}_", component_name);
         let props_name = format!("__SvelteProps_{}_", component_name);
         let props_type = "__SvelteLoosen<{}>";
+        if self.exports_type.is_none() {
+            return format!(
+                "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
+                props_name, props_type, internal_name, props_name, internal_name
+            );
+        }
+        let exports_name = format!("__SvelteExports_{}_", component_name);
         format!(
-            "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
-            props_name, props_type, internal_name, props_name, internal_name
+            "type {props_name} = {props_type};\n\
+type {exports_name} = {exports_type};\n\
+declare const {internal_name}: __SvelteComponent<{props_name}, {exports_name}>;\n\
+export default {internal_name};\n",
+            props_name = props_name,
+            props_type = props_type,
+            exports_name = exports_name,
+            exports_type = self.exports_or_default(),
+            internal_name = internal_name
         )
     }
 
@@ -150,6 +185,7 @@ mod tests {
     fn test_empty_exports() {
         let exports = ComponentExports::new();
         assert_eq!(exports.props_or_default(), "{}");
+        assert_eq!(exports.exports_or_default(), "{}");
         assert_eq!(exports.events_or_default(), "{}");
         assert_eq!(exports.slots_or_default(), "{}");
     }
@@ -167,6 +203,7 @@ mod tests {
     fn test_generate_typescript_export() {
         let exports = ComponentExports {
             props_type: Some("{ count: number }".to_string()),
+            exports_type: Some("{ count: number }".to_string()),
             ..Default::default()
         };
         let export_line = exports.generate_typescript_export("Counter");
