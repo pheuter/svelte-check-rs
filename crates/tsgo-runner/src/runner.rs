@@ -9,13 +9,15 @@ use serde_json::{Map, Value};
 use source_map::SourceMap;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tempfile::Builder;
 use thiserror::Error;
 use tokio::process::Command;
 use walkdir::WalkDir;
 
 const SHARED_HELPERS_FILENAME: &str = "__svelte_check_rs_helpers.d.ts";
+const DEP_CACHE_MANIFEST_FILENAME: &str = "deps.manifest.json";
+const DEP_CACHE_MANIFEST_VERSION: u32 = 1;
 const SHARED_HELPERS_DTS: &str = r#"import type { Component as SvelteComponentType, ComponentInternals as SvelteComponentInternals, Snippet as SvelteSnippet } from "svelte";
 import type { SvelteHTMLElements as SvelteHTMLElements, HTMLAttributes as SvelteHTMLAttributes } from "svelte/elements";
 
@@ -377,6 +379,12 @@ struct SvelteKitSyncManifest {
     files: BTreeMap<String, SvelteKitFileStamp>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct DependencyCacheManifest {
+    version: u32,
+    entries: BTreeMap<String, String>,
+}
+
 impl TsgoRunner {
     /// Creates a new tsgo runner.
     pub fn new(
@@ -577,6 +585,37 @@ impl TsgoRunner {
         }
 
         Ok(tsgo_path)
+    }
+
+    /// Clears the project cache when dependency state changes.
+    ///
+    /// Returns `Ok(true)` if the cache was cleared, `Ok(false)` if unchanged.
+    pub fn ensure_dependency_cache(project_root: &Utf8Path) -> Result<bool, TsgoError> {
+        let cache_root = Self::project_cache_root_for(project_root)?;
+        let node_modules = Self::find_node_modules_dir(project_root)
+            .ok_or_else(|| TsgoError::NodeModulesNotFound(project_root.to_owned()))?;
+        let manifest_path = cache_root.join(DEP_CACHE_MANIFEST_FILENAME);
+
+        let current = compute_dependency_manifest(project_root, &node_modules)?;
+        let previous = read_dependency_manifest(&manifest_path);
+
+        if let Some(previous) = &previous {
+            if previous == &current {
+                return Ok(false);
+            }
+        }
+
+        if cache_root.exists() {
+            std::fs::remove_dir_all(&cache_root).map_err(|e| {
+                TsgoError::TempFileFailed(format!("clear cache dir {}: {e}", cache_root.as_str()))
+            })?;
+        }
+
+        std::fs::create_dir_all(&cache_root)
+            .map_err(|e| TsgoError::TempFileFailed(format!("create cache dir: {e}")))?;
+        write_dependency_manifest(&manifest_path, &current)?;
+
+        Ok(true)
     }
 
     /// Runs `svelte-kit sync` to generate types before type-checking.
@@ -1783,6 +1822,149 @@ fn strip_json_comments(json: &str) -> String {
     }
 
     result
+}
+
+fn read_dependency_manifest(path: &Utf8Path) -> Option<DependencyCacheManifest> {
+    let contents = std::fs::read(path).ok()?;
+    serde_json::from_slice(&contents).ok()
+}
+
+fn write_dependency_manifest(
+    path: &Utf8Path,
+    manifest: &DependencyCacheManifest,
+) -> Result<(), TsgoError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| TsgoError::TempFileFailed(format!("create dependency dir: {e}")))?;
+    }
+    let contents =
+        serde_json::to_vec(manifest).map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+    let _ = write_if_changed(path, &contents, "write dependency manifest")?;
+    Ok(())
+}
+
+fn compute_dependency_manifest(
+    project_root: &Utf8Path,
+    node_modules: &Utf8Path,
+) -> Result<DependencyCacheManifest, TsgoError> {
+    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+
+    let lockfile_candidates = [
+        "bun.lockb",
+        "bun.lock",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+    ];
+
+    for name in lockfile_candidates {
+        let path = project_root.join(name);
+        if path.exists() {
+            entries.insert(name.to_string(), hash_file_contents(&path)?);
+        }
+    }
+
+    if entries.is_empty() {
+        let package_json = project_root.join("package.json");
+        if package_json.exists() {
+            entries.insert(
+                "package.json".to_string(),
+                hash_file_contents(&package_json)?,
+            );
+        }
+    }
+
+    let node_modules_markers = [
+        ".package-lock.json",
+        ".yarn-integrity",
+        ".yarn-state.yml",
+        ".modules.yaml",
+    ];
+
+    for name in node_modules_markers {
+        let path = node_modules.join(name);
+        if path.exists() {
+            entries.insert(format!("node_modules/{name}"), hash_file_contents(&path)?);
+        }
+    }
+
+    let pnpm_lock = node_modules.join(".pnpm/lock.yaml");
+    if pnpm_lock.exists() {
+        entries.insert(
+            "node_modules/.pnpm/lock.yaml".to_string(),
+            hash_file_contents(&pnpm_lock)?,
+        );
+    }
+
+    if let Some(stamp) = dir_mtime_stamp(node_modules)? {
+        entries.insert("node_modules@mtime".to_string(), stamp);
+    }
+
+    if let Some(stamp) = dir_entries_hash(&node_modules.join(".bin"))? {
+        entries.insert("node_modules/.bin@entries".to_string(), stamp);
+    }
+
+    Ok(DependencyCacheManifest {
+        version: DEP_CACHE_MANIFEST_VERSION,
+        entries,
+    })
+}
+
+fn hash_file_contents(path: &Utf8Path) -> Result<String, TsgoError> {
+    let contents = std::fs::read(path)
+        .map_err(|e| TsgoError::TempFileFailed(format!("read file hash: {e}")))?;
+    Ok(Hasher::new()
+        .update(&contents)
+        .finalize()
+        .to_hex()
+        .to_string())
+}
+
+fn dir_entries_hash(path: &Utf8Path) -> Result<Option<String>, TsgoError> {
+    if !path.is_dir() {
+        return Ok(None);
+    }
+
+    let mut entries = Vec::new();
+    let dir_iter = std::fs::read_dir(path.as_std_path())
+        .map_err(|e| TsgoError::TempFileFailed(format!("read dir entries: {e}")))?;
+    for entry in dir_iter {
+        let entry = entry.map_err(|e| TsgoError::TempFileFailed(format!("read dir entry: {e}")))?;
+        let name = entry.file_name();
+        if let Some(name) = name.to_str() {
+            entries.push(name.to_string());
+        }
+    }
+    entries.sort();
+
+    let mut hasher = Hasher::new();
+    for name in entries {
+        hasher.update(name.as_bytes());
+        hasher.update(&[0]);
+    }
+    Ok(Some(hasher.finalize().to_hex().to_string()))
+}
+
+fn dir_mtime_stamp(path: &Utf8Path) -> Result<Option<String>, TsgoError> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(TsgoError::TempFileFailed(format!(
+                "read dir metadata: {err}"
+            )))
+        }
+    };
+    let modified = match metadata.modified() {
+        Ok(modified) => modified,
+        Err(_) => return Ok(None),
+    };
+    let seconds = modified
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Ok(Some(seconds.to_string()))
 }
 
 fn read_sync_manifest(path: &Utf8Path) -> Option<SvelteKitSyncManifest> {

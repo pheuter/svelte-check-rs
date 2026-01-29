@@ -791,3 +791,109 @@ fn test_whitespace_changes_detected() {
     // Cleanup
     let _ = fs::remove_file(&test_file);
 }
+
+/// Test that changing the lockfile invalidates the cache.
+#[test]
+#[serial]
+fn test_lockfile_change_invalidates_cache() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+
+    // Ensure dependencies are installed
+    let node_modules = fixture_path.join("node_modules");
+    if !node_modules.exists() {
+        let output = Command::new("bun")
+            .arg("install")
+            .current_dir(&fixture_path)
+            .output()
+            .expect("Failed to run bun install");
+        assert!(output.status.success(), "bun install failed");
+    }
+
+    // Run svelte-kit sync
+    let _ = Command::new("bunx")
+        .args(["svelte-kit", "sync"])
+        .current_dir(&fixture_path)
+        .output();
+
+    // Clean cache to start fresh
+    let cache_path = cache_root(&fixture_path);
+    let _ = fs::remove_dir_all(&cache_path);
+
+    let lockfile_path = fixture_path.join("bun.lock");
+    let original_lockfile =
+        fs::read_to_string(&lockfile_path).expect("Failed to read bun.lock for lockfile test");
+
+    // Populate cache
+    let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
+
+    // Add a marker file to ensure cache gets cleared
+    let marker_path = cache_path.join("lockfile-invalidate-marker.txt");
+    fs::write(&marker_path, "marker").expect("Failed to write cache marker");
+
+    // Modify lockfile contents (whitespace change keeps JSON valid)
+    let modified_lockfile = format!("{original_lockfile}\n ");
+    fs::write(&lockfile_path, modified_lockfile).expect("Failed to modify bun.lock");
+
+    // Run svelte-check-rs again; cache should be cleared
+    let (_exit_code2, _diagnostics2) = run_check_json(&fixture_path);
+
+    assert!(
+        !marker_path.exists(),
+        "CACHE INVALIDATION BUG: Cache marker should be removed after lockfile change"
+    );
+
+    // Cleanup
+    let _ = fs::write(&lockfile_path, original_lockfile);
+}
+
+/// Test that node_modules changes invalidate the cache (reinstall scenario).
+#[test]
+#[serial]
+fn test_node_modules_change_invalidates_cache() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+
+    // Ensure dependencies are installed
+    let node_modules = fixture_path.join("node_modules");
+    if !node_modules.exists() {
+        let output = Command::new("bun")
+            .arg("install")
+            .current_dir(&fixture_path)
+            .output()
+            .expect("Failed to run bun install");
+        assert!(output.status.success(), "bun install failed");
+    }
+
+    // Run svelte-kit sync
+    let _ = Command::new("bunx")
+        .args(["svelte-kit", "sync"])
+        .current_dir(&fixture_path)
+        .output();
+
+    // Clean cache to start fresh
+    let cache_path = cache_root(&fixture_path);
+    let _ = fs::remove_dir_all(&cache_path);
+
+    // Populate cache
+    let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
+
+    // Add a marker file to ensure cache gets cleared
+    let marker_path = cache_path.join("node-modules-invalidate-marker.txt");
+    fs::write(&marker_path, "marker").expect("Failed to write cache marker");
+
+    // Touch node_modules to simulate reinstall (directory mtime changes)
+    sleep_for_timestamp_resolution();
+    let reinstall_marker = node_modules.join(".svelte-check-rs-reinstall-marker");
+    let _ = fs::remove_file(&reinstall_marker);
+    fs::write(&reinstall_marker, "reinstall").expect("Failed to write node_modules marker");
+
+    // Run svelte-check-rs again; cache should be cleared
+    let (_exit_code2, _diagnostics2) = run_check_json(&fixture_path);
+
+    assert!(
+        !marker_path.exists(),
+        "CACHE INVALIDATION BUG: Cache marker should be removed after node_modules change"
+    );
+
+    // Cleanup
+    let _ = fs::remove_file(&reinstall_marker);
+}

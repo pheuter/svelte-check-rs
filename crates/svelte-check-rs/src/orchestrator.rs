@@ -805,6 +805,11 @@ async fn run_single_check(
 
         if !transformed.files.is_empty() {
             let use_cache = !args.no_cache;
+            if use_cache {
+                if let Err(err) = TsgoRunner::ensure_dependency_cache(workspace) {
+                    eprintln!("Warning: {}", err);
+                }
+            }
             // Ensure SvelteKit types are generated before running tsgo
             let tsgo_start = Instant::now();
             let sync_start = Instant::now();
