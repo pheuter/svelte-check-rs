@@ -47,12 +47,41 @@ fn binary_path() -> PathBuf {
         .join("svelte-check-rs")
 }
 
-/// Path to the svelte-check-rs cache directory for a fixture
-fn cache_root(fixture_path: &std::path::Path) -> PathBuf {
+/// Path to the svelte-check-rs cache base directory for a fixture.
+/// This is the parent directory containing all namespaced caches.
+fn cache_base(fixture_path: &std::path::Path) -> PathBuf {
     fixture_path
         .join("node_modules")
         .join(".cache")
         .join("svelte-check-rs")
+}
+
+/// Find the namespaced cache directory for a fixture (after first run).
+/// Returns None if no cache exists yet.
+fn find_cache_namespace(fixture_path: &std::path::Path) -> Option<PathBuf> {
+    let base = cache_base(fixture_path);
+    if !base.exists() {
+        return None;
+    }
+    // Find the first directory entry that looks like a hash (64 hex chars)
+    fs::read_dir(&base).ok()?.find_map(|entry| {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        let name_str = name.to_str()?;
+        // Blake3 hash is 64 hex characters
+        if name_str.len() == 64 && name_str.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some(entry.path())
+        } else {
+            None
+        }
+    })
+}
+
+/// Path to the svelte-check-rs cache directory for a fixture.
+/// Panics if called before the cache has been populated.
+fn cache_root(fixture_path: &std::path::Path) -> PathBuf {
+    find_cache_namespace(fixture_path)
+        .expect("cache_root called before cache was populated - use cache_base for cleanup")
 }
 
 /// A diagnostic from the JSON output
@@ -166,8 +195,7 @@ fn test_cache_migration_from_legacy_path() {
     let _ = fs::create_dir_all(legacy_marker.parent().unwrap());
     fs::write(&legacy_marker, "legacy").expect("Failed to write legacy marker");
 
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     let (_exit_code, _diagnostics) = run_check_json(&fixture_path);
 
@@ -176,7 +204,7 @@ fn test_cache_migration_from_legacy_path() {
         "Legacy cache directory should be removed during migration"
     );
     assert!(
-        cache_path.exists(),
+        find_cache_namespace(&fixture_path).is_some(),
         "New cache directory should be created during migration"
     );
 }
@@ -205,13 +233,13 @@ fn test_no_cache_does_not_write_cache() {
         .output();
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let cache_base_path = cache_base(&fixture_path);
+    let _ = fs::remove_dir_all(&cache_base_path);
 
     let (_exit_code, _diagnostics) = run_check_json_with_args(&fixture_path, &["--no-cache"]);
 
     assert!(
-        !cache_path.exists(),
+        find_cache_namespace(&fixture_path).is_none(),
         "Cache directory should not be created when --no-cache is used"
     );
 }
@@ -228,8 +256,7 @@ fn test_modified_typescript_types_are_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
     let node_modules = fixture_path.join("node_modules");
@@ -343,8 +370,7 @@ fn test_new_typescript_file_is_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
     let node_modules = fixture_path.join("node_modules");
@@ -405,8 +431,7 @@ fn test_fixed_type_error_is_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
     let node_modules = fixture_path.join("node_modules");
@@ -493,8 +518,7 @@ fn test_imported_module_changes_propagate() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
     let node_modules = fixture_path.join("node_modules");
@@ -598,8 +622,7 @@ fn test_deleted_file_removed_from_cache() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
     let node_modules = fixture_path.join("node_modules");
@@ -635,7 +658,8 @@ async function fetchValue() {
     // Run svelte-check-rs to populate cache
     let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
 
-    // Verify the file is in the cache
+    // Verify the file is in the cache (get cache path after first run)
+    let cache_path = cache_root(&fixture_path);
     let cached_file = cache_path.join("src/lib/temp-file.ts");
     assert!(
         cached_file.exists(),
@@ -662,8 +686,7 @@ fn test_rapid_modifications_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
     let node_modules = fixture_path.join("node_modules");
@@ -729,8 +752,7 @@ fn test_whitespace_changes_detected() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
     let node_modules = fixture_path.join("node_modules");
@@ -816,8 +838,7 @@ fn test_lockfile_change_invalidates_cache() {
         .output();
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     let lockfile_path = fixture_path.join("bun.lock");
     let original_lockfile =
@@ -826,7 +847,8 @@ fn test_lockfile_change_invalidates_cache() {
     // Populate cache
     let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
 
-    // Add a marker file to ensure cache gets cleared
+    // Add a marker file to ensure cache gets cleared (get cache path after first run)
+    let cache_path = cache_root(&fixture_path);
     let marker_path = cache_path.join("lockfile-invalidate-marker.txt");
     fs::write(&marker_path, "marker").expect("Failed to write cache marker");
 
@@ -870,13 +892,13 @@ fn test_node_modules_change_invalidates_cache() {
         .output();
 
     // Clean cache to start fresh
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+    let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Populate cache
     let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
 
-    // Add a marker file to ensure cache gets cleared
+    // Add a marker file to ensure cache gets cleared (get cache path after first run)
+    let cache_path = cache_root(&fixture_path);
     let marker_path = cache_path.join("node-modules-invalidate-marker.txt");
     fs::write(&marker_path, "marker").expect("Failed to write cache marker");
 

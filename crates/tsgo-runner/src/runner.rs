@@ -422,7 +422,8 @@ impl TsgoRunner {
     fn project_cache_root_for(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
         let node_modules = Self::find_node_modules_dir(project_root)
             .ok_or_else(|| TsgoError::NodeModulesNotFound(project_root.to_owned()))?;
-        let cache_root = node_modules.join(".cache/svelte-check-rs");
+        let cache_base = node_modules.join(".cache/svelte-check-rs");
+        let cache_root = cache_base.join(Self::project_cache_namespace(project_root));
 
         let legacy_cache = project_root.join(".svelte-check-rs");
         if legacy_cache.exists() {
@@ -434,6 +435,15 @@ impl TsgoRunner {
             .map_err(|e| TsgoError::TempFileFailed(format!("create cache dir: {e}")))?;
 
         Ok(cache_root)
+    }
+
+    fn project_cache_namespace(project_root: &Utf8Path) -> String {
+        let cleaned = clean_path(project_root);
+        Hasher::new()
+            .update(cleaned.as_str().as_bytes())
+            .finalize()
+            .to_hex()
+            .to_string()
     }
 
     /// Attempts to find tsgo in workspace, PATH, or common locations.
@@ -2211,5 +2221,27 @@ mod tests {
         assert!(files
             .find_by_original(Utf8Path::new("src/App.svelte"))
             .is_some());
+    }
+
+    #[test]
+    fn test_project_cache_root_namespaced() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let node_modules = temp_root.join("node_modules");
+        std::fs::create_dir_all(&node_modules).expect("node_modules");
+
+        let project_a = temp_root.join("apps/alpha");
+        let project_b = temp_root.join("apps/beta");
+        std::fs::create_dir_all(&project_a).expect("project a");
+        std::fs::create_dir_all(&project_b).expect("project b");
+
+        let cache_a = TsgoRunner::project_cache_root_for(&project_a).expect("cache a");
+        let cache_b = TsgoRunner::project_cache_root_for(&project_b).expect("cache b");
+
+        assert_ne!(cache_a, cache_b);
+        let cache_base = node_modules.join(".cache/svelte-check-rs");
+        assert!(cache_a.starts_with(&cache_base));
+        assert!(cache_b.starts_with(&cache_base));
     }
 }
