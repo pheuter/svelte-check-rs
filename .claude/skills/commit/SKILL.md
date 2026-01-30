@@ -46,6 +46,7 @@ $ARGUMENTS
    - Potential bugs or errors
    - Security concerns (no secrets, credentials, .env files)
    - Missing or incomplete implementations
+   - Consider running `cargo test` to verify changes don't break existing functionality
 
 3. If issues are found, use **AskUserQuestion** to ask how to proceed:
 
@@ -55,7 +56,8 @@ $ARGUMENTS
 4. If changes look good (or user approves):
 
    - If user requested a PR and we're on main/master, create a new branch first with a descriptive name based on the changes
-   - **IMPORTANT: Run `bun format` to format the entire workspace before staging.** This must be done every time, even if you think files are already formatted.
+   - **IMPORTANT: Run `cargo fmt` to format the entire workspace before staging.** This must be done every time, even if you think files are already formatted.
+   - Run `cargo clippy --all-targets -- -D warnings` to check for lint issues. Fix any warnings before committing.
    - Stage all relevant changes (avoid staging secrets or generated files)
    - Create a commit with a conventional commit message based on the changes
    - Push to the current branch (use `-u origin <branch>` if new branch)
@@ -71,7 +73,8 @@ If there are no changes to commit, let me know.
 ## Commit Message Guidelines
 
 - Use conventional commits format: `type(scope): description`
-- Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `style`, `perf`
+- Types: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`
+- Scopes are optional; use semantic scopes as needed (examples: `parser`, `transformer`, `diagnostics`, `a11y`, `css`, `cli`, `tsgo`, `bun`, `compiler`)
 - Keep the first line under 72 characters
 - Reference the "why" not just the "what"
 - Match the style of recent commits shown above
@@ -80,10 +83,11 @@ If there are no changes to commit, let me know.
 
 - PR title should match the commit message style (conventional commits)
 - PR description should include:
-  - Brief summary of changes
+  - Brief summary of changes using clear headings (e.g., **Summary**, **Details**, **Testing**)
   - Any relevant context or motivation
   - Testing notes if applicable
 - Use `--draft` when work is in progress or needs review before finalizing
+- When merging PRs, use **squash** merges and delete the branch (local + remote)
 
 ## Tool Usage
 
