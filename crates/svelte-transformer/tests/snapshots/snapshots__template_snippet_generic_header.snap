@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 25
 expression: output
 ---
 === Source ===
@@ -152,12 +153,6 @@ declare module "svelte" {
     }
   ): Exports;
 }
-
-// === SNIPPET DECLARATIONS ===
-function __svelte_snippet_params_relationshipFormFields<
-  T extends { relationshipType: string; shortName?: string | undefined },
->(args: T) {}
-const relationshipFormFields: __SvelteSnippet<Parameters<typeof __svelte_snippet_params_relationshipFormFields>> = null as any;
 
 
 // === TEMPLATE TYPE-CHECK BLOCK ===

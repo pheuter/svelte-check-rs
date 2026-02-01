@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 25
 expression: output
 ---
 === Source ===
@@ -156,13 +157,12 @@ declare module "svelte" {
 }
 
 // === INSTANCE SCRIPT ===
+async function __svelte_render() {
 
     let items = $state([{ children: [1, 2, 3] }]);
 
 
-// === TEMPLATE TYPE-CHECK BLOCK ===
-// This is never executed, just type-checked
-async function __svelte_template_check__() {
+// === TEMPLATE TYPE-CHECK ===
   const __each_0 = items;
   for (const item of __each_0) {
     const __each_1 = item.children;
@@ -170,11 +170,13 @@ async function __svelte_template_check__() {
       child;
     }
   }
+return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, events: {} };
 }
 
 // === COMPONENT TYPE EXPORT ===
-type __SvelteProps_Test_ = __SvelteLoosen<{}>;
-declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_>;
+type __SvelteProps_Test_ = Awaited<ReturnType<typeof __svelte_render>>["props"];
+type __SvelteExports_Test_ = Awaited<ReturnType<typeof __svelte_render>>["exports"];
+declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __SvelteExports_Test_>;
 export default __SvelteComponent_Test_;
 
 

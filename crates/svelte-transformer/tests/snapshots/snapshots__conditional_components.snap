@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 25
 expression: output
 ---
 === Source ===
@@ -167,10 +168,14 @@ declare module "svelte" {
 }
 
 // === INSTANCE SCRIPT ===
+import LoadingSpinner from './LoadingSpinner.svelte';
+import ErrorMessage from './ErrorMessage.svelte';
+import DataDisplay from './DataDisplay.svelte';
+async function __svelte_render() {
 
-    import LoadingSpinner from './LoadingSpinner.svelte';
-    import ErrorMessage from './ErrorMessage.svelte';
-    import DataDisplay from './DataDisplay.svelte';
+                                                         
+                                                     
+                                                   
 
     type State =
         | { status: 'loading' }
@@ -180,9 +185,7 @@ declare module "svelte" {
     let state: State = $state({ status: 'loading' });
 
 
-// === TEMPLATE TYPE-CHECK BLOCK ===
-// This is never executed, just type-checked
-async function __svelte_template_check__() {
+// === TEMPLATE TYPE-CHECK ===
   if (state.status === 'loading') {
     { const __component_0 = __svelte_ensure_component(LoadingSpinner); __component_0(__svelte_any(), {
     }); }
@@ -195,12 +198,14 @@ async function __svelte_template_check__() {
       items: state.data,
     }); }
   }
+return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, events: {} };
 }
 
 // === COMPONENT TYPE EXPORT ===
-type __SvelteProps_Test_ = __SvelteLoosen<{}>;
-declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_>;
+type __SvelteProps_Test_ = Awaited<ReturnType<typeof __svelte_render>>["props"];
+type __SvelteExports_Test_ = Awaited<ReturnType<typeof __svelte_render>>["exports"];
+declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __SvelteExports_Test_>;
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 12 ===
+=== Source Map Mappings: 15 ===

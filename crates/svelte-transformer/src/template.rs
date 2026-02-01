@@ -411,6 +411,8 @@ pub struct TemplateCheckResult {
     pub expressions: Vec<TemplateExpression>,
     /// Mappings from generated positions to original spans.
     pub mappings: Vec<GeneratedMapping>,
+    /// Store names referenced via $store syntax inside the template.
+    pub store_names: Vec<SmolStr>,
 }
 
 /// Generates a TypeScript type-checking block for the template.
@@ -432,8 +434,12 @@ pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckR
             code: String::new(),
             expressions: Vec::new(),
             mappings: Vec::new(),
+            store_names: Vec::new(),
         };
     }
+
+    let mut store_names: Vec<_> = ctx.store_names.iter().cloned().collect();
+    store_names.sort();
 
     let mut code = String::new();
     code.push_str("\n// === TEMPLATE TYPE-CHECK BLOCK ===\n");
@@ -443,10 +449,8 @@ pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckR
     // Track the offset where ctx.output will start in the final code
     let mut preamble_len = code.len();
 
-    if !ctx.store_names.is_empty() {
-        let mut stores: Vec<_> = ctx.store_names.iter().collect();
-        stores.sort();
-        for store in stores {
+    if !store_names.is_empty() {
+        for store in &store_names {
             let store_decl = format!("  let ${} = __svelte_store_get({});\n", store, store);
             code.push_str(&store_decl);
         }
@@ -471,6 +475,67 @@ pub fn generate_template_check_with_spans(fragment: &Fragment) -> TemplateCheckR
         code,
         expressions: ctx.expressions,
         mappings,
+        store_names,
+    }
+}
+
+/// Generates just the template body without a function wrapper.
+///
+/// This is used when the template needs to be embedded within a render function
+/// to preserve TypeScript's control flow analysis from the script block.
+/// The returned code should be placed in the same scope as the script content
+/// to allow type narrowing to propagate correctly.
+pub fn generate_template_body_with_spans(
+    fragment: &Fragment,
+    emit_store_decls: bool,
+) -> TemplateCheckResult {
+    let mut ctx = TemplateContext::new();
+    ctx.generate_fragment(fragment);
+
+    if ctx.expressions.is_empty() && ctx.output.is_empty() {
+        return TemplateCheckResult {
+            code: String::new(),
+            expressions: Vec::new(),
+            mappings: Vec::new(),
+            store_names: Vec::new(),
+        };
+    }
+
+    let mut store_names: Vec<_> = ctx.store_names.iter().cloned().collect();
+    store_names.sort();
+
+    let mut code = String::new();
+    code.push_str("\n// === TEMPLATE TYPE-CHECK ===\n");
+
+    // Track the offset where ctx.output will start in the final code
+    let mut preamble_len = code.len();
+
+    if emit_store_decls && !store_names.is_empty() {
+        for store in &store_names {
+            let store_decl = format!("let ${} = __svelte_store_get({});\n", store, store);
+            code.push_str(&store_decl);
+        }
+        preamble_len = code.len();
+    }
+
+    code.push_str(&ctx.output);
+
+    // Adjust mapping offsets to account for the preamble
+    let mappings = ctx
+        .mappings
+        .into_iter()
+        .map(|m| GeneratedMapping {
+            generated_start: m.generated_start + preamble_len,
+            generated_end: m.generated_end + preamble_len,
+            original_span: m.original_span,
+        })
+        .collect();
+
+    TemplateCheckResult {
+        code,
+        expressions: ctx.expressions,
+        mappings,
+        store_names,
     }
 }
 

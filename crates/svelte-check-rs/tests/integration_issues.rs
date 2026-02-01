@@ -1383,3 +1383,156 @@ fn test_namespace_component_generic_snippets_no_ts_errors() {
         "namespace-component-generic-snippets/+page.svelte",
     );
 }
+
+// ============================================================================
+// ISSUE #93: TYPE NARROWING IN TEMPLATES
+// ============================================================================
+// These tests verify that type narrowing from script blocks is correctly
+// propagated to template expressions. TypeScript's control flow analysis
+// should recognize narrowing patterns like:
+//   - `if (!x) throw ...` - x is narrowed after the throw
+//   - `if (!x) return` - x is narrowed after the return
+//   - Type guard functions - x is narrowed after the guard
+//
+// The bug was that svelte-check-rs generated the template check as a separate
+// function, breaking TypeScript's control flow analysis which only works
+// within a single scope.
+//
+// Test files: test-fixtures/projects/sveltekit-bundler/src/routes/issue-93-*/
+/// Test that type narrowing after throw is recognized in templates.
+///
+/// Issue #93: After `if (!x) { throw ... }`, x should be narrowed to exclude
+/// undefined/null in the template.
+///
+/// Fixture: src/routes/issue-93-type-narrowing-throw/+page.svelte
+/// Line numbers for reference:
+///   Line 17-19: if (!mp_trj_data) { throw ... }
+///   Line 25: <a href={mp_trj_data.figshare}> - should NOT produce "possibly undefined" error
+#[test]
+#[serial]
+fn test_issue_93_type_narrowing_after_throw() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    // Verify no "possibly undefined" errors for this file
+    let undefined_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-93-type-narrowing-throw/+page.svelte")
+                && (d.code.contains("TS18048") || d.message.contains("possibly 'undefined'"))
+        })
+        .collect();
+
+    assert!(
+        undefined_errors.is_empty(),
+        "Issue #93: Type narrowing after throw not recognized in template:\n{:#?}",
+        undefined_errors
+    );
+}
+
+/// Test that type narrowing with type guards works in templates.
+///
+/// This tests that type guard functions (`x is T`) correctly narrow types
+/// in the template after a guard check.
+///
+/// Fixture: src/routes/issue-93-type-narrowing-guard/+page.svelte
+#[test]
+#[serial]
+fn test_issue_93_type_narrowing_with_guards() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    // Verify no type errors for this file
+    let type_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-93-type-narrowing-guard/+page.svelte")
+                && d.code.starts_with("TS")
+        })
+        .collect();
+
+    assert!(
+        type_errors.is_empty(),
+        "Issue #93: Type guard narrowing not recognized in template:\n{:#?}",
+        type_errors
+    );
+}
+
+/// Test that {#if} blocks in templates work correctly with nullable types.
+///
+/// This tests that `{#if data.user}` correctly narrows data.user inside the block.
+///
+/// Fixture: src/routes/issue-93-type-narrowing-return/+page.svelte
+#[test]
+#[serial]
+fn test_issue_93_if_block_narrowing() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    // Verify no null/undefined errors for this file
+    let null_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-93-type-narrowing-return/+page.svelte")
+                && (d.code.contains("TS18048")
+                    || d.code.contains("TS18047")
+                    || d.message.contains("possibly 'null'")
+                    || d.message.contains("possibly 'undefined'"))
+        })
+        .collect();
+
+    assert!(
+        null_errors.is_empty(),
+        "Issue #93: If-block narrowing not working correctly:\n{:#?}",
+        null_errors
+    );
+}
+
+/// Test that store alias declarations inside the render function do not
+/// conflict with template store usage.
+///
+/// Regression: template store declarations were emitted alongside render
+/// scope store aliases, causing duplicate `$store` declarations and
+/// "Modifiers cannot appear here" errors in SvelteKit apps.
+///
+/// Fixture: src/routes/issue-93-store-alias/+page.svelte
+#[test]
+#[serial]
+fn test_issue_93_store_alias_no_redeclare() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-93-store-alias/+page.svelte");
+}
+
+/// Test that module script exports can reference top-level snippets without
+/// triggering "Cannot find name" errors.
+///
+/// Fixture: src/routes/issue-93-snippet-export/+page.svelte
+#[test]
+#[serial]
+fn test_issue_93_snippet_module_export() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-93-snippet-export/+page.svelte");
+}
+
+/// Test that snippets referencing instance-only types are not hoisted into
+/// module scope, avoiding false "Cannot find name" errors.
+///
+/// Fixture: src/routes/issue-93-snippet-instance-typeof/+page.svelte
+#[test]
+#[serial]
+fn test_issue_93_snippet_instance_typeof() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(
+        &diagnostics,
+        "issue-93-snippet-instance-typeof/+page.svelte",
+    );
+}

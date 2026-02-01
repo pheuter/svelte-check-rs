@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 25
 expression: output
 ---
 === Source ===
@@ -179,6 +180,7 @@ declare module "svelte" {
 }
 
 // === INSTANCE SCRIPT ===
+async function __svelte_render() {
 
   type EventHandlers = {
     on_play?: () => void
@@ -224,9 +226,7 @@ declare module "svelte" {
       .filter((t, i, arr) => t >= 0 && t < total_frames && arr.indexOf(t) === i)
   })
 
-
-// === COMPONENT TYPE EXPORT ===
-type __SvelteProps_Test_ = __SvelteLoosen<EventHandlers & {
+return { props: null as any as EventHandlers & {
     trajectory?: unknown
     layout?: `auto` | `horizontal` | `vertical`
     display_mode?:
@@ -239,8 +239,13 @@ type __SvelteProps_Test_ = __SvelteLoosen<EventHandlers & {
       energy?: string
       [key: string]: string | undefined
     }
-  }>;
-declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_>;
+  }, exports: {}, slots: {}, events: {} };
+}
+
+// === COMPONENT TYPE EXPORT ===
+type __SvelteProps_Test_ = Awaited<ReturnType<typeof __svelte_render>>["props"];
+type __SvelteExports_Test_ = Awaited<ReturnType<typeof __svelte_render>>["exports"];
+declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __SvelteExports_Test_>;
 export default __SvelteComponent_Test_;
 
 
