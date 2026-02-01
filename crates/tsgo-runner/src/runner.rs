@@ -38,22 +38,11 @@ declare global {
     (internal: unknown, props: Props & __SvelteCssProps): Exports;
   }
 
-  type __SvelteComponentProps<T> =
-    T extends __SvelteComponent<infer P, any> ? P :
-    T extends (internal: any, props: infer P) => any ? P :
-    T extends { new (options: { target: any; props?: infer P }): any } ? NonNullable<P> :
-    Record<string, any>;
-
-  type __SvelteComponentExports<T> =
-    T extends __SvelteComponent<any, infer E> ? E :
-    T extends (internal: any, props: any) => infer E ? E :
-    T extends { new (...args: any): infer E } ? E :
-    Record<string, any>;
-
-  type __SvelteComponentFrom<T> = __SvelteComponent<
-    __SvelteComponentProps<T> extends Record<string, any> ? __SvelteComponentProps<T> : Record<string, any>,
-    __SvelteComponentExports<T> extends Record<string, any> ? __SvelteComponentExports<T> : Record<string, any>
-  >;
+  // Normalize legacy class components to a callable form.
+  type __SvelteCallableComponent<T> =
+    T extends { new (options: { target: any; props?: infer P }): infer I }
+      ? (internal: any, props: NonNullable<P>) => I
+      : T;
 
   type __SvelteSnippet<T extends any[] = any[]> = SvelteSnippet<T>;
 
@@ -177,10 +166,9 @@ declare global {
 
   declare function __svelte_catch_error<T>(value: T): unknown;
 
-  // Component instantiation helper - returns the component as-is for type checking
-  // Since __SvelteComponent now has both constructor and call signatures, we just need
-  // to ensure the component is non-null
-  declare function __svelte_ensure_component<T>(type: T): __SvelteComponentFrom<NonNullable<T>>;
+  // Component helper - returns the component as-is for type checking while
+  // widening empty-prop `Component` types and removing null/undefined.
+  declare function __svelte_ensure_component<T>(type: T): NonNullable<__SvelteCallableComponent<T>>;
 }
 
 declare module "svelte" {

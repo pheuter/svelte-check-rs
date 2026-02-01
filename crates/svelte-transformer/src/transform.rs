@@ -1131,22 +1131,11 @@ interface __SvelteComponent<
   (internal: unknown, props: Props & __SvelteCssProps): Exports;
 }
 
-type __SvelteComponentProps<T> =
-  T extends __SvelteComponent<infer P, any> ? P :
-  T extends (internal: any, props: infer P) => any ? P :
-  T extends { new (options: { target: any; props?: infer P }): any } ? NonNullable<P> :
-  Record<string, any>;
-
-type __SvelteComponentExports<T> =
-  T extends __SvelteComponent<any, infer E> ? E :
-  T extends (internal: any, props: any) => infer E ? E :
-  T extends { new (...args: any): infer E } ? E :
-  Record<string, any>;
-
-type __SvelteComponentFrom<T> = __SvelteComponent<
-  __SvelteComponentProps<T> extends Record<string, any> ? __SvelteComponentProps<T> : Record<string, any>,
-  __SvelteComponentExports<T> extends Record<string, any> ? __SvelteComponentExports<T> : Record<string, any>
->;
+// Normalize legacy class components to a callable form.
+type __SvelteCallableComponent<T> =
+  T extends { new (options: { target: any; props?: infer P }): infer I }
+    ? (internal: any, props: NonNullable<P>) => I
+    : T;
 
 type __SvelteEachItem<T> =
   T extends ArrayLike<infer U> ? U :
@@ -1250,10 +1239,9 @@ declare function __svelte_css_prop(props: Record<string, any>): {};
 
 declare const __svelte_any: any;
 
-// Component instantiation helper - returns the component as-is for type checking
-// Since __SvelteComponent now has both constructor and call signatures, we just need
-// to ensure the component is non-null
-declare function __svelte_ensure_component<T>(type: T): __SvelteComponentFrom<NonNullable<T>>;
+// Component helper - returns the component as-is for type checking while
+// widening empty-prop `Component` types and removing null/undefined.
+declare function __svelte_ensure_component<T>(type: T): NonNullable<__SvelteCallableComponent<T>>;
 
 declare module "svelte" {
   export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
@@ -1562,7 +1550,7 @@ declare module "svelte" {
         format!(
             "type {props_name}{generics_def} = ReturnType<typeof __svelte_render{generics_ref}>[\"props\"];\n\
 declare const {internal_name}: {{\n\
-  {generics_def}(this: void, internals: any, props: {props_name}{generics_ref}): ReturnType<typeof __svelte_render{generics_ref}>[\"exports\"];\n\
+  {generics_def}(this: void, internals: any, props: {props_name}{generics_ref} & __SvelteCssProps): ReturnType<typeof __svelte_render{generics_ref}>[\"exports\"];\n\
   element?: typeof HTMLElement;\n\
   z_$$bindings?: any;\n\
 }};\n\

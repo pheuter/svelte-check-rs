@@ -1319,24 +1319,19 @@ impl TemplateContext {
         );
 
         // Track the component name position for source mapping
-        // Use constructor syntax with __svelte_ensure_component to support both:
-        // - Legacy class components (typeof SvelteComponent)
-        // - Svelte 5 function components (Component type)
-        // Pattern: { const $$_CompC = __svelte_ensure_component(Comp); new $$_CompC({ target, props }); }
+        // Normalize to a callable component and invoke it for type checking.
         let id = self.next_id();
-        let constructor_var = format!("__component_{}", id);
+        let component_var = format!("__component_{}", id);
         let indent_str = self.indent_str();
         self.output.push_str(&indent_str);
         self.output.push_str(&format!(
             "{{ const {} = __svelte_ensure_component(",
-            constructor_var
+            component_var
         ));
         self.record_mapping_at_current_pos(name, name_span);
         self.output.push_str(name);
-        self.output.push_str(&format!(
-            "); new {}({{ target: __svelte_any(), props: {{\n",
-            constructor_var
-        ));
+        self.output
+            .push_str(&format!("); {}(__svelte_any(), {{\n", component_var));
         self.indent += 1;
 
         // First pass: build the props object with Normal, Shorthand, Spread, and bind directives
@@ -1579,9 +1574,9 @@ impl TemplateContext {
             self.emit("},");
         }
 
-        // Close the props object, options object, component call, and block scope
+        // Close the props object, component call, and block scope
         self.indent -= 1;
-        self.emit("}}); }");
+        self.emit("}); }");
 
         // Second pass: handle directives separately (bindings, events, etc.)
         for attr in attrs {
