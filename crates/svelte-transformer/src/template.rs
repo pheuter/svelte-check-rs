@@ -1107,12 +1107,21 @@ impl TemplateContext {
                     continue;
                 }
                 Attribute::Attach(a) => {
-                    // {@attach expr} => [Symbol("@attach")]: expr
-                    self.emit_expression(
+                    // {@attach expr} - ensure attachment with properly typed element
+                    // This provides type context while allowing falsy attachments
+                    let element_type = action_target_type(element_name);
+                    let transformed = self.track_inline_expression(
                         &a.expression,
                         a.expression_span,
                         ExpressionContext::AttachTag,
                     );
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.output.push_str("__svelte_ensure_attachment(");
+                    self.record_mapping_at_current_pos(&transformed, a.expression_span);
+                    self.output.push_str(&transformed);
+                    self.output
+                        .push_str(&format!(", null as unknown as {});\n", element_type));
                 }
                 Attribute::CssCustomProperty { value, .. } => {
                     // CSS custom property attributes (--var="value")
@@ -1310,11 +1319,24 @@ impl TemplateContext {
         );
 
         // Track the component name position for source mapping
-        // Emit indent first, then record the mapping at the current position
+        // Use constructor syntax with __svelte_ensure_component to support both:
+        // - Legacy class components (typeof SvelteComponent)
+        // - Svelte 5 function components (Component type)
+        // Pattern: { const $$_CompC = __svelte_ensure_component(Comp); new $$_CompC({ target, props }); }
+        let id = self.next_id();
+        let constructor_var = format!("__component_{}", id);
         let indent_str = self.indent_str();
         self.output.push_str(&indent_str);
+        self.output.push_str(&format!(
+            "{{ const {} = __svelte_ensure_component(",
+            constructor_var
+        ));
         self.record_mapping_at_current_pos(name, name_span);
-        self.output.push_str(&format!("{}(null as any, {{\n", name));
+        self.output.push_str(name);
+        self.output.push_str(&format!(
+            "); new {}({{ target: __svelte_any(), props: {{\n",
+            constructor_var
+        ));
         self.indent += 1;
 
         // First pass: build the props object with Normal, Shorthand, Spread, and bind directives
@@ -1557,9 +1579,9 @@ impl TemplateContext {
             self.emit("},");
         }
 
-        // Close the props object and component call
+        // Close the props object, options object, component call, and block scope
         self.indent -= 1;
-        self.emit("});");
+        self.emit("}}); }");
 
         // Second pass: handle directives separately (bindings, events, etc.)
         for attr in attrs {

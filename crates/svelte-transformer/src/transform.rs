@@ -1090,7 +1090,7 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     // Add Svelte imports - alias to avoid collisions with user imports
     if helpers_import_path.is_none() {
         let imports = String::from(
-            "import type { Component as __SvelteComponentType, ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet } from 'svelte';\n\
+            "import type { Component as __SvelteComponentType, ComponentInternals as __SvelteComponentInternals, Snippet as __SvelteSnippet, SvelteComponent as __SvelteLegacyComponent } from 'svelte';\n\
 import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __SvelteHTMLAttributes } from 'svelte/elements';\n",
         );
         output.push_str(&imports);
@@ -1120,10 +1120,33 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
     let helpers = r#"// Helper functions for template type-checking
 type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
-type __SvelteComponent<
+// Isomorphic component type that supports both constructor (new) and call signatures
+interface __SvelteComponent<
   Props extends Record<string, any> = {},
   Exports extends Record<string, any> = {}
-> = __SvelteComponentType<Props & __SvelteCssProps, Exports>;
+> {
+  // Constructor signature for `new Component({ target, props })`
+  new (options: { target: any; props?: Props & __SvelteCssProps }): __SvelteLegacyComponent<Props, any, any> & Exports;
+  // Call signature for Svelte 5 function components
+  (internal: unknown, props: Props & __SvelteCssProps): Exports;
+}
+
+type __SvelteComponentProps<T> =
+  T extends __SvelteComponent<infer P, any> ? P :
+  T extends (internal: any, props: infer P) => any ? P :
+  T extends { new (options: { target: any; props?: infer P }): any } ? NonNullable<P> :
+  Record<string, any>;
+
+type __SvelteComponentExports<T> =
+  T extends __SvelteComponent<any, infer E> ? E :
+  T extends (internal: any, props: any) => infer E ? E :
+  T extends { new (...args: any): infer E } ? E :
+  Record<string, any>;
+
+type __SvelteComponentFrom<T> = __SvelteComponent<
+  __SvelteComponentProps<T> extends Record<string, any> ? __SvelteComponentProps<T> : Record<string, any>,
+  __SvelteComponentExports<T> extends Record<string, any> ? __SvelteComponentExports<T> : Record<string, any>
+>;
 
 type __SvelteEachItem<T> =
   T extends ArrayLike<infer U> ? U :
@@ -1197,6 +1220,13 @@ type __SvelteEventHandler<K extends string, E extends string, A = {}> =
           ? H | undefined
           : ((e: Event) => void) | null | undefined;
 
+type __SvelteAttachment<T extends EventTarget = Element> =
+  (element: T) => void | (() => void);
+declare function __svelte_ensure_attachment<T extends EventTarget>(
+  attachment: __SvelteAttachment<T> | false | null | undefined,
+  element: T
+): void;
+
 type __SvelteActionReturnType = {
   update?: (parameter: any) => void;
   destroy?: () => void;
@@ -1219,6 +1249,11 @@ declare function __svelte_create_element<K extends string, T>(
 declare function __svelte_css_prop(props: Record<string, any>): {};
 
 declare const __svelte_any: any;
+
+// Component instantiation helper - returns the component as-is for type checking
+// Since __SvelteComponent now has both constructor and call signatures, we just need
+// to ensure the component is non-null
+declare function __svelte_ensure_component<T>(type: T): __SvelteComponentFrom<NonNullable<T>>;
 
 declare module "svelte" {
   export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
