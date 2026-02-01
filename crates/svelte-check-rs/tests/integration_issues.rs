@@ -1340,3 +1340,46 @@ fn test_issue_46_regex_edge_cases_parser_only() {
         parse_errors
     );
 }
+
+// ============================================================================
+// ISSUES #87-#90: ATTACHMENTS, DYNAMIC COMPONENTS, SNAPSHOT EXPORTS, SNIPPETS
+// ============================================================================
+
+/// Verify that issues #87-#90 do not produce TypeScript diagnostics.
+#[test]
+#[serial]
+fn test_issue_87_90_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-87-attach-details/+page.svelte");
+    assert_no_diagnostics_in_file(&diagnostics, "issue-88-dynamic-components/+page.svelte");
+    assert_no_diagnostics_in_file(&diagnostics, "snapshot-export/snapshot-test.svelte.ts");
+    assert_no_diagnostics_in_file(&diagnostics, "snippet-passing/+page.svelte");
+}
+
+/// Verify complex snippet props remain contextually typed (regression guard).
+#[test]
+#[serial]
+fn test_complex_snippet_contextual_typing_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(
+        &diagnostics,
+        "complex-snippet-contextual-typing/+page.svelte",
+    );
+}
+
+/// Verify namespace components + generic props + snippets remain contextually typed.
+#[test]
+#[serial]
+fn test_namespace_component_generic_snippets_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+
+    assert_no_diagnostics_in_file(
+        &diagnostics,
+        "namespace-component-generic-snippets/+page.svelte",
+    );
+}

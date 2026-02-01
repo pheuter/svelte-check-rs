@@ -1,6 +1,11 @@
 {
   "permissions": {
-    "allow": ["Skill(commit *)"],
+    "allow": [
+      "Skill(commit *)",
+      "Bash",
+      "WebFetch",
+      "WebSearch"
+    ],
     "deny": [],
     "ask": []
   },

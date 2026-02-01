@@ -14,6 +14,16 @@ fn find_offset_of(text: &str, needle: &str) -> Option<u32> {
 
 /// Transform source and verify that a generated pattern maps back to the expected source line.
 fn verify_line_mapping(source: &str, generated_pattern: &str, expected_source_line: u32) {
+    verify_line_mapping_with_offset(source, generated_pattern, 0, expected_source_line);
+}
+
+/// Transform source and verify that a generated pattern (with an offset) maps back to the expected source line.
+fn verify_line_mapping_with_offset(
+    source: &str,
+    generated_pattern: &str,
+    pattern_offset: u32,
+    expected_source_line: u32,
+) {
     let parsed = parse(source);
     let result = transform(
         &parsed.document,
@@ -27,11 +37,12 @@ fn verify_line_mapping(source: &str, generated_pattern: &str, expected_source_li
     // Find the pattern in the generated TSX
     let generated_offset = find_offset_of(&result.tsx_code, generated_pattern)
         .unwrap_or_else(|| panic!("Pattern '{}' not found in generated TSX", generated_pattern));
+    let mapping_offset = generated_offset + pattern_offset;
 
     // Look up the original position
     let original_offset = result
         .source_map
-        .original_position(ByteOffset::from(generated_offset));
+        .original_position(ByteOffset::from(mapping_offset));
 
     match original_offset {
         Some(offset) => {
@@ -48,7 +59,7 @@ fn verify_line_mapping(source: &str, generated_pattern: &str, expected_source_li
                 generated_pattern,
                 expected_source_line,
                 actual_line,
-                get_context(&result.tsx_code, generated_offset as usize, 50),
+                get_context(&result.tsx_code, mapping_offset as usize, 50),
                 get_line_context(source, expected_source_line),
             );
         }
@@ -57,11 +68,18 @@ fn verify_line_mapping(source: &str, generated_pattern: &str, expected_source_li
                 "No source mapping found for pattern '{}' at generated offset {}.\n\
                  Generated TSX around pattern:\n{}",
                 generated_pattern,
-                generated_offset,
-                get_context(&result.tsx_code, generated_offset as usize, 50),
+                mapping_offset,
+                get_context(&result.tsx_code, mapping_offset as usize, 50),
             );
         }
     }
+}
+
+/// Verify a component name mapping in the __svelte_ensure_component call.
+fn verify_component_line_mapping(source: &str, component_name: &str, expected_source_line: u32) {
+    let pattern = format!("__svelte_ensure_component({})", component_name);
+    let offset = "__svelte_ensure_component(".len() as u32;
+    verify_line_mapping_with_offset(source, &pattern, offset, expected_source_line);
 }
 
 /// Get context around a position in text.
@@ -139,10 +157,10 @@ fn test_component_name_line_number() {
     import Button from './Button.svelte';
 </script>
 
-<Button>Click me</Button>"#;
+    <Button>Click me</Button>"#;
 
     // The component <Button> is on line 5
-    verify_line_mapping(source, "Button(null as any", 5);
+    verify_component_line_mapping(source, "Button", 5);
 }
 
 #[test]
@@ -159,9 +177,9 @@ fn test_multiple_components_line_numbers() {
 </Content>
 <Footer />"#;
 
-    verify_line_mapping(source, "Header(null as any", 7);
-    verify_line_mapping(source, "Content(null as any", 8);
-    verify_line_mapping(source, "Footer(null as any", 11);
+    verify_component_line_mapping(source, "Header", 7);
+    verify_component_line_mapping(source, "Content", 8);
+    verify_component_line_mapping(source, "Footer", 11);
 }
 
 #[test]
@@ -177,8 +195,8 @@ fn test_nested_component_line_numbers() {
     </Inner>
 </Outer>"#;
 
-    verify_line_mapping(source, "Outer(null as any", 6);
-    verify_line_mapping(source, "Inner(null as any", 7);
+    verify_component_line_mapping(source, "Outer", 6);
+    verify_component_line_mapping(source, "Inner", 7);
 }
 
 #[test]
@@ -194,10 +212,10 @@ fn test_namespaced_component_line_numbers() {
     </Dialog.Content>
 </Dialog.Root>"#;
 
-    verify_line_mapping(source, "Dialog.Root(null as any", 5);
-    verify_line_mapping(source, "Dialog.Trigger(null as any", 6);
-    verify_line_mapping(source, "Dialog.Content(null as any", 7);
-    verify_line_mapping(source, "Dialog.Title(null as any", 8);
+    verify_component_line_mapping(source, "Dialog.Root", 5);
+    verify_component_line_mapping(source, "Dialog.Trigger", 6);
+    verify_component_line_mapping(source, "Dialog.Content", 7);
+    verify_component_line_mapping(source, "Dialog.Title", 8);
 }
 
 // ============================================================================
@@ -258,8 +276,8 @@ fn test_generic_component_line_numbers() {
 {/each}"#;
 
     // Component on line 15 - use pattern that only matches template check, not import
-    // The mapping starts at 'CheckIcon' in 'CheckIcon(null as any'
-    verify_line_mapping(source, "CheckIcon(null", 15);
+    // The mapping starts at 'CheckIcon' in 'CheckIcon('
+    verify_component_line_mapping(source, "CheckIcon", 15);
 
     // Expression on line 16
     verify_line_mapping(source, "option.label", 16);
@@ -277,7 +295,7 @@ fn test_component_with_spread_props_line_number() {
     Click me
 </Button>"#;
 
-    verify_line_mapping(source, "Button(null as any", 7);
+    verify_component_line_mapping(source, "Button", 7);
     // The mapping is on the expression 'props', after the '...' prefix
     verify_line_mapping(source, "props,", 7);
 }
@@ -293,7 +311,7 @@ fn test_component_with_event_handler_line_number() {
     Count: {count}
 </Button>"#;
 
-    verify_line_mapping(source, "Button(null as any", 6);
+    verify_component_line_mapping(source, "Button", 6);
     verify_line_mapping(source, "() => count++", 6);
 }
 
@@ -376,7 +394,7 @@ fn test_multiline_object_expression_line_number() {
 }} />"#;
 
     // The object expression starts on line 5
-    verify_line_mapping(source, "Card(null as any", 5);
+    verify_component_line_mapping(source, "Card", 5);
 }
 
 #[test]
@@ -397,7 +415,7 @@ fn test_long_component_with_many_props() {
     variant="primary"
 />"#;
 
-    verify_line_mapping(source, "ComplexForm(null as any", 9);
+    verify_component_line_mapping(source, "ComplexForm", 9);
     verify_line_mapping(source, "formData,", 10);
     verify_line_mapping(source, "handleSubmit,", 11);
     verify_line_mapping(source, "handleReset,", 12);
@@ -417,7 +435,7 @@ fn test_component_inside_element() {
     <Icon class="size-4" />
 </div>"#;
 
-    verify_line_mapping(source, "Icon(null", 6);
+    verify_component_line_mapping(source, "Icon", 6);
 }
 
 #[test]
@@ -431,7 +449,7 @@ fn test_component_inside_each_block() {
     <Icon class="size-4" />
 {/each}"#;
 
-    verify_line_mapping(source, "Icon(null", 7);
+    verify_component_line_mapping(source, "Icon", 7);
 }
 
 #[test]
@@ -445,7 +463,7 @@ fn test_component_inside_button_with_onclick() {
     <Icon class="size-4" />
 </button>"#;
 
-    verify_line_mapping(source, "Icon(null", 7);
+    verify_component_line_mapping(source, "Icon", 7);
 }
 
 #[test]
@@ -461,7 +479,7 @@ fn test_component_inside_each_inside_button() {
     </button>
 {/each}"#;
 
-    verify_line_mapping(source, "Icon(null", 8);
+    verify_component_line_mapping(source, "Icon", 8);
 }
 
 #[test]
@@ -478,7 +496,7 @@ fn test_component_in_generic_context() {
     </button>
 {/each}"#;
 
-    verify_line_mapping(source, "Icon(null", 8);
+    verify_component_line_mapping(source, "Icon", 8);
 }
 
 #[test]
@@ -495,7 +513,7 @@ fn test_component_with_props_no_generics() {
     </button>
 {/each}"#;
 
-    verify_line_mapping(source, "Icon(null", 8);
+    verify_component_line_mapping(source, "Icon", 8);
 }
 
 // ============================================================================
@@ -687,7 +705,7 @@ fn test_component_immediately_after_script() {
 </script>
 <A />"#;
 
-    verify_line_mapping(source, "A(null as any", 4);
+    verify_component_line_mapping(source, "A", 4);
 }
 
 #[test]
@@ -716,10 +734,10 @@ fn test_deeply_nested_components() {
     </B>
 </A>"#;
 
-    verify_line_mapping(source, "A(null as any", 8);
-    verify_line_mapping(source, "B(null as any", 9);
-    verify_line_mapping(source, "C(null as any", 10);
-    verify_line_mapping(source, "D(null as any", 11);
+    verify_component_line_mapping(source, "A", 8);
+    verify_component_line_mapping(source, "B", 9);
+    verify_component_line_mapping(source, "C", 10);
+    verify_component_line_mapping(source, "D", 11);
 }
 
 // ============================================================================

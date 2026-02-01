@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use swc_common::{FileName, SourceMap};
 use swc_ecma_ast::{
-    ExportNamedSpecifier, ExportSpecifier, Module, ModuleDecl, ModuleExportName, ModuleItem,
+    Decl, ExportNamedSpecifier, ExportSpecifier, Module, ModuleDecl, ModuleExportName, ModuleItem,
+    Pat, VarDeclKind,
 };
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
 
@@ -17,8 +18,13 @@ pub struct ExportedName {
 
 /// Extracts component exports from the instance script.
 ///
-/// This looks for `export { ... }` declarations and ignores type-only exports
-/// and re-exports with `from`.
+/// This looks for export declarations including:
+/// - `export { ... }` named re-exports
+/// - `export const/let/var name = ...` variable declarations
+/// - `export function name() {}` function declarations
+/// - `export class Name {}` class declarations
+///
+/// Ignores type-only exports and re-exports with `from`.
 pub fn extract_component_exports(script: &str) -> Vec<ExportedName> {
     let Some(module) = parse_module(script) else {
         return Vec::new();
@@ -26,21 +32,68 @@ pub fn extract_component_exports(script: &str) -> Vec<ExportedName> {
 
     let mut exports = Vec::new();
     for item in module.body {
-        if let ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) = item {
-            if named.src.is_some() || named.type_only {
-                continue;
-            }
-            for spec in named.specifiers {
-                let ExportSpecifier::Named(named) = spec else {
-                    continue;
-                };
-                if named.is_type_only {
+        match item {
+            ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) => {
+                // Handle: export { foo, bar as baz }
+                if named.src.is_some() || named.type_only {
                     continue;
                 }
-                if let Some(export_name) = extract_named_export(&named) {
-                    exports.push(export_name);
+                for spec in named.specifiers {
+                    let ExportSpecifier::Named(named) = spec else {
+                        continue;
+                    };
+                    if named.is_type_only {
+                        continue;
+                    }
+                    if let Some(export_name) = extract_named_export(&named) {
+                        exports.push(export_name);
+                    }
                 }
             }
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
+                // Handle: export const/let/var, export function, export class
+                match &export_decl.decl {
+                    Decl::Var(var_decl) => {
+                        // Skip `declare` statements (e.g., `export declare const foo: Type`)
+                        if var_decl.declare {
+                            continue;
+                        }
+                        if var_decl.kind == VarDeclKind::Const
+                            || var_decl.kind == VarDeclKind::Let
+                            || var_decl.kind == VarDeclKind::Var
+                        {
+                            for decl in &var_decl.decls {
+                                if let Some(name) = extract_binding_name(&decl.name) {
+                                    exports.push(ExportedName {
+                                        exported: name.clone(),
+                                        local: name,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Decl::Fn(fn_decl) => {
+                        // Handle: export function foo() {}
+                        let name = fn_decl.ident.sym.to_string();
+                        exports.push(ExportedName {
+                            exported: name.clone(),
+                            local: name,
+                        });
+                    }
+                    Decl::Class(class_decl) => {
+                        // Handle: export class Foo {}
+                        let name = class_decl.ident.sym.to_string();
+                        exports.push(ExportedName {
+                            exported: name.clone(),
+                            local: name,
+                        });
+                    }
+                    _ => {
+                        // Other declarations (TsInterface, TsTypeAlias, etc.) are type-only
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -105,6 +158,16 @@ fn module_export_name_to_ident(name: &ModuleExportName) -> Option<String> {
     match name {
         ModuleExportName::Ident(ident) => Some(ident.sym.to_string()),
         ModuleExportName::Str(_) => None,
+    }
+}
+
+/// Extracts the binding name from a pattern.
+/// Only handles simple identifier patterns; destructuring patterns are ignored.
+fn extract_binding_name(pat: &Pat) -> Option<String> {
+    match pat {
+        Pat::Ident(ident) => Some(ident.id.sym.to_string()),
+        // Destructuring patterns (Array, Object) are not supported as component exports
+        _ => None,
     }
 }
 
@@ -175,6 +238,65 @@ mod tests {
         let exports = extract_component_exports(script);
         assert_eq!(exports.len(), 1);
         assert_eq!(exports[0].exported, "name");
+    }
+
+    #[test]
+    fn extracts_export_const() {
+        let script = "export const snapshot = { capture: () => {} };";
+        let exports = extract_component_exports(script);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].exported, "snapshot");
+        assert_eq!(exports[0].local, "snapshot");
+    }
+
+    #[test]
+    fn extracts_export_let() {
+        let script = "export let value = 42;";
+        let exports = extract_component_exports(script);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].exported, "value");
+    }
+
+    #[test]
+    fn extracts_export_function() {
+        let script = "export function greet(name: string) { return `Hello, ${name}`; }";
+        let exports = extract_component_exports(script);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].exported, "greet");
+    }
+
+    #[test]
+    fn extracts_export_class() {
+        let script = "export class Counter { count = 0; }";
+        let exports = extract_component_exports(script);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].exported, "Counter");
+    }
+
+    #[test]
+    fn extracts_multiple_const_declarations() {
+        let script = "export const a = 1, b = 2;";
+        let exports = extract_component_exports(script);
+        assert_eq!(exports.len(), 2);
+        assert!(exports.iter().any(|e| e.exported == "a"));
+        assert!(exports.iter().any(|e| e.exported == "b"));
+    }
+
+    #[test]
+    fn extracts_mixed_exports() {
+        let script = r#"
+            export const snapshot = {};
+            export function reset() {}
+            let internal = 0;
+            export { internal as state };
+        "#;
+        let exports = extract_component_exports(script);
+        assert_eq!(exports.len(), 3);
+        assert!(exports.iter().any(|e| e.exported == "snapshot"));
+        assert!(exports.iter().any(|e| e.exported == "reset"));
+        assert!(exports
+            .iter()
+            .any(|e| e.exported == "state" && e.local == "internal"));
     }
 
     #[test]
