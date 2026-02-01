@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 81
 expression: output
 ---
 === Source (Select.svelte) ===
@@ -159,7 +160,7 @@ declare module "svelte" {
 }
 
 // === INSTANCE SCRIPT ===
-function __svelte_render<T extends { id: string; label: string }>() {
+async function __svelte_render<T extends { id: string; label: string }>() {
 
     let { options, selected = $bindable() } = ({} as __SvelteLoosen<{
         options: T[];
@@ -167,9 +168,7 @@ function __svelte_render<T extends { id: string; label: string }>() {
     }>);
 
 
-// === TEMPLATE TYPE-CHECK BLOCK ===
-// This is never executed, just type-checked
-async function __svelte_template_check__() {
+// === TEMPLATE TYPE-CHECK ===
   const __each_0 = options;
   for (const option of __each_0) {
     __svelte_create_element("button", {}, {
@@ -177,7 +176,6 @@ async function __svelte_template_check__() {
     });
     option.label;
   }
-}
 return { props: null as any as __SvelteOptionalProps<{
         options: T[];
         selected?: T;
@@ -185,9 +183,9 @@ return { props: null as any as __SvelteOptionalProps<{
 }
 
 // === COMPONENT TYPE EXPORT ===
-type __SvelteProps_Select_<T extends { id: string; label: string }> = ReturnType<typeof __svelte_render<T>>["props"];
+type __SvelteProps_Select_<T extends { id: string; label: string }> = Awaited<ReturnType<typeof __svelte_render<T>>>["props"];
 declare const __SvelteComponent_Select_: {
-<T extends { id: string; label: string }>(this: void, internals: any, props: __SvelteProps_Select_<T> & __SvelteCssProps): ReturnType<typeof __svelte_render<T>>["exports"];
+<T extends { id: string; label: string }>(this: void, internals: any, props: __SvelteProps_Select_<T> & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render<T>>>["exports"];
 element?: typeof HTMLElement;
 z_$$bindings?: any;
 };

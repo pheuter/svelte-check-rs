@@ -1,20 +1,25 @@
 //! Main transformation logic.
 
-use crate::component_exports::{build_exports_type, extract_component_exports};
+use crate::component_exports::{build_exports_type, extract_component_exports, ExportedName};
 use crate::props::{extract_props_info, generate_props_type};
 use crate::runes::transform_runes_with_options;
 use crate::snippets::split_snippet_name;
 use crate::template::{
-    generate_template_check_with_spans, transform_store_subscriptions, TemplateCheckResult,
+    generate_template_body_with_spans, generate_template_check_with_spans,
+    transform_store_subscriptions, TemplateCheckResult,
 };
 use crate::types::{component_name_from_path, ComponentExports};
 use smol_str::SmolStr;
-use source_map::{SourceMap, SourceMapBuilder};
+use source_map::{SourceMap, SourceMapBuilder, Span};
 use std::collections::HashSet;
+use std::sync::Arc;
 use svelte_parser::{
     Attribute, AttributeValue, AttributeValuePart, Fragment, ScriptLang, SvelteDocument,
     TemplateNode,
 };
+use swc_common::{FileName, SourceMap as SwcSourceMap, Spanned};
+use swc_ecma_ast::{Module, ModuleDecl, ModuleItem, Stmt};
+use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
 
 /// The kind of SvelteKit route file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +150,11 @@ fn script_indent(script: &str) -> String {
     String::new()
 }
 
-fn render_store_aliases(store_names: &HashSet<SmolStr>, indent: &str) -> Option<String> {
+fn render_store_aliases(
+    store_names: &HashSet<SmolStr>,
+    indent: &str,
+    in_function: bool,
+) -> Option<String> {
     if store_names.is_empty() {
         return None;
     }
@@ -156,13 +165,60 @@ fn render_store_aliases(store_names: &HashSet<SmolStr>, indent: &str) -> Option<
     let mut out = String::new();
     for store in stores {
         out.push_str(indent);
-        out.push_str("declare let $");
-        out.push_str(store);
-        out.push_str(": __StoreValue<typeof ");
-        out.push_str(store);
-        out.push_str(">;\n");
+        if in_function {
+            out.push_str("let $");
+            out.push_str(store);
+            out.push_str("!: __StoreValue<typeof ");
+            out.push_str(store);
+            out.push_str(">;\n");
+        } else {
+            out.push_str("declare let $");
+            out.push_str(store);
+            out.push_str(": __StoreValue<typeof ");
+            out.push_str(store);
+            out.push_str(">;\n");
+        }
     }
     Some(out)
+}
+
+fn is_valid_identifier_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+fn escape_string_literal(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn build_exports_value(exports: &[ExportedName], exports_type: Option<&str>) -> String {
+    if exports.is_empty() {
+        return "{}".to_string();
+    }
+
+    let mut parts = Vec::new();
+    for export in exports {
+        let prop_name = if is_valid_identifier_name(&export.exported) {
+            export.exported.clone()
+        } else {
+            format!("\"{}\"", escape_string_literal(&export.exported))
+        };
+        parts.push(format!("{}: {}", prop_name, export.local));
+    }
+
+    let expr = format!("{{ {} }}", parts.join(", "));
+    if let Some(ty) = exports_type {
+        format!("{} as any as {}", expr, ty)
+    } else {
+        expr
+    }
 }
 
 fn collect_declared_types_from_script(script: &str, out: &mut HashSet<String>) {
@@ -713,191 +769,185 @@ fn rewrite_svelte_imports(script: &str) -> String {
         .replace(".svelte'", ".svelte.js'")
 }
 
-fn extract_top_level_imports(script: &str) -> (String, String) {
-    let mut imports = String::new();
-    let mut output = String::with_capacity(script.len());
-    let mut i = 0usize;
-    let mut last_emit = 0usize;
-
-    let mut depth = 0usize;
-    let mut in_string: Option<char> = None;
-    let mut prev_was_escape = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-
-    while i < script.len() {
-        let ch = script[i..].chars().next().unwrap();
-        let ch_len = ch.len_utf8();
-
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
-            }
-            i += ch_len;
-            continue;
-        }
-
-        if in_block_comment {
-            if ch == '*' && script[i + ch_len..].starts_with('/') {
-                in_block_comment = false;
-                i += ch_len + 1;
-                continue;
-            }
-            i += ch_len;
-            continue;
-        }
-
-        if let Some(quote) = in_string {
-            if prev_was_escape {
-                prev_was_escape = false;
-            } else if ch == '\\' {
-                prev_was_escape = true;
-            } else if ch == quote {
-                in_string = None;
-            }
-            i += ch_len;
-            continue;
-        }
-
-        if ch == '/' {
-            if script[i + ch_len..].starts_with('/') {
-                in_line_comment = true;
-                i += ch_len + 1;
-                continue;
-            } else if script[i + ch_len..].starts_with('*') {
-                in_block_comment = true;
-                i += ch_len + 1;
-                continue;
-            }
-        }
-
-        if matches!(ch, '\'' | '"' | '`') {
-            in_string = Some(ch);
-            i += ch_len;
-            continue;
-        }
-
-        if depth == 0 && script[i..].starts_with("import") {
-            let prev_char = script[..i].chars().last();
-            let prev_ok = prev_char.map_or(true, |c| c.is_whitespace() || c == ';');
-            let next_char = script[i + "import".len()..].chars().next();
-            let next_ok = next_char.is_some_and(|c| c.is_whitespace());
-
-            if prev_ok && next_ok {
-                let end = read_import_statement(script, i);
-                let stmt = &script[i..end];
-                output.push_str(&script[last_emit..i]);
-                imports.push_str(stmt);
-
-                let newline_count = stmt.chars().filter(|c| *c == '\n').count();
-                if newline_count > 0 {
-                    output.push_str(&"\n".repeat(newline_count));
-                }
-
-                last_emit = end;
-                i = end;
-                continue;
-            }
-        }
-
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => {
-                depth = depth.saturating_sub(1);
-            }
-            _ => {}
-        }
-
-        i += ch_len;
-    }
-
-    output.push_str(&script[last_emit..]);
-    (imports, output)
+fn parse_script_module(script: &str) -> Option<Module> {
+    let cm: Arc<SwcSourceMap> = Default::default();
+    let fm = cm.new_source_file(
+        FileName::Custom("svelte-instance-script".into()).into(),
+        script.to_string(),
+    );
+    let syntax = Syntax::Typescript(TsSyntax {
+        tsx: false,
+        ..Default::default()
+    });
+    let mut parser = Parser::new(syntax, StringInput::from(&*fm), None);
+    parser.parse_module().ok()
 }
 
-fn read_import_statement(script: &str, start: usize) -> usize {
-    let mut i = start;
-    let mut depth = 0usize;
-    let mut in_string: Option<char> = None;
-    let mut prev_was_escape = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut saw_string = false;
-
-    while i < script.len() {
-        let ch = script[i..].chars().next().unwrap();
-        let ch_len = ch.len_utf8();
-
-        if in_line_comment {
-            if ch == '\n' {
-                i += ch_len;
-                break;
-            }
-            i += ch_len;
+fn mask_range(bytes: &mut [u8], start: usize, end: usize) {
+    if start >= end || start >= bytes.len() {
+        return;
+    }
+    let end = end.min(bytes.len());
+    for byte in bytes.iter_mut().take(end).skip(start) {
+        if *byte == b'\n' || *byte == b'\r' {
             continue;
         }
+        *byte = b' ';
+    }
+}
 
-        if in_block_comment {
-            if ch == '*' && script[i + ch_len..].starts_with('/') {
-                in_block_comment = false;
-                i += ch_len + 1;
-                continue;
-            }
-            i += ch_len;
-            continue;
-        }
+fn bytepos_to_index(pos: swc_common::BytePos) -> usize {
+    let value = pos.0 as usize;
+    value.saturating_sub(1)
+}
 
-        if let Some(quote) = in_string {
-            if prev_was_escape {
-                prev_was_escape = false;
-            } else if ch == '\\' {
-                prev_was_escape = true;
-            } else if ch == quote {
-                in_string = None;
-            }
-            i += ch_len;
-            continue;
-        }
+#[derive(Debug, Clone)]
+struct ScriptSegment {
+    text: String,
+    start: usize,
+    end: usize,
+}
 
-        if ch == '/' {
-            if script[i + ch_len..].starts_with('/') {
-                in_line_comment = true;
-                i += ch_len + 1;
-                continue;
-            } else if script[i + ch_len..].starts_with('*') {
-                in_block_comment = true;
-                i += ch_len + 1;
-                continue;
-            }
-        }
+fn build_script_source_map(
+    script_output: &str,
+    base_offset: u32,
+    mappings: &[crate::runes::RuneMapping],
+) -> SourceMap {
+    let mut builder = SourceMapBuilder::new();
+    emit_script_with_rune_mappings(&mut builder, script_output, base_offset, mappings);
+    builder.build()
+}
 
-        if matches!(ch, '\'' | '"' | '`') {
-            in_string = Some(ch);
-            saw_string = true;
-            i += ch_len;
-            continue;
-        }
+fn map_segment_span(script_map: &SourceMap, base_offset: u32, segment: &ScriptSegment) -> Span {
+    let gen_start: source_map::ByteOffset = (segment.start as u32).into();
+    let gen_end_for_map = if segment.end > segment.start {
+        segment.end - 1
+    } else {
+        segment.end
+    };
+    let gen_end: source_map::ByteOffset = (gen_end_for_map as u32).into();
 
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => {
-                depth = depth.saturating_sub(1);
-            }
-            ';' if depth == 0 => {
-                i += ch_len;
-                break;
-            }
-            '\n' if depth == 0 && saw_string => {
-                i += ch_len;
-                break;
-            }
+    let original_start = script_map
+        .original_position(gen_start)
+        .unwrap_or_else(|| (base_offset + segment.start as u32).into());
+    let original_end = script_map
+        .original_position(gen_end)
+        .map(|pos| pos + source_map::ByteOffset::from(1u32))
+        .unwrap_or_else(|| (base_offset + segment.end as u32).into());
+
+    Span::new(original_start, original_end)
+}
+
+fn emit_segment_with_mapping(
+    output: &mut String,
+    builder: &mut SourceMapBuilder,
+    segment: &ScriptSegment,
+    original_span: Span,
+) {
+    output.push_str(&segment.text);
+    builder.add_transformed(original_span, &segment.text);
+    if !segment.text.ends_with('\n') {
+        output.push('\n');
+        builder.add_generated("\n");
+    }
+}
+
+/// Extract top-level import statements and hoist type declarations from instance scripts.
+///
+/// Returns (imports, hoisted_types, script_body) where:
+/// - `imports` contains all top-level imports in original order
+/// - `hoisted_types` contains top-level type/interface/enum declarations (with export removed)
+/// - `script_body` is the original script with imports masked, exports stripped, and hoisted types removed
+fn extract_top_level_imports(script: &str) -> (Vec<ScriptSegment>, String) {
+    let Some(module) = parse_script_module(script) else {
+        return (Vec::new(), script.to_string());
+    };
+
+    let mut import_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut export_keyword_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut export_statement_ranges: Vec<(usize, usize)> = Vec::new();
+
+    for item in module.body {
+        match item {
+            ModuleItem::ModuleDecl(decl) => match decl {
+                ModuleDecl::Import(import_decl) => {
+                    let span = import_decl.span;
+                    import_ranges.push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+                ModuleDecl::TsImportEquals(import_decl) => {
+                    let span = import_decl.span;
+                    import_ranges.push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+                ModuleDecl::ExportDecl(export_decl) => {
+                    let span = export_decl.span;
+                    let decl_span = export_decl.decl.span();
+                    let start = bytepos_to_index(span.lo);
+                    let end = bytepos_to_index(decl_span.lo);
+                    if start < end {
+                        export_keyword_ranges.push((start, end));
+                    }
+                }
+                ModuleDecl::ExportNamed(named) => {
+                    let span = named.span;
+                    export_statement_ranges
+                        .push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+                ModuleDecl::ExportDefaultDecl(default_decl) => {
+                    let span = default_decl.span;
+                    export_statement_ranges
+                        .push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+                ModuleDecl::ExportDefaultExpr(default_expr) => {
+                    let span = default_expr.span;
+                    export_statement_ranges
+                        .push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+                ModuleDecl::ExportAll(export_all) => {
+                    let span = export_all.span;
+                    export_statement_ranges
+                        .push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+                ModuleDecl::TsExportAssignment(assign) => {
+                    let span = assign.span;
+                    export_statement_ranges
+                        .push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+                ModuleDecl::TsNamespaceExport(ns) => {
+                    let span = ns.span;
+                    export_statement_ranges
+                        .push((bytepos_to_index(span.lo), bytepos_to_index(span.hi)));
+                }
+            },
+            ModuleItem::Stmt(Stmt::Decl(_)) => {}
             _ => {}
         }
-
-        i += ch_len;
     }
 
-    i
+    import_ranges.sort_by_key(|range| range.0);
+
+    let mut import_segments: Vec<ScriptSegment> = Vec::new();
+    for (start, end) in &import_ranges {
+        if *start >= script.len() || *end > script.len() || start >= end {
+            continue;
+        }
+        import_segments.push(ScriptSegment {
+            text: script[*start..*end].to_string(),
+            start: *start,
+            end: *end,
+        });
+    }
+
+    let mut bytes = script.as_bytes().to_vec();
+    let mut mask_ranges: Vec<(usize, usize)> = Vec::new();
+    mask_ranges.extend(import_ranges.iter().copied());
+    mask_ranges.extend(export_statement_ranges.iter().copied());
+    mask_ranges.extend(export_keyword_ranges.iter().copied());
+    for (start, end) in mask_ranges {
+        mask_range(&mut bytes, start, end);
+    }
+
+    let output = String::from_utf8(bytes).unwrap_or_else(|_| script.to_string());
+    (import_segments, output)
 }
 
 /// Emits script content with proper source mappings for rune transformations.
@@ -1043,10 +1093,6 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     output.push_str(header);
     builder.add_generated(header);
 
-    // Collect top-level snippets (used for module exports)
-    let snippet_decls = collect_top_level_snippets(&doc.fragment);
-    let has_snippets = !snippet_decls.is_empty();
-
     // Extract script generics (e.g., <script generics="T extends ...">)
     let mut generic_decls = extract_script_generics(doc)
         .map(|g| parse_generic_declarations(&g))
@@ -1086,6 +1132,19 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     let generics_ref_str = generics_ref(&generic_decls);
 
     let helpers_import_path = options.helpers_import_path.as_deref();
+
+    // Collect top-level snippets so module exports can reference them.
+    let snippet_decls = collect_top_level_snippets(&doc.fragment);
+    let mut module_exported_names = HashSet::new();
+    if let Some(module) = &doc.module_script {
+        for export in extract_component_exports(&module.content) {
+            module_exported_names.insert(export.local);
+        }
+    }
+    let module_snippets: Vec<_> = snippet_decls
+        .iter()
+        .filter(|decl| module_exported_names.contains(&decl.name))
+        .collect();
 
     // Add Svelte imports - alias to avoid collisions with user imports
     if helpers_import_path.is_none() {
@@ -1262,12 +1321,10 @@ declare module "svelte" {
         builder.add_generated(helpers);
     }
 
-    // Emit snippet declarations for module exports (top-level only when no generics)
-    let mut snippet_block = String::new();
-    if has_snippets {
+    if !module_snippets.is_empty() {
+        let mut snippet_block = String::new();
         snippet_block.push_str("// === SNIPPET DECLARATIONS ===\n");
-
-        for decl in &snippet_decls {
+        for decl in &module_snippets {
             let helper_name = format!("__svelte_snippet_params_{}", decl.name);
             let params = transform_store_subscriptions(&decl.parameters);
             let generics = decl.generics.as_deref().unwrap_or("");
@@ -1276,20 +1333,20 @@ declare module "svelte" {
                 helper_name, generics, params
             ));
             snippet_block.push_str(&format!(
-                "const {}: __SvelteSnippet<Parameters<typeof {}>> = null as any;\n",
+                "declare const {}: __SvelteSnippet<Parameters<typeof {}>>;\n",
                 decl.name, helper_name
             ));
         }
         snippet_block.push('\n');
-    }
-
-    if !has_generics && !snippet_block.is_empty() {
         output.push_str(&snippet_block);
         builder.add_generated(&snippet_block);
     }
 
     // Get the default props type for SvelteKit route files
     let default_props_type = route_kind.props_type();
+    // Generate template body without function wrapper for embedding in render function
+    let template_body_result = generate_template_body_with_spans(&doc.fragment, false);
+    // Generate template with function wrapper for fallback (template-only components)
     let template_result = generate_template_check_with_spans(&doc.fragment);
     let mut template_emitted = false;
 
@@ -1330,7 +1387,7 @@ declare module "svelte" {
             output.push_str(&decl);
             builder.add_generated(&decl);
         }
-        if let Some(aliases) = render_store_aliases(&rune_result.store_names, &indent) {
+        if let Some(aliases) = render_store_aliases(&rune_result.store_names, &indent, false) {
             output.push_str(&aliases);
             builder.add_generated(&aliases);
         }
@@ -1362,6 +1419,7 @@ declare module "svelte" {
         if let Some(exports_type) = build_exports_type(&export_names) {
             exports.exports_type = Some(exports_type);
         }
+        let exports_value = build_exports_value(&export_names, exports.exports_type.as_deref());
 
         let mut script_output = rune_result.output;
         let mut script_mappings = rune_result.mappings;
@@ -1399,29 +1457,32 @@ declare module "svelte" {
                 .or(default_props_type)
                 .unwrap_or("Record<string, unknown>");
             Some(format!(
-                "{}declare const $props: __SveltePropsAccessor<{}>;\n",
+                "{}const $props = null as any as __SveltePropsAccessor<{}>;\n",
                 indent, accessor_type
             ))
         } else {
             None
         };
-        let store_aliases = render_store_aliases(&rune_result.store_names, &indent);
+        let mut store_names = rune_result.store_names.clone();
+        for name in &template_body_result.store_names {
+            store_names.insert(name.clone());
+        }
+        let store_aliases = render_store_aliases(&store_names, &indent, true);
 
         if has_generics {
-            let (import_block, script_body) = extract_top_level_imports(&script_output);
-            if !import_block.is_empty() {
-                output.push_str(&import_block);
-                builder.add_generated(&import_block);
+            let (import_segments, script_body) = extract_top_level_imports(&script_output);
+            if !import_segments.is_empty() {
+                let script_map =
+                    build_script_source_map(&script_output, base_offset, &script_mappings);
+                for segment in &import_segments {
+                    let original_span = map_segment_span(&script_map, base_offset, segment);
+                    emit_segment_with_mapping(&mut output, &mut builder, segment, original_span);
+                }
             }
 
-            let render_start = format!("function __svelte_render{}() {{\n", generics_def_str);
+            let render_start = format!("async function __svelte_render{}() {{\n", generics_def_str);
             output.push_str(&render_start);
             builder.add_generated(&render_start);
-
-            if !snippet_block.is_empty() {
-                output.push_str(&snippet_block);
-                builder.add_generated(&snippet_block);
-            }
 
             if let Some(decl) = props_accessor_decl {
                 output.push_str(&decl);
@@ -1434,39 +1495,18 @@ declare module "svelte" {
             output.push_str(&script_body);
             output.push('\n');
 
-            // Adjust rune mappings for the script body (which has imports extracted)
-            // The mappings are based on script_output positions, but we're emitting script_body
-            let import_len = import_block.len();
-            let adjusted_mappings: Vec<crate::runes::RuneMapping> = script_mappings
-                .iter()
-                .filter_map(|m| {
-                    let gen_start = u32::from(m.generated.start) as usize;
-                    let gen_end = u32::from(m.generated.end) as usize;
-                    // Only include mappings that fall after the import block
-                    if gen_start >= import_len {
-                        Some(crate::runes::RuneMapping {
-                            original: m.original,
-                            generated: source_map::Span::new(
-                                (gen_start - import_len) as u32,
-                                (gen_end - import_len) as u32,
-                            ),
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
             emit_script_with_rune_mappings(
                 &mut builder,
                 &script_body,
-                base_offset + import_len as u32,
-                &adjusted_mappings,
+                base_offset,
+                &script_mappings,
             );
             builder.add_generated("\n");
 
-            if !template_result.code.is_empty() {
-                output.push_str(&template_result.code);
-                emit_template_with_mappings(&mut builder, &template_result);
+            // Emit template body directly in render function scope to preserve control flow narrowing
+            if !template_body_result.code.is_empty() {
+                output.push_str(&template_body_result.code);
+                emit_template_with_mappings(&mut builder, &template_body_result);
             }
             template_emitted = true;
 
@@ -1476,10 +1516,7 @@ declare module "svelte" {
                 .unwrap_or("Record<string, unknown>");
             let return_stmt = format!(
                 "return {{ props: null as any as {}, exports: {}, slots: {}, events: {} }};\n",
-                render_props_type,
-                exports.exports_or_default(),
-                "{}",
-                "{}"
+                render_props_type, exports_value, "{}", "{}"
             );
             output.push_str(&return_stmt);
             builder.add_generated(&return_stmt);
@@ -1487,6 +1524,23 @@ declare module "svelte" {
             output.push_str("}\n");
             builder.add_generated("}\n");
         } else {
+            // Wrap script + template in a render function to preserve TypeScript's
+            // control flow analysis (issue #93). Type narrowing from the script
+            // (e.g., `if (!x) throw ...`) will now be visible in the template.
+            let (import_segments, script_body) = extract_top_level_imports(&script_output);
+            if !import_segments.is_empty() {
+                let script_map =
+                    build_script_source_map(&script_output, base_offset, &script_mappings);
+                for segment in &import_segments {
+                    let original_span = map_segment_span(&script_map, base_offset, segment);
+                    emit_segment_with_mapping(&mut output, &mut builder, segment, original_span);
+                }
+            }
+
+            let render_start = "async function __svelte_render() {\n";
+            output.push_str(render_start);
+            builder.add_generated(render_start);
+
             if let Some(decl) = props_accessor_decl {
                 output.push_str(&decl);
                 builder.add_generated(&decl);
@@ -1495,17 +1549,37 @@ declare module "svelte" {
                 output.push_str(&aliases);
                 builder.add_generated(&aliases);
             }
-            output.push_str(&script_output);
+            output.push_str(&script_body);
             output.push('\n');
 
-            // Add source mapping for the script content using rune mappings
             emit_script_with_rune_mappings(
                 &mut builder,
-                &script_output,
+                &script_body,
                 base_offset,
                 &script_mappings,
             );
             builder.add_generated("\n");
+
+            // Emit template body directly in render function scope
+            if !template_body_result.code.is_empty() {
+                output.push_str(&template_body_result.code);
+                emit_template_with_mappings(&mut builder, &template_body_result);
+            }
+            template_emitted = true;
+
+            let render_props_type = props_type
+                .as_deref()
+                .or(default_props_type)
+                .unwrap_or("Record<string, unknown>");
+            let return_stmt = format!(
+                "return {{ props: null as any as {}, exports: {}, slots: {}, events: {} }};\n",
+                render_props_type, exports_value, "{}", "{}"
+            );
+            output.push_str(&return_stmt);
+            builder.add_generated(&return_stmt);
+
+            output.push_str("}\n");
+            builder.add_generated("}\n");
         }
     }
 
@@ -1543,14 +1617,14 @@ declare module "svelte" {
             .unwrap_or(false);
 
     // Generate the export using ComponentExports helper
-    let has_generic_render = has_generics && doc.instance_script.is_some();
-    let export_line = if has_generic_render {
+    let has_render = doc.instance_script.is_some();
+    let export_line = if has_generics && has_render {
         let internal_name = format!("__SvelteComponent_{}_", component_name);
         let props_name = format!("__SvelteProps_{}_", component_name);
         format!(
-            "type {props_name}{generics_def} = ReturnType<typeof __svelte_render{generics_ref}>[\"props\"];\n\
+            "type {props_name}{generics_def} = Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"props\"];\n\
 declare const {internal_name}: {{\n\
-  {generics_def}(this: void, internals: any, props: {props_name}{generics_ref} & __SvelteCssProps): ReturnType<typeof __svelte_render{generics_ref}>[\"exports\"];\n\
+  {generics_def}(this: void, internals: any, props: {props_name}{generics_ref} & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"exports\"];\n\
   element?: typeof HTMLElement;\n\
   z_$$bindings?: any;\n\
 }};\n\
@@ -1559,6 +1633,19 @@ export default {internal_name};\n",
             internal_name = internal_name,
             generics_def = generics_def_str,
             generics_ref = generics_ref_str
+        )
+    } else if has_render {
+        let internal_name = format!("__SvelteComponent_{}_", component_name);
+        let props_name = format!("__SvelteProps_{}_", component_name);
+        let exports_name = format!("__SvelteExports_{}_", component_name);
+        format!(
+            "type {props_name} = Awaited<ReturnType<typeof __svelte_render>>[\"props\"];\n\
+type {exports_name} = Awaited<ReturnType<typeof __svelte_render>>[\"exports\"];\n\
+declare const {internal_name}: __SvelteComponent<{props_name}, {exports_name}>;\n\
+export default {internal_name};\n",
+            props_name = props_name,
+            exports_name = exports_name,
+            internal_name = internal_name
         )
     } else {
         exports.generate_export(&component_name, is_typescript)
