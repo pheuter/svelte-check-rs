@@ -168,7 +168,12 @@ fn render_coverage_report(compiler_codes: &BTreeSet<String>, internal_codes: &[S
 fn extract_between_markers(content: &str, start: &str, end: &str) -> Option<String> {
     let start_idx = content.find(start)? + start.len();
     let end_idx = content[start_idx..].find(end)? + start_idx;
-    Some(content[start_idx..end_idx].trim().to_string())
+    let snippet = content[start_idx..end_idx].trim();
+    Some(normalize_line_endings(snippet).to_string())
+}
+
+fn normalize_line_endings(input: &str) -> String {
+    input.replace("\r\n", "\n")
 }
 
 #[test]
@@ -187,7 +192,7 @@ fn compiler_warning_coverage_is_up_to_date() {
 
     assert_eq!(
         actual,
-        expected.trim(),
+        normalize_line_endings(expected.trim()),
         "Diagnostics coverage report is out of date. Update docs/diagnostics-coverage.md."
     );
 }
