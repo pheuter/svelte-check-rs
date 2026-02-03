@@ -6,10 +6,10 @@ svelte-check-rs internal diagnostics (kebab style).
 <!-- COVERAGE:START -->
 ## Summary
 - Compiler warnings: 81
-- Internal diagnostics: 5
+- Internal diagnostics: 4
 - Overlap: 0
 - Compiler-only: 81
-- Internal-only: 5
+- Internal-only: 4
 
 ## Overlap
 - (none)
@@ -99,7 +99,6 @@ svelte-check-rs internal diagnostics (kebab style).
 
 ## Internal-only
 - a11y-structure
-- css-invalid-global
 - invalid-rune-usage
 - missing-declaration
 - parse-error

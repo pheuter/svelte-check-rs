@@ -2,7 +2,6 @@
 //!
 //! This crate provides diagnostics for:
 //! - Accessibility (a11y) checks
-//! - CSS validation (invalid :global() usage)
 //! - Component validation (invalid rune usage, missing declarations)
 //!
 //! # Example
@@ -22,7 +21,6 @@
 
 pub mod a11y;
 pub mod component;
-pub mod css;
 mod diagnostic;
 
 pub use component::ComponentCheckOptions;
@@ -35,8 +33,6 @@ use svelte_parser::SvelteDocument;
 pub struct DiagnosticOptions {
     /// Whether to run a11y checks.
     pub a11y: bool,
-    /// Whether to run CSS checks.
-    pub css: bool,
     /// Whether to run component checks.
     pub component: bool,
     /// The filename of the component (for naming checks).
@@ -48,7 +44,6 @@ impl DiagnosticOptions {
     pub fn all() -> Self {
         Self {
             a11y: true,
-            css: true,
             component: true,
             filename: None,
         }
@@ -67,10 +62,6 @@ pub fn check(doc: &SvelteDocument, options: DiagnosticOptions) -> Vec<Diagnostic
 
     if options.a11y {
         diagnostics.extend(a11y::check(doc));
-    }
-
-    if options.css {
-        diagnostics.extend(css::check(doc));
     }
 
     if options.component {

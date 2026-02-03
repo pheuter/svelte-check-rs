@@ -9,7 +9,7 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 - `crates/source-map`: Source position tracking and mapping.
 - `crates/svelte-parser`: Svelte 5 syntax parser (lexer, AST, parser).
 - `crates/svelte-transformer`: Svelte-to-TypeScript transformation for type-checking.
-- `crates/svelte-diagnostics`: Svelte-specific diagnostics (a11y, CSS, component).
+- `crates/svelte-diagnostics`: Svelte-specific diagnostics (a11y, component).
 - `crates/tsgo-runner`: Bridge to `tsgo` for TypeScript type-checking.
 - `crates/bun-runner`: Bridge to bun-managed Svelte compiler diagnostics.
 - `crates/svelte-check-rs`: Main CLI and orchestration logic.
@@ -22,7 +22,7 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 
 1. **Discovery**: Walk workspace, filter by `.svelte`/`.svelte.ts`/`.svelte.js`, respect `tsconfig.json` excludes
 2. **Parse**: `svelte_parser::parse()` → AST + parse errors (parallel via `rayon`)
-3. **Diagnostics**: A11y, CSS, component checks on AST
+3. **Diagnostics**: A11y + component checks on AST
 4. **Compiler**: Run Svelte compiler diagnostics via bun on original sources
 5. **Transform**: `svelte_transformer::transform()` → TypeScript with source maps
 6. **Type-check**: Send all transformed files to `tsgo` subprocess, map errors back via source maps
@@ -117,7 +117,7 @@ cargo insta review
 let expected = ExpectedDiagnostic {
     filename: "issue-20-no-pragma/+page.svelte",
     line: 6,
-    code: "a11y-no-noninteractive-tabindex",
+    code: "a11y_no_noninteractive_tabindex",
     message_contains: "tabindex",
 };
 assert_diagnostic_present(&diagnostics, &expected);

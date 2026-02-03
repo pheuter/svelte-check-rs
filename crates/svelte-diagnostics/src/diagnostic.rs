@@ -65,10 +65,6 @@ pub enum DiagnosticCode {
     /// `a11y-structure`: Heading structure
     A11yStructure,
 
-    // === CSS Codes ===
-    /// `css-invalid-global`
-    CssInvalidGlobal,
-
     // === Component Codes ===
     /// `missing-declaration`
     MissingDeclaration,
@@ -88,7 +84,7 @@ impl DiagnosticCode {
             DiagnosticCode::MissingDeclaration => Severity::Error,
             DiagnosticCode::ParseError => Severity::Error,
 
-            DiagnosticCode::A11yStructure | DiagnosticCode::CssInvalidGlobal => Severity::Warning,
+            DiagnosticCode::A11yStructure => Severity::Warning,
         }
     }
 
@@ -96,7 +92,6 @@ impl DiagnosticCode {
     pub fn as_str(&self) -> &'static str {
         match self {
             DiagnosticCode::A11yStructure => "a11y-structure",
-            DiagnosticCode::CssInvalidGlobal => "css-invalid-global",
             DiagnosticCode::MissingDeclaration => "missing-declaration",
             DiagnosticCode::InvalidRuneUsage => "invalid-rune-usage",
             DiagnosticCode::ParseError => "parse-error",
