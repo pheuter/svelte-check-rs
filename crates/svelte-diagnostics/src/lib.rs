@@ -2,8 +2,8 @@
 //!
 //! This crate provides diagnostics for:
 //! - Accessibility (a11y) checks
-//! - CSS validation (unused selectors, invalid :global())
-//! - Component validation (invalid rune usage, naming conventions)
+//! - CSS validation (invalid :global() usage)
+//! - Component validation (invalid rune usage, missing declarations)
 //!
 //! # Example
 //!
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_check_with_a11y_issue() {
-        let doc = parse(r#"<img src="photo.jpg">"#).document;
+        let doc = parse(r#"<h1>Title</h1><h3>Skipped</h3>"#).document;
         let diagnostics = check(
             &doc,
             DiagnosticOptions {
@@ -112,7 +112,7 @@ mod tests {
         assert!(!diagnostics.is_empty());
         assert!(diagnostics
             .iter()
-            .any(|d| matches!(d.code, DiagnosticCode::A11yMissingAttribute)));
+            .any(|d| matches!(d.code, DiagnosticCode::A11yStructure)));
     }
 }
 
@@ -149,93 +149,10 @@ mod fixture_tests {
     }
 
     #[test]
-    fn test_valid_a11y_fixtures_have_no_a11y_diagnostics() {
-        let fixtures_dir = get_fixtures_dir().join("valid").join("a11y");
-        let files = collect_svelte_files(&fixtures_dir);
-
-        assert!(!files.is_empty(), "No valid a11y fixtures found");
-
-        for path in &files {
-            let source = fs::read_to_string(path).expect("Failed to read file");
-            let filename = path.file_name().unwrap().to_string_lossy();
-            let result = parse(&source);
-
-            // Skip files with parse errors
-            if !result.errors.is_empty() {
-                continue;
-            }
-
-            let diagnostics = check(
-                &result.document,
-                DiagnosticOptions {
-                    a11y: true,
-                    ..Default::default()
-                },
-            );
-
-            assert!(
-                diagnostics.is_empty(),
-                "Valid a11y fixture {} should have no diagnostics, but got {} diagnostics:\n{}",
-                filename,
-                diagnostics.len(),
-                diagnostics
-                    .iter()
-                    .take(10)
-                    .map(|d| format!("  - {:?}: {}", d.code, d.message))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-        }
-
-        println!(
-            "Verified {} valid a11y fixtures have no false positives",
-            files.len()
-        );
-    }
-
-    #[test]
-    fn test_invalid_a11y_fixtures_have_diagnostics() {
-        let fixtures_dir = get_fixtures_dir().join("invalid").join("a11y");
-        let files = collect_svelte_files(&fixtures_dir);
-
-        assert!(!files.is_empty(), "No invalid a11y fixtures found");
-
-        let mut total_diagnostics = 0;
-
-        for path in &files {
-            let source = fs::read_to_string(path).expect("Failed to read file");
-            let filename = path.file_name().unwrap().to_string_lossy();
-            let result = parse(&source);
-
-            let diagnostics = check(
-                &result.document,
-                DiagnosticOptions {
-                    a11y: true,
-                    ..Default::default()
-                },
-            );
-
-            assert!(
-                !diagnostics.is_empty(),
-                "Invalid a11y fixture {} should have diagnostics, but got none",
-                filename
-            );
-
-            total_diagnostics += diagnostics.len();
-            println!("{}: {} diagnostics", filename, diagnostics.len());
-        }
-
-        println!(
-            "Invalid a11y fixtures produced {} total diagnostics across {} files",
-            total_diagnostics,
-            files.len()
-        );
-    }
-
-    #[test]
     fn test_invalid_component_fixtures_have_diagnostics() {
         let fixtures_dir = get_fixtures_dir().join("invalid").join("component");
         let files = collect_svelte_files(&fixtures_dir);
+        let compiler_owned_fixtures = ["StateReferencedLocally.svelte"];
 
         if files.is_empty() {
             return; // No component fixtures
@@ -244,6 +161,9 @@ mod fixture_tests {
         for path in &files {
             let source = fs::read_to_string(path).expect("Failed to read file");
             let filename = path.file_name().unwrap().to_string_lossy();
+            if compiler_owned_fixtures.contains(&filename.as_ref()) {
+                continue;
+            }
             let result = parse(&source);
 
             let diagnostics = check(
@@ -261,93 +181,6 @@ mod fixture_tests {
             );
 
             println!("{}: {} diagnostics", filename, diagnostics.len());
-        }
-    }
-
-    /// Tests that specific diagnostic codes are triggered by specific fixtures
-    #[test]
-    fn test_specific_diagnostic_codes() {
-        let fixtures_dir = get_fixtures_dir().join("invalid").join("a11y");
-
-        // Map of fixture name -> expected diagnostic codes
-        let expected: &[(&str, &[DiagnosticCode])] = &[
-            (
-                "MissingAttributes.svelte",
-                &[
-                    DiagnosticCode::A11yMissingAttribute,
-                    DiagnosticCode::A11yMissingContent,
-                ],
-            ),
-            (
-                "AriaAttributes.svelte",
-                &[
-                    DiagnosticCode::A11yAriaAttributes,
-                    DiagnosticCode::A11yNoRedundantRoles,
-                    DiagnosticCode::A11yRoleHasRequiredAriaProps,
-                    DiagnosticCode::A11yHidden,
-                ],
-            ),
-            (
-                "InteractiveElements.svelte",
-                &[
-                    DiagnosticCode::A11yClickEventsHaveKeyEvents,
-                    DiagnosticCode::A11yMouseEventsHaveKeyEvents,
-                    DiagnosticCode::A11yPositiveTabindex,
-                    DiagnosticCode::A11yNoNoninteractiveTabindex,
-                    DiagnosticCode::A11yNoStaticElementInteractions,
-                    DiagnosticCode::A11yInteractiveSupportsFocus,
-                ],
-            ),
-            (
-                "FormAndMedia.svelte",
-                &[
-                    DiagnosticCode::A11yLabelHasAssociatedControl,
-                    DiagnosticCode::A11yMediaHasCaption,
-                    DiagnosticCode::A11yAutofocus,
-                    DiagnosticCode::A11yAccesskey,
-                ],
-            ),
-            (
-                "StructureAndContent.svelte",
-                &[
-                    DiagnosticCode::A11yStructure,
-                    DiagnosticCode::A11yImgRedundantAlt,
-                    DiagnosticCode::A11yDistractingElements,
-                ],
-            ),
-        ];
-
-        for (fixture_name, expected_codes) in expected {
-            let path = fixtures_dir.join(fixture_name);
-            if !path.exists() {
-                continue;
-            }
-
-            let source = fs::read_to_string(&path).expect("Failed to read file");
-            let result = parse(&source);
-            let diagnostics = check(
-                &result.document,
-                DiagnosticOptions {
-                    a11y: true,
-                    ..Default::default()
-                },
-            );
-
-            let found_codes: std::collections::HashSet<_> = diagnostics
-                .iter()
-                .map(|d| std::mem::discriminant(&d.code))
-                .collect();
-
-            for expected_code in *expected_codes {
-                let expected_discriminant = std::mem::discriminant(expected_code);
-                assert!(
-                    found_codes.contains(&expected_discriminant),
-                    "Fixture {} should trigger {:?}, but it wasn't found.\nFound codes: {:?}",
-                    fixture_name,
-                    expected_code,
-                    diagnostics.iter().map(|d| &d.code).collect::<Vec<_>>()
-                );
-            }
         }
     }
 

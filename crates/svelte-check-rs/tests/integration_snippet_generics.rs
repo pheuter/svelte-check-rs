@@ -122,7 +122,6 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
 fn run_check_json_single(
     fixture_path: &PathBuf,
     single_file: &PathBuf,
-    diagnostic_sources: &str,
 ) -> (i32, Vec<JsonDiagnostic>) {
     // Ensure fixture is ready
     ensure_fixture_ready(fixture_path, &BUNDLER_READY);
@@ -137,8 +136,6 @@ fn run_check_json_single(
         .arg(fixture_path)
         .arg("--single-file")
         .arg(single_file)
-        .arg("--diagnostic-sources")
-        .arg(diagnostic_sources)
         .arg("--output")
         .arg("json")
         .output()
@@ -155,6 +152,18 @@ fn run_check_json_single(
     });
 
     (exit_code, diagnostics)
+}
+
+/// Filters diagnostics by source (ts, svelte, etc.)
+fn filter_diagnostics_by_source(
+    diagnostics: &[JsonDiagnostic],
+    source: &str,
+) -> Vec<JsonDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.source == source)
+        .cloned()
+        .collect()
 }
 
 /// Verifies that an expected diagnostic is present in the results
@@ -190,7 +199,8 @@ fn test_snippet_generic_header_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let file_path = fixture_path.join("src/routes/issue-32-snippet-generic-ok/+page.svelte");
 
-    let (_exit_code, diagnostics) = run_check_json_single(&fixture_path, &file_path, "js");
+    let (_exit_code, diagnostics) = run_check_json_single(&fixture_path, &file_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert!(
         diagnostics.is_empty(),
@@ -206,7 +216,8 @@ fn test_snippet_generic_header_error_location() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let file_path = fixture_path.join("src/routes/issue-32-snippet-generic-error/+page.svelte");
 
-    let (_exit_code, diagnostics) = run_check_json_single(&fixture_path, &file_path, "js");
+    let (_exit_code, diagnostics) = run_check_json_single(&fixture_path, &file_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     let expected = ExpectedDiagnostic {
         filename: "issue-32-snippet-generic-error/+page.svelte",
@@ -227,7 +238,8 @@ fn test_snippet_generic_header_optional_property_error_location() {
     let file_path =
         fixture_path.join("src/routes/issue-32-snippet-generic-error-shortname/+page.svelte");
 
-    let (_exit_code, diagnostics) = run_check_json_single(&fixture_path, &file_path, "js");
+    let (_exit_code, diagnostics) = run_check_json_single(&fixture_path, &file_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     let expected = ExpectedDiagnostic {
         filename: "issue-32-snippet-generic-error-shortname/+page.svelte",

@@ -124,8 +124,6 @@ fn run_check_json_with_args(
     let output = command
         .arg("--workspace")
         .arg(fixture_path)
-        .arg("--diagnostic-sources")
-        .arg("js")
         .arg("--output")
         .arg("json")
         .args(extra_args)
@@ -142,7 +140,21 @@ fn run_check_json_with_args(
         vec![]
     });
 
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
     (exit_code, diagnostics)
+}
+
+/// Filters diagnostics by source (ts, svelte, etc.)
+fn filter_diagnostics_by_source(
+    diagnostics: &[JsonDiagnostic],
+    source: &str,
+) -> Vec<JsonDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.source == source)
+        .cloned()
+        .collect()
 }
 
 /// Count errors matching a predicate

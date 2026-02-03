@@ -294,22 +294,22 @@ mod tests {
     fn test_format_human() {
         let formatter = Formatter::new(OutputFormat::Human);
         let diag = Diagnostic::new(
-            DiagnosticCode::A11yMissingAttribute,
-            "Missing alt attribute",
+            DiagnosticCode::A11yStructure,
+            "Skipped heading level",
             Span::new(TextSize::from(0), TextSize::from(5)),
         );
 
         let output = formatter.format(&[diag], Utf8Path::new("test.svelte"), "<img>");
         assert!(output.contains("test.svelte:1:1"));
-        assert!(output.contains("Missing alt"));
+        assert!(output.contains("Skipped heading level"));
     }
 
     #[test]
     fn test_format_json() {
         let formatter = Formatter::new(OutputFormat::Json);
         let diag = Diagnostic::new(
-            DiagnosticCode::A11yMissingAttribute,
-            "Missing alt attribute",
+            DiagnosticCode::A11yStructure,
+            "Skipped heading level",
             Span::new(TextSize::from(0), TextSize::from(5)),
         );
 

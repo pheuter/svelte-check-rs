@@ -67,7 +67,6 @@ cargo run -p svelte-check-rs -- --workspace ./path/to/project [--emit-ts]
 - `--list-files`: List files that would be checked, then exit
 - `--single-file <path>`: Process only a single file (isolate issues)
 - `--skip-tsgo`: Skip TypeScript type-checking, only run Svelte diagnostics (faster iteration)
-- `--skip-svelte-compiler`: Skip Svelte compiler diagnostics
 - `--bun-version`: Show installed bun version/path
 - `--bun-update[=<ver>]`: Update bun to latest or specific version
 
@@ -141,11 +140,24 @@ assert_no_diagnostics_in_file(&diagnostics, "valid-file/+page.svelte");
 
 1. Add variant to `DiagnosticCode` enum in `svelte-diagnostics/src/diagnostic.rs`
 2. Implement `default_severity()` and `as_str()` for the new code
-3. Add check logic in `svelte-diagnostics/src/a11y/mod.rs` within `check_element()`
+3. Add check logic in `svelte-diagnostics/src/a11y/mod.rs`
 4. Add test fixture to `test-fixtures/valid/a11y/` or `test-fixtures/invalid/a11y/`
 5. Add unit test in `a11y/mod.rs` `#[cfg(test)]` block
 
-Rules support `<!-- svelte-ignore code -->` comments (both `kebab-case` and `snake_case`, wildcards like `a11y-*`).
+Only add internal a11y rules when the compiler does not already emit that warning.
+
+## Compiler Warning Coverage
+
+Svelte compiler warnings are tracked in `crates/svelte-diagnostics/tests/data/compiler-warning-codes.txt`
+(underscore codes). The coverage report lives in `docs/diagnostics-coverage.md` and is checked by
+`crates/svelte-diagnostics/tests/compiler_warning_coverage.rs`.
+
+When the Svelte compiler warning list changes:
+1. Update `crates/svelte-diagnostics/tests/data/compiler-warning-codes.txt` with the new `codes`
+   list from `packages/svelte/src/compiler/warnings.js`.
+2. Update `docs/diagnostics-coverage.md` between `<!-- COVERAGE:START -->` and `<!-- COVERAGE:END -->`
+   (run `cargo test -p svelte-diagnostics --test compiler_warning_coverage` to see mismatches).
+3. If a warning is now compiler-owned, remove the internal diagnostic to avoid duplicates.
 
 ## Conventions
 
