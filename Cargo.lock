@@ -260,7 +260,7 @@ checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "bun-runner"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "blake3",
  "camino",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "source-map"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -1782,7 +1782,7 @@ checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
 name = "svelte-check-rs"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bun-runner",
  "camino",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-diagnostics"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-parser"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "insta",
  "logos",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-transformer"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "tsgo-runner"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "blake3",
  "bun-runner",
