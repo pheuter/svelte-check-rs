@@ -6,7 +6,6 @@ on:
 
 jobs:
   publish:
-    if: ${{ github.event.release.prerelease == false }}
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,4 +33,4 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          node -e "const fs=require('fs');const {execSync}=require('child_process');const data=JSON.parse(fs.readFileSync('dist/npm/publish-order.json','utf8'));for(const pkg of data.packages){console.log('Publishing',pkg);execSync('npm publish --access public \"'+pkg+'\"',{stdio:'inherit'});}"
+          node -e "const fs=require('fs');const {execSync}=require('child_process');const prerelease='${{ github.event.release.prerelease }}'==='true';const distTag=prerelease?'beta':'latest';const data=JSON.parse(fs.readFileSync('dist/npm/publish-order.json','utf8'));for(const pkg of data.packages){console.log('Publishing',pkg,'tag',distTag);execSync('npm publish --access public --tag '+distTag+' \"'+pkg+'\"',{stdio:'inherit'});}"
