@@ -10,7 +10,7 @@ use camino::Utf8Path;
 use clap::Parser;
 use cli::Args;
 use miette::Result;
-use tsgo_runner::{PackageManager, TsgoRunner};
+use tsgo_runner::TsgoRunner;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -110,23 +110,6 @@ fn print_debug_paths(workspace: &Utf8Path) {
     };
 
     println!("Workspace: {}", workspace);
-    println!();
-
-    // Package manager detection
-    println!("Package Manager:");
-    if let Some(pm) = PackageManager::detect_from_workspace(&workspace) {
-        println!(
-            "  from workspace: {} (detected from lockfile)",
-            pm.command_name()
-        );
-    } else {
-        println!("  from workspace: (none detected)");
-    }
-    if let Some(pm) = PackageManager::detect_from_path() {
-        println!("  from PATH:      {}", pm.command_name());
-    } else {
-        println!("  from PATH:      (none found)");
-    }
     println!();
 
     // tsgo binary
