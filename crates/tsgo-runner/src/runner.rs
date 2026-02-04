@@ -4,10 +4,12 @@ use crate::kit;
 use crate::parser::{parse_tsgo_output, TsgoDiagnostic};
 use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use source_map::SourceMap;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::File;
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
 use tempfile::Builder;
@@ -476,6 +478,7 @@ impl TsgoRunner {
     /// Updates tsgo to the specified version or latest if None.
     ///
     /// This will install/update tsgo using bun in the cache directory.
+    /// Uses file locking to prevent concurrent installs.
     pub async fn update_tsgo(version: Option<&str>) -> Result<Utf8PathBuf, TsgoError> {
         // Ensure bun is available
         let bun_path = bun_runner::BunRunner::ensure_bun(None).await?;
@@ -487,6 +490,14 @@ impl TsgoRunner {
 
         std::fs::create_dir_all(&cache_dir)
             .map_err(|e| TsgoError::InstallFailed(format!("failed to create cache dir: {e}")))?;
+
+        // Acquire lock to prevent concurrent installs
+        let lock_path = cache_dir.join(".tsgo-install.lock");
+        let lock_file = File::create(&lock_path)
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to create lock file: {e}")))?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to acquire lock: {e}")))?;
 
         let package_spec = match version {
             Some(v) => format!("@typescript/native-preview@{}", v),
@@ -801,6 +812,8 @@ impl TsgoRunner {
     /// 3. Check common installation locations
     /// 4. Check the cache directory
     /// 5. If not found, install using bun in the cache directory
+    ///
+    /// Uses file locking to prevent concurrent installs in monorepo scenarios.
     pub async fn ensure_tsgo(workspace_root: Option<&Utf8Path>) -> Result<Utf8PathBuf, TsgoError> {
         // First try to find existing installation
         if let Some(path) = Self::find_tsgo(workspace_root) {
@@ -817,6 +830,19 @@ impl TsgoRunner {
 
         std::fs::create_dir_all(&cache_dir)
             .map_err(|e| TsgoError::InstallFailed(format!("failed to create cache dir: {e}")))?;
+
+        // Acquire lock to prevent concurrent installs
+        let lock_path = cache_dir.join(".tsgo-install.lock");
+        let lock_file = File::create(&lock_path)
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to create lock file: {e}")))?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to acquire lock: {e}")))?;
+
+        // Double-check: another process may have installed while we waited for the lock
+        if let Some(path) = Self::find_tsgo(workspace_root) {
+            return Ok(path);
+        }
 
         eprintln!("tsgo not found, installing @typescript/native-preview using bun...");
 
