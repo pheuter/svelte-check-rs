@@ -2174,6 +2174,7 @@ name = "tsgo-runner"
 version = "0.8.0"
 dependencies = [
  "blake3",
+ "bun-runner",
  "camino",
  "dirs",
  "pretty_assertions",

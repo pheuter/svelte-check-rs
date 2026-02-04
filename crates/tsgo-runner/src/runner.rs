@@ -181,82 +181,6 @@ declare module "svelte" {
 }
 "#;
 
-/// Supported package managers for installing tsgo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackageManager {
-    Npm,
-    Pnpm,
-    Yarn,
-    Bun,
-}
-
-impl PackageManager {
-    /// Detect package manager from lockfiles in the workspace.
-    /// Walks up the directory tree to support monorepo setups where lockfiles
-    /// are at the root rather than in nested packages.
-    pub fn detect_from_workspace(workspace_root: &Utf8Path) -> Option<Self> {
-        let mut current = Some(workspace_root);
-
-        while let Some(dir) = current {
-            // Check most specific lockfiles first
-            if dir.join("pnpm-lock.yaml").exists() {
-                return Some(Self::Pnpm);
-            }
-            if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
-                return Some(Self::Bun);
-            }
-            if dir.join("yarn.lock").exists() {
-                return Some(Self::Yarn);
-            }
-            if dir.join("package-lock.json").exists() {
-                return Some(Self::Npm);
-            }
-
-            current = dir.parent();
-        }
-
-        None
-    }
-
-    /// Detect any available package manager from PATH.
-    pub fn detect_from_path() -> Option<Self> {
-        // Check in order of preference
-        if which::which("npm").is_ok() {
-            return Some(Self::Npm);
-        }
-        if which::which("pnpm").is_ok() {
-            return Some(Self::Pnpm);
-        }
-        if which::which("yarn").is_ok() {
-            return Some(Self::Yarn);
-        }
-        if which::which("bun").is_ok() {
-            return Some(Self::Bun);
-        }
-        None
-    }
-
-    /// Returns the command name for this package manager.
-    pub fn command_name(&self) -> &'static str {
-        match self {
-            Self::Npm => "npm",
-            Self::Pnpm => "pnpm",
-            Self::Yarn => "yarn",
-            Self::Bun => "bun",
-        }
-    }
-
-    /// Returns the install arguments for this package manager.
-    pub fn install_args(&self, package: &str) -> Vec<String> {
-        match self {
-            Self::Npm => vec!["install".to_string(), package.to_string()],
-            Self::Pnpm => vec!["add".to_string(), package.to_string()],
-            Self::Yarn => vec!["add".to_string(), package.to_string()],
-            Self::Bun => vec!["add".to_string(), package.to_string()],
-        }
-    }
-}
-
 /// Error types for tsgo runner.
 #[derive(Debug, Error)]
 pub enum TsgoError {
@@ -288,11 +212,9 @@ pub enum TsgoError {
     #[error("failed to install tsgo: {0}")]
     InstallFailed(String),
 
-    /// No package manager found.
-    #[error(
-        "no package manager found - please install npm, pnpm, yarn, or bun to auto-download tsgo"
-    )]
-    PackageManagerNotFound,
+    /// Bun runner error.
+    #[error("bun error: {0}")]
+    BunFailed(#[from] bun_runner::BunError),
 
     /// node_modules not found when resolving the cache directory.
     #[error(
@@ -553,10 +475,10 @@ impl TsgoRunner {
 
     /// Updates tsgo to the specified version or latest if None.
     ///
-    /// This will install/update tsgo using the detected package manager in the cache directory.
+    /// This will install/update tsgo using bun in the cache directory.
     pub async fn update_tsgo(version: Option<&str>) -> Result<Utf8PathBuf, TsgoError> {
-        // Detect package manager from PATH
-        let pm = PackageManager::detect_from_path().ok_or(TsgoError::PackageManagerNotFound)?;
+        // Ensure bun is available
+        let bun_path = bun_runner::BunRunner::ensure_bun(None).await?;
 
         // Get or create cache directory
         let cache_dir = Self::get_cache_dir().ok_or_else(|| {
@@ -571,36 +493,30 @@ impl TsgoRunner {
             None => "@typescript/native-preview@latest".to_string(),
         };
 
-        eprintln!("Installing {} using {}...", package_spec, pm.command_name());
+        eprintln!("Installing {} using bun...", package_spec);
 
-        // Run package manager install in cache directory
-        let install_args = pm.install_args(&package_spec);
-        let output = Command::new(pm.command_name())
-            .args(&install_args)
+        let output = Command::new(&bun_path)
+            .args(["add", &package_spec])
             .current_dir(&cache_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| {
-                TsgoError::InstallFailed(format!("failed to run {}: {e}", pm.command_name()))
-            })?;
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to run bun: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(TsgoError::InstallFailed(format!(
-                "{} install failed: {stderr}",
-                pm.command_name()
+                "bun install failed: {stderr}"
             )));
         }
 
         // Verify installation
         let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
         if !tsgo_path.exists() {
-            return Err(TsgoError::InstallFailed(format!(
-                "tsgo binary not found after {} install",
-                pm.command_name()
-            )));
+            return Err(TsgoError::InstallFailed(
+                "tsgo binary not found after bun install".into(),
+            ));
         }
 
         // Get and display the installed version
@@ -884,18 +800,15 @@ impl TsgoRunner {
     /// 2. Check if tsgo is in PATH
     /// 3. Check common installation locations
     /// 4. Check the cache directory
-    /// 5. If not found, install using detected package manager in the cache directory
+    /// 5. If not found, install using bun in the cache directory
     pub async fn ensure_tsgo(workspace_root: Option<&Utf8Path>) -> Result<Utf8PathBuf, TsgoError> {
         // First try to find existing installation
         if let Some(path) = Self::find_tsgo(workspace_root) {
             return Ok(path);
         }
 
-        // Detect package manager (prefer workspace lockfile, fallback to PATH)
-        let pm = workspace_root
-            .and_then(PackageManager::detect_from_workspace)
-            .or_else(PackageManager::detect_from_path)
-            .ok_or(TsgoError::PackageManagerNotFound)?;
+        // Ensure bun is available (auto-installs via bun.sh if needed)
+        let bun_path = bun_runner::BunRunner::ensure_bun(workspace_root).await?;
 
         // Get or create cache directory
         let cache_dir = Self::get_cache_dir().ok_or_else(|| {
@@ -905,39 +818,30 @@ impl TsgoRunner {
         std::fs::create_dir_all(&cache_dir)
             .map_err(|e| TsgoError::InstallFailed(format!("failed to create cache dir: {e}")))?;
 
-        eprintln!(
-            "tsgo not found, installing @typescript/native-preview using {}...",
-            pm.command_name()
-        );
+        eprintln!("tsgo not found, installing @typescript/native-preview using bun...");
 
-        // Run package manager install in cache directory
-        let install_args = pm.install_args("@typescript/native-preview");
-        let output = Command::new(pm.command_name())
-            .args(&install_args)
+        let output = Command::new(&bun_path)
+            .args(["add", "@typescript/native-preview"])
             .current_dir(&cache_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| {
-                TsgoError::InstallFailed(format!("failed to run {}: {e}", pm.command_name()))
-            })?;
+            .map_err(|e| TsgoError::InstallFailed(format!("failed to run bun: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(TsgoError::InstallFailed(format!(
-                "{} install failed: {stderr}",
-                pm.command_name()
+                "bun install failed: {stderr}"
             )));
         }
 
         // Verify installation
         let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
         if !tsgo_path.exists() {
-            return Err(TsgoError::InstallFailed(format!(
-                "tsgo binary not found after {} install",
-                pm.command_name()
-            )));
+            return Err(TsgoError::InstallFailed(
+                "tsgo binary not found after bun install".into(),
+            ));
         }
 
         eprintln!("tsgo installed successfully at {}", tsgo_path);

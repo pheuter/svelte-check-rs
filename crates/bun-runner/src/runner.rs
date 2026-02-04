@@ -88,71 +88,6 @@ for await (const line of rl) {
 }
 "#;
 
-/// Supported package managers for installing bun.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageManager {
-    Npm,
-    Pnpm,
-    Yarn,
-    Bun,
-}
-
-impl PackageManager {
-    fn detect_from_workspace(workspace_root: &Utf8Path) -> Option<Self> {
-        let mut current = Some(workspace_root);
-        while let Some(dir) = current {
-            if dir.join("pnpm-lock.yaml").exists() {
-                return Some(Self::Pnpm);
-            }
-            if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
-                return Some(Self::Bun);
-            }
-            if dir.join("yarn.lock").exists() {
-                return Some(Self::Yarn);
-            }
-            if dir.join("package-lock.json").exists() {
-                return Some(Self::Npm);
-            }
-            current = dir.parent();
-        }
-        None
-    }
-
-    fn detect_from_path() -> Option<Self> {
-        if which::which("npm").is_ok() {
-            return Some(Self::Npm);
-        }
-        if which::which("pnpm").is_ok() {
-            return Some(Self::Pnpm);
-        }
-        if which::which("yarn").is_ok() {
-            return Some(Self::Yarn);
-        }
-        if which::which("bun").is_ok() {
-            return Some(Self::Bun);
-        }
-        None
-    }
-
-    fn command_name(&self) -> &'static str {
-        match self {
-            Self::Npm => "npm",
-            Self::Pnpm => "pnpm",
-            Self::Yarn => "yarn",
-            Self::Bun => "bun",
-        }
-    }
-
-    fn install_args(&self, package: &str) -> Vec<String> {
-        match self {
-            Self::Npm => vec!["install".to_string(), package.to_string()],
-            Self::Pnpm => vec!["add".to_string(), package.to_string()],
-            Self::Yarn => vec!["add".to_string(), package.to_string()],
-            Self::Bun => vec!["add".to_string(), package.to_string()],
-        }
-    }
-}
-
 /// Error types for bun runner.
 #[derive(Debug, Error)]
 pub enum BunError {
@@ -171,10 +106,6 @@ pub enum BunError {
     /// Failed to install bun.
     #[error("failed to install bun: {0}")]
     InstallFailed(String),
-
-    /// No package manager found.
-    #[error("no package manager found - please install npm, pnpm, or yarn to auto-download bun")]
-    PackageManagerNotFound,
 
     /// bun runner protocol error.
     #[error("bun runner protocol error: {0}")]
@@ -285,10 +216,11 @@ impl BunRunner {
         })
     }
 
-    /// Attempts to find bun in workspace, PATH, or cache.
+    /// Attempts to find bun in workspace, PATH, home directory, or cache.
     /// 1. Workspace node_modules/.bin/bun (if workspace_root provided)
     /// 2. PATH
-    /// 3. Cache directory
+    /// 3. ~/.bun/bin/bun (default install location)
+    /// 4. Cache directory
     pub fn find_bun(workspace_root: Option<&Utf8Path>) -> Option<Utf8PathBuf> {
         if let Some(workspace) = workspace_root {
             let bin = workspace.join("node_modules/.bin");
@@ -300,6 +232,16 @@ impl BunRunner {
         if let Ok(path) = which::which("bun") {
             if let Ok(utf8_path) = Utf8PathBuf::try_from(path) {
                 return Some(utf8_path);
+            }
+        }
+
+        // Check ~/.bun/bin/bun (default install location from bun.sh/install)
+        if let Some(home) = dirs::home_dir() {
+            if let Ok(home) = Utf8PathBuf::try_from(home) {
+                let bun_home = home.join(".bun/bin");
+                if let Some(path) = find_bun_in_bin(&bun_home) {
+                    return Some(path);
+                }
             }
         }
 
@@ -347,88 +289,100 @@ impl BunRunner {
     }
 
     /// Updates bun to the specified version or latest if None.
+    ///
+    /// Installs bun using the official install script from bun.sh.
     pub async fn update_bun(version: Option<&str>) -> Result<Utf8PathBuf, BunError> {
-        let pm = PackageManager::detect_from_path().ok_or(BunError::PackageManagerNotFound)?;
-
-        let cache_dir = Self::get_cache_dir()
-            .ok_or_else(|| BunError::InstallFailed("could not determine cache directory".into()))?;
-        fs::create_dir_all(&cache_dir)
-            .map_err(|e| BunError::InstallFailed(format!("failed to create cache dir: {e}")))?;
-
-        let package = match version {
-            Some(v) => format!("bun@{}", v),
-            None => "bun".to_string(),
-        };
-
-        let mut cmd = Command::new(pm.command_name());
-        cmd.args(pm.install_args(&package))
-            .current_dir(&cache_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let output = cmd.output().await.map_err(|e| {
-            BunError::InstallFailed(format!("failed to run {}: {e}", pm.command_name()))
-        })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(BunError::InstallFailed(format!(
-                "bun install failed with {}: {}",
-                output.status, stderr
-            )));
-        }
-
-        let bin = cache_dir.join("node_modules/.bin");
-        if let Some(path) = find_bun_in_bin(&bin) {
-            return Ok(path);
-        }
-
-        Err(BunError::InstallFailed(
-            "bun binary not found after install".into(),
-        ))
+        Self::install_bun_via_script(version).await
     }
 
     /// Finds bun or installs it if not found.
+    ///
+    /// Installs bun using the official install script from bun.sh.
     pub async fn ensure_bun(workspace_root: Option<&Utf8Path>) -> Result<Utf8PathBuf, BunError> {
         if let Some(path) = Self::find_bun(workspace_root) {
             return Ok(path);
         }
 
-        let pm = workspace_root
-            .and_then(PackageManager::detect_from_workspace)
-            .or_else(PackageManager::detect_from_path)
-            .ok_or(BunError::PackageManagerNotFound)?;
+        Self::install_bun_via_script(None).await
+    }
 
-        let cache_dir = Self::get_cache_dir()
-            .ok_or_else(|| BunError::InstallFailed("could not determine cache directory".into()))?;
-        fs::create_dir_all(&cache_dir)
-            .map_err(|e| BunError::InstallFailed(format!("failed to create cache dir: {e}")))?;
-
-        let mut cmd = Command::new(pm.command_name());
-        cmd.args(pm.install_args("bun"))
-            .current_dir(&cache_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let output = cmd.output().await.map_err(|e| {
-            BunError::InstallFailed(format!("failed to run {}: {e}", pm.command_name()))
+    /// Installs bun using the official install script from bun.sh.
+    ///
+    /// - Unix: `curl -fsSL https://bun.sh/install | bash`
+    /// - Windows: `powershell -c "irm bun.sh/install.ps1 | iex"`
+    async fn install_bun_via_script(version: Option<&str>) -> Result<Utf8PathBuf, BunError> {
+        let home = dirs::home_dir()
+            .ok_or_else(|| BunError::InstallFailed("could not determine home directory".into()))?;
+        let home = Utf8PathBuf::try_from(home).map_err(|_| {
+            BunError::InstallFailed("home directory path is not valid UTF-8".into())
         })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(BunError::InstallFailed(format!(
-                "bun install failed with {}: {}",
-                output.status, stderr
-            )));
+        eprintln!("Installing bun via bun.sh...");
+
+        #[cfg(unix)]
+        {
+            // Unix: curl -fsSL https://bun.sh/install | bash [-s bun-vX.Y.Z]
+            let script = match version {
+                Some(v) => {
+                    let v = v.strip_prefix('v').unwrap_or(v);
+                    format!("curl -fsSL https://bun.sh/install | bash -s bun-v{}", v)
+                }
+                None => "curl -fsSL https://bun.sh/install | bash".to_string(),
+            };
+
+            let output = Command::new("bash")
+                .args(["-c", &script])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| {
+                    BunError::InstallFailed(format!("failed to run install script: {e}"))
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(BunError::InstallFailed(format!(
+                    "bun install script failed: {stderr}"
+                )));
+            }
         }
 
-        let bin = cache_dir.join("node_modules/.bin");
-        if let Some(path) = find_bun_in_bin(&bin) {
+        #[cfg(windows)]
+        {
+            // Windows: powershell -c "irm bun.sh/install.ps1 | iex"
+            // Note: Version selection on Windows requires BUN_VERSION env var
+            let mut cmd = Command::new("powershell");
+            cmd.args(["-c", "irm bun.sh/install.ps1 | iex"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            if let Some(v) = version {
+                let v = v.strip_prefix('v').unwrap_or(v);
+                cmd.env("BUN_VERSION", v);
+            }
+
+            let output = cmd.output().await.map_err(|e| {
+                BunError::InstallFailed(format!("failed to run install script: {e}"))
+            })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(BunError::InstallFailed(format!(
+                    "bun install script failed: {stderr}"
+                )));
+            }
+        }
+
+        // Bun installs to ~/.bun/bin/bun
+        let bun_bin = home.join(".bun/bin");
+        if let Some(path) = find_bun_in_bin(&bun_bin) {
+            eprintln!("bun installed at {}", path);
             return Ok(path);
         }
 
         Err(BunError::InstallFailed(
-            "bun binary not found after install".into(),
+            "bun binary not found after install (expected at ~/.bun/bin/bun)".into(),
         ))
     }
 
@@ -680,11 +634,6 @@ impl BunWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_package_manager_detection() {
-        let _ = PackageManager::detect_from_path();
-    }
 
     #[test]
     fn test_bun_compile_options_default() {
