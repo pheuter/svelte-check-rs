@@ -1,0 +1,37 @@
+name: NPM Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    if: ${{ github.event.release.prerelease == false }}
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download release assets
+        run: |
+          mkdir -p assets
+          gh release download "${{ github.event.release.tag_name }}" --dir assets
+
+      - name: Build npm packages
+        run: |
+          node scripts/npm/build-packages.mjs \
+            --tag "${{ github.event.release.tag_name }}" \
+            --assets-dir assets \
+            --out-dir dist/npm
+
+      - name: Publish npm packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          node -e "const fs=require('fs');const {execSync}=require('child_process');const data=JSON.parse(fs.readFileSync('dist/npm/publish-order.json','utf8'));for(const pkg of data.packages){console.log('Publishing',pkg);execSync('npm publish --access public \"'+pkg+'\"',{stdio:'inherit'});}"
