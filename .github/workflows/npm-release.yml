@@ -1,36 +1,68 @@
 name: NPM Release
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to publish (e.g. v0.8.0-beta.2)"
+        required: true
 
 jobs:
   publish:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20.x'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Resolve tag
+        id: resolve-tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --tags --force
+          tag=$(git tag --points-at "${{ github.event.workflow_run.head_sha }}" | head -n 1)
+          if [ -z "$tag" ]; then
+            echo "No tag found for commit; skipping publish."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Download release assets
+        if: ${{ steps.resolve-tag.outputs.tag != '' }}
         run: |
           mkdir -p assets
-          gh release download "${{ github.event.release.tag_name }}" --dir assets
+          gh release download "${{ steps.resolve-tag.outputs.tag }}" --dir assets
 
       - name: Build npm packages
+        if: ${{ steps.resolve-tag.outputs.tag != '' }}
         run: |
           node scripts/npm/build-packages.mjs \
-            --tag "${{ github.event.release.tag_name }}" \
+            --tag "${{ steps.resolve-tag.outputs.tag }}" \
             --assets-dir assets \
             --out-dir dist/npm
 
       - name: Publish npm packages
+        if: ${{ steps.resolve-tag.outputs.tag != '' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          node -e "const fs=require('fs');const {execSync}=require('child_process');const prerelease='${{ github.event.release.prerelease }}'==='true';const distTag=prerelease?'beta':'latest';const data=JSON.parse(fs.readFileSync('dist/npm/publish-order.json','utf8'));for(const pkg of data.packages){console.log('Publishing',pkg,'tag',distTag);execSync('npm publish --access public --tag '+distTag+' \"'+pkg+'\"',{stdio:'inherit'});}"
+          node -e "const fs=require('fs');const {execSync}=require('child_process');const tag='${{ steps.resolve-tag.outputs.tag }}';const distTag=tag.includes('-')?'beta':'latest';const data=JSON.parse(fs.readFileSync('dist/npm/publish-order.json','utf8'));for(const pkg of data.packages){console.log('Publishing',pkg,'tag',distTag);execSync('npm publish --access public --tag '+distTag+' \"'+pkg+'\"',{stdio:'inherit'});}"
