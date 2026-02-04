@@ -1,0 +1,20 @@
+{
+  "name": "svelte-check-rs",
+  "version": "0.0.0",
+  "description": "High-performance Svelte type-checker and linter",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pheuter/svelte-check-rs"
+  },
+  "homepage": "https://svelte-check-rs.vercel.app/",
+  "bin": {
+    "svelte-check-rs": "bin/svelte-check-rs.js"
+  },
+  "files": [
+    "bin/**",
+    "README.md",
+    "LICENSE"
+  ],
+  "optionalDependencies": {}
+}

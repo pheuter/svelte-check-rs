@@ -283,13 +283,9 @@
                 </button>
               </code>
               <p class="install-note">
-                Postinstall downloads the binary. If lifecycle scripts are blocked, trust the package:
+                Uses platform-specific optional dependencies to provide the binary. If you install with
+                <span class="nowrap">--no-optional</span>, re-enable optional deps or use the shell/PowerShell installers below.
               </p>
-              <code class="code-block"><span class="dim">// pnpm</span>
-pnpm --config.ignore-scripts=false i -D svelte-check-rs
-
-<span class="dim">// bun</span>
-bun pm trust svelte-check-rs</code>
             </div>
             <div class="install-block full">
               <div class="install-label">Replace existing scripts</div>

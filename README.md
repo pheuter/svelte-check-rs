@@ -19,15 +19,7 @@ A high-performance, Rust-powered diagnostic engine designed as a drop-in replace
 npm install -D svelte-check-rs
 ```
 
-Postinstall downloads the binary. If lifecycle scripts are blocked, trust the package:
-
-```bash
-# pnpm
-pnpm --config.ignore-scripts=false i -D svelte-check-rs
-
-# bun
-bun pm trust svelte-check-rs
-```
+The npm package uses platform-specific optional dependencies to provide the binary. If you install with `--no-optional`, re-enable optional dependencies or use the shell/PowerShell installers below.
 
 Then add to your package.json scripts:
 
