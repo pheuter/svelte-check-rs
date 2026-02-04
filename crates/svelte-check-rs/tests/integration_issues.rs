@@ -126,7 +126,7 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
 }
 
 /// Runs svelte-check-rs on a fixture with JSON output
-fn run_check_json(fixture_path: &PathBuf, diagnostic_sources: &str) -> (i32, Vec<JsonDiagnostic>) {
+fn run_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
     // Ensure fixture is ready
     ensure_fixture_ready(fixture_path, &BUNDLER_READY);
 
@@ -138,8 +138,6 @@ fn run_check_json(fixture_path: &PathBuf, diagnostic_sources: &str) -> (i32, Vec
     let output = Command::new(binary_path())
         .arg("--workspace")
         .arg(fixture_path)
-        .arg("--diagnostic-sources")
-        .arg(diagnostic_sources)
         .arg("--output")
         .arg("json")
         .output()
@@ -156,6 +154,17 @@ fn run_check_json(fixture_path: &PathBuf, diagnostic_sources: &str) -> (i32, Vec
     });
 
     (exit_code, diagnostics)
+}
+
+fn filter_diagnostics_by_source(
+    diagnostics: &[JsonDiagnostic],
+    source: &str,
+) -> Vec<JsonDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.source == source)
+        .cloned()
+        .collect()
 }
 
 /// Verifies that an expected diagnostic is present in the results
@@ -223,7 +232,8 @@ where
 #[serial]
 fn test_colon_in_import_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js,svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
     // Verify no parse errors or svelte-related errors exist for this file
     assert_no_diagnostics_in_file(&diagnostics, "issue-21-colon-import/+page.svelte");
@@ -238,7 +248,8 @@ fn test_colon_in_import_no_errors() {
 #[serial]
 fn test_regex_with_colon_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js,svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
     // Verify no diagnostics exist for this file
     assert_no_diagnostics_in_file(&diagnostics, "issue-21-regex-colon/+page.svelte");
@@ -260,15 +271,16 @@ fn test_regex_with_colon_no_errors() {
 ///
 /// Fixture: src/routes/issue-20-svelte-ignore/+page.svelte
 /// Line numbers for reference:
-///   Line 6: <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+///   Line 6: <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 ///   Line 7: <div tabindex="0"> - this warning should be suppressed
 #[test]
 #[serial]
 fn test_svelte_ignore_suppresses_a11y_warning() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
-    // Verify no a11y-no-noninteractive-tabindex warning exists for this file
+    // Verify no a11y_no_noninteractive_tabindex warning exists for this file
     assert_no_diagnostics_in_file(&diagnostics, "issue-20-svelte-ignore/+page.svelte");
 }
 
@@ -283,13 +295,14 @@ fn test_svelte_ignore_suppresses_a11y_warning() {
 #[serial]
 fn test_svelte_ignore_only_affects_next_element() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
     // Should have exactly ONE warning for the second div at line 9
     let expected = ExpectedDiagnostic {
         filename: "issue-20-svelte-ignore-scope/+page.svelte",
         line: 9,
-        code: "a11y-no-noninteractive-tabindex",
+        code: "a11y_no_noninteractive_tabindex",
         message_contains: "tabindex",
     };
     assert_diagnostic_present(&diagnostics, &expected);
@@ -298,7 +311,7 @@ fn test_svelte_ignore_only_affects_next_element() {
     let warning_count = count_diagnostics_matching(&diagnostics, |d| {
         d.filename
             .ends_with("issue-20-svelte-ignore-scope/+page.svelte")
-            && d.code == "a11y-no-noninteractive-tabindex"
+            && d.code == "a11y_no_noninteractive_tabindex"
     });
     assert_eq!(
         warning_count,
@@ -323,13 +336,14 @@ fn test_svelte_ignore_only_affects_next_element() {
 #[serial]
 fn test_no_svelte_ignore_produces_warning() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
     // Verify warning exists on line 6 with correct code
     let expected = ExpectedDiagnostic {
         filename: "issue-20-no-pragma/+page.svelte",
         line: 6,
-        code: "a11y-no-noninteractive-tabindex",
+        code: "a11y_no_noninteractive_tabindex",
         message_contains: "tabindex",
     };
     assert_diagnostic_present(&diagnostics, &expected);
@@ -391,7 +405,7 @@ fn test_tsconfig_exclude_filters_svelte_diagnostics() {
     let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
 
     // Restore original tsconfig before asserting (ensures cleanup even on failure)
     fs::write(&tsconfig_path, &original_tsconfig).expect("Failed to restore tsconfig");
@@ -409,13 +423,14 @@ fn test_tsconfig_exclude_filters_svelte_diagnostics() {
 #[serial]
 fn test_non_excluded_files_still_checked() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
     // Verify warning exists on line 6 with correct code
     let expected = ExpectedDiagnostic {
         filename: "issue-19-not-excluded/+page.svelte",
         line: 6,
-        code: "a11y-no-noninteractive-tabindex",
+        code: "a11y_no_noninteractive_tabindex",
         message_contains: "tabindex",
     };
     assert_diagnostic_present(&diagnostics, &expected);
@@ -435,7 +450,8 @@ fn test_non_excluded_files_still_checked() {
 #[serial]
 fn test_issue_68_rest_props_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Verify no TS diagnostics exist for the valid rest props fixture
     assert_no_diagnostics_in_file(&diagnostics, "issue-68-rest-props/+page.svelte");
@@ -445,7 +461,8 @@ fn test_issue_68_rest_props_no_error() {
 #[serial]
 fn test_issue_68_rest_props_reports_type_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Verify a deliberate type error is still reported for the invalid fixture
     let expected = ExpectedDiagnostic {
@@ -469,7 +486,8 @@ fn test_issue_68_rest_props_reports_type_error() {
 #[serial]
 fn test_issue_74_computed_props_in_mount_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "lib/issue-74-mount.ts");
 }
@@ -478,7 +496,8 @@ fn test_issue_74_computed_props_in_mount_no_error() {
 #[serial]
 fn test_issue_74_computed_props_missing_required_prop_reports_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     let expected = ExpectedDiagnostic {
         filename: "lib/issue-74-mount-invalid.ts",
@@ -501,7 +520,8 @@ fn test_issue_74_computed_props_missing_required_prop_reports_error() {
 #[serial]
 fn test_issue_77_multiline_style_directive_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "issue-77-multiline-style/+page.svelte");
 }
@@ -518,7 +538,8 @@ fn test_issue_77_multiline_style_directive_no_error() {
 #[serial]
 fn test_issue_77_multiline_normal_attribute_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "issue-77-multiline-attr/+page.svelte");
 }
@@ -535,7 +556,8 @@ fn test_issue_77_multiline_normal_attribute_no_error() {
 #[serial]
 fn test_issue_79_mount_exports_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "lib/issue-79-mount.ts");
 }
@@ -580,7 +602,8 @@ fn test_tsconfig_exclude_wildcard_patterns() {
     let cache_path = cache_root(&fixture_path);
     let _ = fs::remove_dir_all(&cache_path);
 
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
     // Restore original tsconfig before asserting
     fs::write(&tsconfig_path, &original_tsconfig).expect("Failed to restore tsconfig");
@@ -687,6 +710,7 @@ fn run_modules_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) 
 fn test_svelte_ts_files_no_parse_errors() {
     let fixture_path = fixtures_dir().join("svelte-modules");
     let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Check that no TS1005 (parse error) diagnostics exist for .svelte.ts files
     let parse_errors: Vec<_> = diagnostics
@@ -744,6 +768,7 @@ fn test_svelte_ts_files_relative_path_with_dot() {
         eprintln!("Raw output:\n{}", stdout);
         vec![]
     });
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Check that no TS1005 (parse error) diagnostics exist for .svelte.ts files
     let parse_errors: Vec<_> = diagnostics
@@ -781,6 +806,7 @@ fn test_svelte_ts_files_relative_path_with_dot() {
 fn test_issue_35_multiline_state_with_trailing_comma() {
     let fixture_path = fixtures_dir().join("svelte-modules");
     let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Check that no parse errors exist for the issue-35 test file specifically
     let issue_35_errors: Vec<_> = diagnostics
@@ -813,6 +839,7 @@ fn test_issue_35_multiline_state_with_trailing_comma() {
 fn test_issue_35_svelte_component_multiline_runes() {
     let fixture_path = fixtures_dir().join("svelte-modules");
     let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Check that no parse errors exist for the .svelte component
     let component_errors: Vec<_> = diagnostics
@@ -911,7 +938,8 @@ fn test_issue_35_transformed_output_is_valid() {
 #[serial]
 fn test_issue_38_void_elements_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "svelte");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
     // Verify no parse errors for test-issues file
     let parse_errors: Vec<_> = diagnostics
@@ -1350,7 +1378,8 @@ fn test_issue_46_regex_edge_cases_parser_only() {
 #[serial]
 fn test_issue_87_90_no_ts_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "issue-87-attach-details/+page.svelte");
     assert_no_diagnostics_in_file(&diagnostics, "issue-88-dynamic-components/+page.svelte");
@@ -1363,7 +1392,8 @@ fn test_issue_87_90_no_ts_errors() {
 #[serial]
 fn test_complex_snippet_contextual_typing_no_ts_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(
         &diagnostics,
@@ -1376,7 +1406,8 @@ fn test_complex_snippet_contextual_typing_no_ts_errors() {
 #[serial]
 fn test_namespace_component_generic_snippets_no_ts_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(
         &diagnostics,
@@ -1412,7 +1443,8 @@ fn test_namespace_component_generic_snippets_no_ts_errors() {
 #[serial]
 fn test_issue_93_type_narrowing_after_throw() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Verify no "possibly undefined" errors for this file
     let undefined_errors: Vec<_> = diagnostics
@@ -1441,7 +1473,8 @@ fn test_issue_93_type_narrowing_after_throw() {
 #[serial]
 fn test_issue_93_type_narrowing_with_guards() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Verify no type errors for this file
     let type_errors: Vec<_> = diagnostics
@@ -1469,7 +1502,8 @@ fn test_issue_93_type_narrowing_with_guards() {
 #[serial]
 fn test_issue_93_if_block_narrowing() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     // Verify no null/undefined errors for this file
     let null_errors: Vec<_> = diagnostics
@@ -1503,7 +1537,8 @@ fn test_issue_93_if_block_narrowing() {
 #[serial]
 fn test_issue_93_store_alias_no_redeclare() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "issue-93-store-alias/+page.svelte");
 }
@@ -1516,7 +1551,8 @@ fn test_issue_93_store_alias_no_redeclare() {
 #[serial]
 fn test_issue_93_snippet_module_export() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "issue-93-snippet-export/+page.svelte");
 }
@@ -1529,10 +1565,60 @@ fn test_issue_93_snippet_module_export() {
 #[serial]
 fn test_issue_93_snippet_instance_typeof() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path, "js");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(
         &diagnostics,
         "issue-93-snippet-instance-typeof/+page.svelte",
+    );
+}
+
+/// Issue #96: Label wrapping a component should not trigger a11y-label-has-associated-control.
+///
+/// Fixture: src/routes/issue-96-label-component/+page.svelte
+#[test]
+#[serial]
+fn test_issue_96_label_component_no_a11y() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-96-label-component/+page.svelte");
+}
+
+/// Issue #96: Click handlers on td inside role="grid" should not require key handlers.
+///
+/// Fixture: src/routes/issue-96-click-on-td/+page.svelte
+#[test]
+#[serial]
+fn test_issue_96_click_on_td_in_grid_no_a11y() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-96-click-on-td/+page.svelte");
+}
+
+/// Issue #96: state-referenced-locally warnings should not be duplicated.
+///
+/// Fixture: src/routes/issue-96-duplicate-warnings/+page.svelte
+#[test]
+#[serial]
+fn test_issue_96_state_referenced_locally_not_duplicated() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
+
+    let count = count_diagnostics_matching(&diagnostics, |d| {
+        d.filename
+            .ends_with("issue-96-duplicate-warnings/+page.svelte")
+            && d.code == "state_referenced_locally"
+    });
+
+    assert_eq!(
+        count, 1,
+        "Expected a single state-referenced-locally warning, got {}:\n{:#?}",
+        count, diagnostics
     );
 }

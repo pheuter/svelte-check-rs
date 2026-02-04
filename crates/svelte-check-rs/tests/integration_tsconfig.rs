@@ -132,6 +132,13 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
 /// Runs svelte-check-rs on a fixture with JSON output
 fn run_check_json(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>) {
     let (exit_code, diagnostics, _stderr) = run_check_json_internal(fixture_name, false);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+    (exit_code, diagnostics)
+}
+
+/// Runs svelte-check-rs on a fixture with JSON output (all diagnostic sources).
+fn run_check_json_all(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>) {
+    let (exit_code, diagnostics, _stderr) = run_check_json_internal(fixture_name, false);
     (exit_code, diagnostics)
 }
 
@@ -163,8 +170,6 @@ fn run_check_json_internal(
     let output = Command::new(&binary)
         .arg("--workspace")
         .arg(&fixture_path)
-        .arg("--diagnostic-sources")
-        .arg("js")
         .args(if emit_ts { vec!["--emit-ts"] } else { vec![] })
         .arg("--output")
         .arg("json")
@@ -187,7 +192,9 @@ fn run_check_json_internal(
 
 /// Runs svelte-check-rs on a fixture with JSON output and emitted TS output.
 fn run_check_json_with_emit_ts(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>, String) {
-    run_check_json_internal(fixture_name, true)
+    let (exit_code, diagnostics, stderr) = run_check_json_internal(fixture_name, true);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+    (exit_code, diagnostics, stderr)
 }
 
 /// Extract emitted TS block for a relative path from stderr output.
@@ -197,6 +204,18 @@ fn extract_emitted_ts(stderr: &str, relative_path: &str) -> Option<String> {
     let rest = &stderr[start..];
     let end = rest.find("=== TypeScript for ").unwrap_or(rest.len());
     Some(rest[..end].to_string())
+}
+
+/// Filters diagnostics by source (ts, svelte, etc.)
+fn filter_diagnostics_by_source(
+    diagnostics: &[JsonDiagnostic],
+    source: &str,
+) -> Vec<JsonDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.source == source)
+        .cloned()
+        .collect()
 }
 
 /// Verifies that an expected error is present in the diagnostics
@@ -995,7 +1014,7 @@ fn modules_expected_errors() -> Vec<ExpectedError> {
 #[test]
 #[serial]
 fn test_modules_exact_errors() {
-    let (exit_code, diagnostics) = run_check_json("svelte-modules");
+    let (exit_code, diagnostics) = run_check_json_all("svelte-modules");
 
     // Verify exact errors
     assert_exact_errors(&diagnostics, &modules_expected_errors());
@@ -1028,7 +1047,7 @@ fn test_modules_no_import_resolution_errors() {
 #[test]
 #[serial]
 fn test_modules_props_error_location() {
-    let (_exit_code, diagnostics) = run_check_json("svelte-modules");
+    let (_exit_code, diagnostics) = run_check_json_all("svelte-modules");
 
     // Verify the $props error is on the correct line
     let props_error = diagnostics

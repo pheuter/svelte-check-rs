@@ -78,12 +78,10 @@ svelte-check-rs --output human-verbose
 | `--watch` | Watch mode |
 | `--preserveWatchOutput` | Don't clear screen in watch mode |
 | `--fail-on-warnings` | Exit with error on warnings |
-| `--diagnostic-sources <LIST>` | Which diagnostics: `js`, `svelte`, `css` |
 | `--ignore <PATTERNS>` | Glob patterns to ignore |
 | `--no-cache` | Disable per-project cache + incremental builds (fresh run) |
 | `--disable-sveltekit-cache` | Disable cached .svelte-kit mirror |
 | `--skip-tsgo` | Skip TypeScript type-checking |
-| `--skip-svelte-compiler` | Skip Svelte compiler diagnostics |
 | `--tsgo-version` | Show installed tsgo version + path |
 | `--tsgo-update[=<VER>]` | Update tsgo to latest or specific version |
 | `--bun-version` | Show installed bun version + path |
@@ -99,7 +97,7 @@ crates/
 ├── svelte-parser/        # Lexer + parser + AST types
 ├── source-map/           # Position tracking and mapping
 ├── svelte-transformer/   # Svelte → TypeScript transformation
-├── svelte-diagnostics/   # A11y, CSS, and component checks
+├── svelte-diagnostics/   # A11y and component checks
 ├── tsgo-runner/          # tsgo process management
 ├── bun-runner/           # bun-managed Svelte compiler bridge
 └── svelte-check-rs/      # CLI binary

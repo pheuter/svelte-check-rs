@@ -243,7 +243,6 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         eprintln!();
         eprintln!("=== CLI overrides ===");
         eprintln!("ignore patterns: {:?}", args.ignore);
-        eprintln!("diagnostic_sources: {:?}", args.diagnostic_sources);
         eprintln!("threshold: {:?}", args.threshold);
         return Ok(CheckSummary {
             file_count: 0,
@@ -412,12 +411,7 @@ async fn run_single_check(
     let compiler_warning_settings = parse_compiler_warnings(args.compiler_warnings.as_deref())?;
 
     // Base diagnostic options (filename will be set per-file)
-    let base_diag_options = DiagnosticOptions {
-        a11y: args.include_svelte(),
-        css: args.include_css(),
-        component: args.include_svelte(),
-        filename: None,
-    };
+    let base_diag_options = DiagnosticOptions::all();
 
     struct FileOutput {
         text: Option<String>,
@@ -494,8 +488,7 @@ async fn run_single_check(
             // Transform for TypeScript checking (if JS diagnostics enabled and not skipping tsgo)
             // Also transform if emit_ts or emit_source_map is enabled (for debugging)
             let mut transformed = None;
-            let should_transform =
-                (args.include_js() && !args.skip_tsgo) || args.emit_ts || args.emit_source_map;
+            let should_transform = !args.skip_tsgo || args.emit_ts || args.emit_source_map;
             if should_transform {
                 let virtual_path = virtual_path_for(file_path, workspace, true);
                 let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
@@ -539,7 +532,7 @@ async fn run_single_check(
                 }
 
                 // Only add to transformed files collection if we're going to run tsgo
-                if args.include_js() && !args.skip_tsgo {
+                if !args.skip_tsgo {
                     // Create the virtual path (original.svelte -> original.svelte.ts)
                     let virtual_path = virtual_path_for(file_path, workspace, true);
 
@@ -587,19 +580,15 @@ async fn run_single_check(
                 })
             };
 
-            let compiler_input = if args.include_svelte() && !args.skip_svelte_compiler {
-                Some(BunInput {
-                    filename: file_path.clone(),
-                    source: source.clone(),
-                    options: BunCompileOptions {
-                        runes: compiler_runes,
-                        dev: None,
-                        generate: None,
-                    },
-                })
-            } else {
-                None
-            };
+            let compiler_input = Some(BunInput {
+                filename: file_path.clone(),
+                source: source.clone(),
+                options: BunCompileOptions {
+                    runes: compiler_runes,
+                    dev: None,
+                    generate: None,
+                },
+            });
 
             FileResult {
                 output,
@@ -646,7 +635,8 @@ async fn run_single_check(
 
             // Transform for TypeScript checking (if JS diagnostics enabled)
             let mut transformed = None;
-            if args.include_js() {
+            let should_transform = !args.skip_tsgo || args.emit_ts || args.emit_source_map;
+            if should_transform {
                 // If emit_ts is enabled, print transformed TypeScript for each file.
                 if args.emit_ts {
                     let relative_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
@@ -669,7 +659,9 @@ async fn run_single_check(
                     original_line_index: LineIndex::new(&source),
                 };
 
-                transformed = Some((virtual_path, transformed_file));
+                if !args.skip_tsgo {
+                    transformed = Some((virtual_path, transformed_file));
+                }
             }
 
             // Count errors and warnings
@@ -755,7 +747,7 @@ async fn run_single_check(
     let mut compiler_total_time = None;
 
     // Run Svelte compiler diagnostics (bun) if enabled
-    if args.include_svelte() && !args.skip_svelte_compiler && !compiler_inputs.is_empty() {
+    if !compiler_inputs.is_empty() {
         let bun_start = Instant::now();
         match run_bun_check(workspace, compiler_inputs).await {
             Ok(mut diagnostics) => {
@@ -799,7 +791,7 @@ async fn run_single_check(
     let mut sveltekit_sync_ran = None;
 
     // Run TypeScript type-checking if JS diagnostics are enabled and not skipping tsgo
-    if args.include_js() && !args.skip_tsgo {
+    if !args.skip_tsgo {
         let transformed = transformed_files;
         transformed_count = transformed.files.len();
 

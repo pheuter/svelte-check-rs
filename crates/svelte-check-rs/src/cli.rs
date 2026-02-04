@@ -40,10 +40,6 @@ pub struct Args {
     #[arg(long = "compiler-warnings")]
     pub compiler_warnings: Option<String>,
 
-    /// Diagnostic sources to include (comma-separated: js,svelte,css)
-    #[arg(long = "diagnostic-sources")]
-    pub diagnostic_sources: Option<String>,
-
     /// Glob patterns to ignore
     #[arg(long)]
     pub ignore: Vec<String>,
@@ -97,13 +93,9 @@ pub struct Args {
     #[arg(long = "list-files")]
     pub list_files: bool,
 
-    /// Skip TypeScript type-checking (tsgo), only run Svelte diagnostics (a11y, CSS, component)
+    /// Skip TypeScript type-checking (tsgo)
     #[arg(long = "skip-tsgo")]
     pub skip_tsgo: bool,
-
-    /// Skip Svelte compiler diagnostics (bun)
-    #[arg(long = "skip-svelte-compiler")]
-    pub skip_svelte_compiler: bool,
 
     /// Process only a single file (useful for isolating issues)
     #[arg(long = "single-file")]
@@ -160,32 +152,7 @@ pub enum TimingFormat {
     Json,
 }
 
-impl Args {
-    /// Returns whether JS diagnostics should be included.
-    #[allow(dead_code)] // Will be used when tsgo integration is complete
-    pub fn include_js(&self) -> bool {
-        self.diagnostic_sources
-            .as_ref()
-            .map(|s| s.contains("js"))
-            .unwrap_or(true)
-    }
-
-    /// Returns whether Svelte diagnostics should be included.
-    pub fn include_svelte(&self) -> bool {
-        self.diagnostic_sources
-            .as_ref()
-            .map(|s| s.contains("svelte"))
-            .unwrap_or(true)
-    }
-
-    /// Returns whether CSS diagnostics should be included.
-    pub fn include_css(&self) -> bool {
-        self.diagnostic_sources
-            .as_ref()
-            .map(|s| s.contains("css"))
-            .unwrap_or(true)
-    }
-}
+impl Args {}
 
 #[cfg(test)]
 mod tests {
@@ -221,14 +188,6 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_sources() {
-        let args = Args::parse_from(["svelte-check-rs", "--diagnostic-sources", "js,svelte"]);
-        assert!(args.include_js());
-        assert!(args.include_svelte());
-        assert!(!args.include_css());
-    }
-
-    #[test]
     fn test_debug_flags() {
         // Test --list-files
         let args = Args::parse_from(["svelte-check-rs", "--list-files"]);
@@ -237,10 +196,6 @@ mod tests {
         // Test --skip-tsgo
         let args = Args::parse_from(["svelte-check-rs", "--skip-tsgo"]);
         assert!(args.skip_tsgo);
-
-        // Test --skip-svelte-compiler
-        let args = Args::parse_from(["svelte-check-rs", "--skip-svelte-compiler"]);
-        assert!(args.skip_svelte_compiler);
 
         // Test --single-file
         let args = Args::parse_from(["svelte-check-rs", "--single-file", "src/App.svelte"]);
@@ -278,14 +233,12 @@ mod tests {
             "--emit-ts",
             "--emit-source-map",
             "--skip-tsgo",
-            "--skip-svelte-compiler",
             "--single-file",
             "test.svelte",
         ]);
         assert!(args.emit_ts);
         assert!(args.emit_source_map);
         assert!(args.skip_tsgo);
-        assert!(args.skip_svelte_compiler);
         assert_eq!(
             args.single_file.as_ref().map(|p| p.as_str()),
             Some("test.svelte")

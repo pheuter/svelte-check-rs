@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Svelte-specific diagnostics (a11y, CSS, component validation)"
+description = "Svelte-specific diagnostics (a11y, component validation)"
 
 [dependencies]
 source-map.workspace = true
