@@ -2,9 +2,10 @@
 
 use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::process::Stdio;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -310,12 +311,31 @@ impl BunRunner {
     ///
     /// - Unix: `curl -fsSL https://bun.sh/install | bash`
     /// - Windows: `powershell -c "irm bun.sh/install.ps1 | iex"`
+    ///
+    /// Uses file locking to prevent concurrent installs in monorepo scenarios.
     async fn install_bun_via_script(version: Option<&str>) -> Result<Utf8PathBuf, BunError> {
         let home = dirs::home_dir()
             .ok_or_else(|| BunError::InstallFailed("could not determine home directory".into()))?;
         let home = Utf8PathBuf::try_from(home).map_err(|_| {
             BunError::InstallFailed("home directory path is not valid UTF-8".into())
         })?;
+
+        // Acquire lock to prevent concurrent installs
+        let lock_dir = home.join(".bun");
+        fs::create_dir_all(&lock_dir)
+            .map_err(|e| BunError::InstallFailed(format!("failed to create lock dir: {e}")))?;
+        let lock_path = lock_dir.join(".install.lock");
+        let lock_file = File::create(&lock_path)
+            .map_err(|e| BunError::InstallFailed(format!("failed to create lock file: {e}")))?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| BunError::InstallFailed(format!("failed to acquire lock: {e}")))?;
+
+        // Double-check: another process may have installed while we waited for the lock
+        let bun_bin = home.join(".bun/bin");
+        if let Some(path) = find_bun_in_bin(&bun_bin) {
+            return Ok(path);
+        }
 
         eprintln!("Installing bun via bun.sh...");
 
