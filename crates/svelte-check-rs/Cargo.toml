@@ -39,6 +39,7 @@ swc_common.workspace = true
 insta.workspace = true
 pretty_assertions.workspace = true
 text-size.workspace = true
+fs2.workspace = true
 serial_test = "3.2"
 serde.workspace = true
 serde_json.workspace = true

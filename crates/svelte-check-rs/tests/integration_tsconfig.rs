@@ -16,8 +16,14 @@
 // Skip all tests on Windows - tsgo and path handling differs
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
+use fs2::FileExt;
 use serde::Deserialize;
 use serial_test::serial;
+use std::fs;
+use std::fs::OpenOptions;
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -25,24 +31,23 @@ use std::sync::OnceLock;
 // SHARED TEST INFRASTRUCTURE
 // ============================================================================
 
-/// Path to the test fixtures directory
-fn fixtures_dir() -> std::path::PathBuf {
+fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("test-fixtures")
-        .join("projects")
+        .to_path_buf()
+}
+
+/// Path to the test fixtures directory
+fn fixtures_dir() -> std::path::PathBuf {
+    workspace_root().join("test-fixtures").join("projects")
 }
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    workspace_root()
         .join("target")
         .join("debug")
         .join("svelte-check-rs")
@@ -54,6 +59,21 @@ fn cache_root(fixture_path: &std::path::Path) -> std::path::PathBuf {
         .join("node_modules")
         .join(".cache")
         .join("svelte-check-rs")
+}
+
+fn lock_fixture(fixture_name: &str) -> std::fs::File {
+    let lock_dir = workspace_root().join("target").join("test-locks");
+    fs::create_dir_all(&lock_dir).expect("create lock dir");
+    let lock_path = lock_dir.join(format!("{fixture_name}.lock"));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open lock file");
+    file.lock_exclusive().expect("lock fixture");
+    file
 }
 
 /// A diagnostic from the JSON output
@@ -87,6 +107,8 @@ struct ExpectedError {
 }
 
 /// Fixture state tracking
+static BIN_READY: OnceLock<()> = OnceLock::new();
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
 static BUNDLER_READY: OnceLock<()> = OnceLock::new();
 static NODENEXT_READY: OnceLock<()> = OnceLock::new();
 static NODE16_READY: OnceLock<()> = OnceLock::new();
@@ -101,12 +123,14 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
         let cache_path = cache_root(&fixture_path);
         let _ = std::fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules exists
+        // Check if node_modules and tsgo exist
         let node_modules = fixture_path.join("node_modules");
-        if !node_modules.exists() {
+        let tsgo_bin = node_modules.join(".bin/tsgo");
+        if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for {}...", fixture_name);
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(&fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(&fixture_path)
                 .output()
@@ -122,11 +146,37 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
         }
 
         // Run svelte-kit sync to generate types (for SvelteKit projects)
-        let _ = Command::new("bunx")
-            .args(["svelte-kit", "sync"])
-            .current_dir(&fixture_path)
+        run_sveltekit_sync(&fixture_path);
+    });
+}
+
+fn ensure_binary_built() {
+    BIN_READY.get_or_init(|| {
+        let _ = Command::new("cargo")
+            .args(["build", "-p", "svelte-check-rs"])
             .output();
     });
+}
+
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
+}
+
+fn run_sveltekit_sync(fixture_path: &std::path::PathBuf) {
+    let bun_path = bun_path_for(fixture_path);
+    let _ = Command::new(bun_path.as_std_path())
+        .args(["x", "svelte-kit", "sync"])
+        .current_dir(fixture_path)
+        .output();
 }
 
 /// Runs svelte-check-rs on a fixture with JSON output
@@ -147,6 +197,8 @@ fn run_check_json_internal(
     fixture_name: &str,
     emit_ts: bool,
 ) -> (i32, Vec<JsonDiagnostic>, String) {
+    let _lock = lock_fixture(fixture_name);
+
     // Map fixture name to its ready flag
     let ready = match fixture_name {
         "sveltekit-bundler" => &BUNDLER_READY,
@@ -163,9 +215,7 @@ fn run_check_json_internal(
     let binary = binary_path();
 
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let output = Command::new(&binary)
         .arg("--workspace")

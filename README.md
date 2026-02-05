@@ -67,6 +67,16 @@ svelte-check-rs --output machine
 svelte-check-rs --output human-verbose
 ```
 
+## Requirements
+
+`svelte-check-rs` expects `tsgo` to be available from your workspace `node_modules`. Install it via:
+
+```bash
+npm install -D @typescript/native-preview
+```
+
+Some package managers (for example, bun) may auto-install peer dependencies, but explicit installation is always supported.
+
 ### CLI Options
 
 | Option | Description |
@@ -83,7 +93,6 @@ svelte-check-rs --output human-verbose
 | `--disable-sveltekit-cache` | Disable cached .svelte-kit mirror |
 | `--skip-tsgo` | Skip TypeScript type-checking |
 | `--tsgo-version` | Show installed tsgo version + path |
-| `--tsgo-update[=<VER>]` | Update tsgo to latest or specific version |
 | `--bun-version` | Show installed bun version + path |
 | `--bun-update[=<VER>]` | Update bun to latest or specific version |
 | `--debug-paths` | Show resolved binaries (tsgo, bun, svelte-kit) |

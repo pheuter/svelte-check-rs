@@ -12,11 +12,17 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
+use fs2::FileExt;
 use serde::Deserialize;
 use serial_test::serial;
 use std::fs;
+use std::fs::OpenOptions;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -24,24 +30,23 @@ use std::time::Duration;
 // TEST INFRASTRUCTURE
 // ============================================================================
 
-/// Path to the test fixtures directory
-fn fixtures_dir() -> PathBuf {
+fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("test-fixtures")
-        .join("projects")
+        .to_path_buf()
+}
+
+/// Path to the test fixtures directory
+fn fixtures_dir() -> PathBuf {
+    workspace_root().join("test-fixtures").join("projects")
 }
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    workspace_root()
         .join("target")
         .join("debug")
         .join("svelte-check-rs")
@@ -84,6 +89,72 @@ fn cache_root(fixture_path: &std::path::Path) -> PathBuf {
         .expect("cache_root called before cache was populated - use cache_base for cleanup")
 }
 
+/// Ensures dependencies are installed for a fixture.
+fn ensure_fixture_deps(fixture_path: &PathBuf) {
+    let node_modules = fixture_path.join("node_modules");
+    let tsgo_bin = node_modules.join(".bin/tsgo");
+    if !node_modules.exists() || !tsgo_bin.exists() {
+        let bun_path = bun_path_for(fixture_path);
+        let output = Command::new(bun_path.as_std_path())
+            .arg("install")
+            .current_dir(fixture_path)
+            .output()
+            .expect("Failed to run bun install");
+        assert!(
+            output.status.success(),
+            "bun install failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+static BIN_READY: OnceLock<()> = OnceLock::new();
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
+
+fn ensure_binary_built() {
+    BIN_READY.get_or_init(|| {
+        let _ = Command::new("cargo")
+            .args(["build", "-p", "svelte-check-rs"])
+            .output();
+    });
+}
+
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
+}
+
+fn run_sveltekit_sync(fixture_path: &PathBuf) {
+    let bun_path = bun_path_for(fixture_path);
+    let _ = Command::new(bun_path.as_std_path())
+        .args(["x", "svelte-kit", "sync"])
+        .current_dir(fixture_path)
+        .output();
+}
+
+fn lock_sveltekit_bundler() -> std::fs::File {
+    let lock_dir = workspace_root().join("target").join("test-locks");
+    fs::create_dir_all(&lock_dir).expect("create lock dir");
+    let lock_path = lock_dir.join("sveltekit-bundler.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open lock file");
+    file.lock_exclusive().expect("lock sveltekit-bundler");
+    file
+}
+
 /// A diagnostic from the JSON output
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -116,9 +187,7 @@ fn run_check_json_with_args(
     extra_args: &[&str],
 ) -> (i32, Vec<JsonDiagnostic>) {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let mut command = Command::new(binary_path());
     let output = command
@@ -183,24 +252,14 @@ fn sleep_for_timestamp_resolution() {
 #[test]
 #[serial]
 fn test_cache_migration_from_legacy_path() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     let legacy_cache = fixture_path.join(".svelte-check-rs");
     let legacy_marker = legacy_cache.join("cache/legacy.txt");
@@ -225,24 +284,14 @@ fn test_cache_migration_from_legacy_path() {
 #[test]
 #[serial]
 fn test_no_cache_does_not_write_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Clean cache to start fresh
     let cache_base_path = cache_base(&fixture_path);
@@ -265,27 +314,17 @@ fn test_no_cache_does_not_write_cache() {
 #[test]
 #[serial]
 fn test_modified_typescript_types_are_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a test TypeScript file with an initial type
     let test_file = fixture_path.join("src/lib/cache-test-types.ts");
@@ -379,27 +418,17 @@ export function getUser(): TestUser {
 #[test]
 #[serial]
 fn test_new_typescript_file_is_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Run svelte-check-rs to populate cache (without the new file)
     let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
@@ -440,27 +469,17 @@ export function brokenFunction(): number {
 #[test]
 #[serial]
 fn test_fixed_type_error_is_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a TypeScript file with a type error
     let test_file = fixture_path.join("src/lib/fixable-error.ts");
@@ -527,27 +546,17 @@ export function getValue(): number {
 #[test]
 #[serial]
 fn test_imported_module_changes_propagate() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a shared types module
     let types_file = fixture_path.join("src/lib/shared-types.ts");
@@ -631,27 +640,17 @@ export type SharedData = {
 #[test]
 #[serial]
 fn test_deleted_file_removed_from_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a TypeScript file that triggers a tsgo patch
     let temp_file = fixture_path.join("src/lib/temp-file.ts");
@@ -695,27 +694,17 @@ async function fetchValue() {
 #[test]
 #[serial]
 fn test_rapid_modifications_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     let test_file = fixture_path.join("src/lib/rapid-changes.ts");
 
@@ -761,27 +750,17 @@ fn test_rapid_modifications_detected() {
 #[test]
 #[serial]
 fn test_whitespace_changes_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     let test_file = fixture_path.join("src/lib/whitespace-test.ts");
 
@@ -830,24 +809,14 @@ fn test_whitespace_changes_detected() {
 #[test]
 #[serial]
 fn test_lockfile_change_invalidates_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
@@ -884,24 +853,14 @@ fn test_lockfile_change_invalidates_cache() {
 #[test]
 #[serial]
 fn test_node_modules_change_invalidates_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
@@ -916,6 +875,7 @@ fn test_node_modules_change_invalidates_cache() {
 
     // Touch node_modules to simulate reinstall (directory mtime changes)
     sleep_for_timestamp_resolution();
+    let node_modules = fixture_path.join("node_modules");
     let reinstall_marker = node_modules.join(".svelte-check-rs-reinstall-marker");
     let _ = fs::remove_file(&reinstall_marker);
     fs::write(&reinstall_marker, "reinstall").expect("Failed to write node_modules marker");

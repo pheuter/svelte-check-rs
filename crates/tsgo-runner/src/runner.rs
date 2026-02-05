@@ -4,12 +4,10 @@ use crate::kit;
 use crate::parser::{parse_tsgo_output, TsgoDiagnostic};
 use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use source_map::SourceMap;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::File;
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
 use tempfile::Builder;
@@ -206,17 +204,15 @@ pub enum TsgoError {
     #[error("tsgo binary not found at: {0}")]
     NotFound(Utf8PathBuf),
 
+    /// tsgo not installed in node_modules.
+    #[error(
+        "tsgo not found in node_modules starting at {0}. Install @typescript/native-preview in your workspace (some package managers may auto-install peer dependencies)."
+    )]
+    TsgoNotInstalled(Utf8PathBuf),
+
     /// Failed to write temporary files.
     #[error("failed to write temporary files: {0}")]
     TempFileFailed(String),
-
-    /// Failed to install tsgo.
-    #[error("failed to install tsgo: {0}")]
-    InstallFailed(String),
-
-    /// Bun runner error.
-    #[error("bun error: {0}")]
-    BunFailed(#[from] bun_runner::BunError),
 
     /// node_modules not found when resolving the cache directory.
     #[error(
@@ -394,66 +390,41 @@ impl TsgoRunner {
             .to_string()
     }
 
-    /// Attempts to find tsgo in workspace, PATH, or common locations.
-    ///
-    /// Search order:
-    /// 1. Workspace node_modules/.bin/tsgo (if workspace_root provided)
-    /// 2. System PATH
-    /// 3. Common installation locations
-    /// 4. Cache directory
-    pub fn find_tsgo(workspace_root: Option<&Utf8Path>) -> Option<Utf8PathBuf> {
-        // Check workspace node_modules first (most reliable for user's project)
-        if let Some(workspace) = workspace_root {
-            let workspace_tsgo = workspace.join("node_modules/.bin/tsgo");
-            if workspace_tsgo.exists() {
-                return Some(workspace_tsgo);
+    /// Resolves tsgo from node_modules/.bin by walking up from the workspace root.
+    pub fn resolve_tsgo(workspace_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        let mut current = Some(workspace_root);
+        let mut saw_node_modules = false;
+
+        while let Some(dir) = current {
+            let node_modules = dir.join("node_modules");
+            if node_modules.is_dir() {
+                saw_node_modules = true;
+                let bin_dir = node_modules.join(".bin");
+                for name in ["tsgo", "tsgo.cmd", "tsgo.exe"] {
+                    let tsgo_path = bin_dir.join(name);
+                    if tsgo_path.exists() {
+                        return Ok(tsgo_path);
+                    }
+                }
             }
+
+            current = dir.parent();
         }
 
-        // Try PATH
-        if let Ok(path) = which::which("tsgo") {
-            if let Ok(utf8_path) = Utf8PathBuf::try_from(path) {
-                return Some(utf8_path);
-            }
+        if !saw_node_modules {
+            return Err(TsgoError::NodeModulesNotFound(workspace_root.to_owned()));
         }
 
-        // Try common locations
-        let common_paths = ["/usr/local/bin/tsgo", "/usr/bin/tsgo", "~/.local/bin/tsgo"];
-
-        for path in common_paths {
-            let expanded = shellexpand::tilde(path);
-            let path = Utf8Path::new(expanded.as_ref());
-            if path.exists() {
-                return Some(path.to_owned());
-            }
-        }
-
-        // Try cache directory
-        if let Some(cache_dir) = Self::get_cache_dir() {
-            let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
-            if tsgo_path.exists() {
-                return Some(tsgo_path);
-            }
-        }
-
-        None
-    }
-
-    /// Gets the cache directory for svelte-check-rs.
-    pub fn get_cache_dir() -> Option<Utf8PathBuf> {
-        // Use XDG cache dir on Linux, ~/Library/Caches on macOS, etc.
-        dirs::cache_dir()
-            .and_then(|p| Utf8PathBuf::try_from(p).ok())
-            .map(|p| p.join("svelte-check-rs"))
+        Err(TsgoError::TsgoNotInstalled(workspace_root.to_owned()))
     }
 
     /// Gets the version of the installed tsgo binary.
     ///
     /// Returns a tuple of (version_string, path) or an error if tsgo is not found.
-    pub async fn get_tsgo_version() -> Result<(String, Utf8PathBuf), TsgoError> {
-        let tsgo_path = Self::find_tsgo(None).ok_or_else(|| {
-            TsgoError::InstallFailed("tsgo not found - run with --tsgo-update to install".into())
-        })?;
+    pub async fn get_tsgo_version(
+        workspace_root: &Utf8Path,
+    ) -> Result<(String, Utf8PathBuf), TsgoError> {
+        let tsgo_path = Self::resolve_tsgo(workspace_root)?;
 
         let output = Command::new(&tsgo_path)
             .arg("--version")
@@ -473,79 +444,6 @@ impl TsgoRunner {
 
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok((version, tsgo_path))
-    }
-
-    /// Updates tsgo to the specified version or latest if None.
-    ///
-    /// This will install/update tsgo using bun in the cache directory.
-    /// Uses file locking to prevent concurrent installs.
-    pub async fn update_tsgo(version: Option<&str>) -> Result<Utf8PathBuf, TsgoError> {
-        // Ensure bun is available
-        let bun_path = bun_runner::BunRunner::ensure_bun(None).await?;
-
-        // Get or create cache directory
-        let cache_dir = Self::get_cache_dir().ok_or_else(|| {
-            TsgoError::InstallFailed("could not determine cache directory".into())
-        })?;
-
-        std::fs::create_dir_all(&cache_dir)
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to create cache dir: {e}")))?;
-
-        // Acquire lock to prevent concurrent installs
-        let lock_path = cache_dir.join(".tsgo-install.lock");
-        let lock_file = File::create(&lock_path)
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to create lock file: {e}")))?;
-        lock_file
-            .lock_exclusive()
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to acquire lock: {e}")))?;
-
-        let package_spec = match version {
-            Some(v) => format!("@typescript/native-preview@{}", v),
-            None => "@typescript/native-preview@latest".to_string(),
-        };
-
-        eprintln!("Installing {} using bun...", package_spec);
-
-        let output = Command::new(&bun_path)
-            .args(["add", &package_spec])
-            .current_dir(&cache_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to run bun: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(TsgoError::InstallFailed(format!(
-                "bun install failed: {stderr}"
-            )));
-        }
-
-        // Verify installation
-        let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
-        if !tsgo_path.exists() {
-            return Err(TsgoError::InstallFailed(
-                "tsgo binary not found after bun install".into(),
-            ));
-        }
-
-        // Get and display the installed version
-        let version_output = Command::new(&tsgo_path)
-            .arg("--version")
-            .stdout(Stdio::piped())
-            .output()
-            .await
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-
-        if let Some(v) = version_output {
-            eprintln!("tsgo {} installed at {}", v, tsgo_path);
-        } else {
-            eprintln!("tsgo installed at {}", tsgo_path);
-        }
-
-        Ok(tsgo_path)
     }
 
     /// Clears the project cache when dependency state changes.
@@ -802,76 +700,6 @@ impl TsgoRunner {
         Err(TsgoError::SvelteKitSyncFailed(
             "svelte-kit binary not found in node_modules (searched parent directories)".into(),
         ))
-    }
-
-    /// Finds tsgo or installs it if not found.
-    ///
-    /// This will:
-    /// 1. Check workspace node_modules/.bin/tsgo (if workspace_root provided)
-    /// 2. Check if tsgo is in PATH
-    /// 3. Check common installation locations
-    /// 4. Check the cache directory
-    /// 5. If not found, install using bun in the cache directory
-    ///
-    /// Uses file locking to prevent concurrent installs in monorepo scenarios.
-    pub async fn ensure_tsgo(workspace_root: Option<&Utf8Path>) -> Result<Utf8PathBuf, TsgoError> {
-        // First try to find existing installation
-        if let Some(path) = Self::find_tsgo(workspace_root) {
-            return Ok(path);
-        }
-
-        // Ensure bun is available (auto-installs via bun.sh if needed)
-        let bun_path = bun_runner::BunRunner::ensure_bun(workspace_root).await?;
-
-        // Get or create cache directory
-        let cache_dir = Self::get_cache_dir().ok_or_else(|| {
-            TsgoError::InstallFailed("could not determine cache directory".into())
-        })?;
-
-        std::fs::create_dir_all(&cache_dir)
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to create cache dir: {e}")))?;
-
-        // Acquire lock to prevent concurrent installs
-        let lock_path = cache_dir.join(".tsgo-install.lock");
-        let lock_file = File::create(&lock_path)
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to create lock file: {e}")))?;
-        lock_file
-            .lock_exclusive()
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to acquire lock: {e}")))?;
-
-        // Double-check: another process may have installed while we waited for the lock
-        if let Some(path) = Self::find_tsgo(workspace_root) {
-            return Ok(path);
-        }
-
-        eprintln!("tsgo not found, installing @typescript/native-preview using bun...");
-
-        let output = Command::new(&bun_path)
-            .args(["add", "@typescript/native-preview"])
-            .current_dir(&cache_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| TsgoError::InstallFailed(format!("failed to run bun: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(TsgoError::InstallFailed(format!(
-                "bun install failed: {stderr}"
-            )));
-        }
-
-        // Verify installation
-        let tsgo_path = cache_dir.join("node_modules/.bin/tsgo");
-        if !tsgo_path.exists() {
-            return Err(TsgoError::InstallFailed(
-                "tsgo binary not found after bun install".into(),
-            ));
-        }
-
-        eprintln!("tsgo installed successfully at {}", tsgo_path);
-        Ok(tsgo_path)
     }
 
     /// Resolve the tsconfig path to use.

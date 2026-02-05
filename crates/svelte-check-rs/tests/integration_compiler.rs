@@ -7,10 +7,11 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
 use serde::Deserialize;
-use serial_test::serial;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -61,6 +62,9 @@ struct JsonPosition {
 }
 
 static COMPILER_READY: OnceLock<()> = OnceLock::new();
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
+static BIN_READY: OnceLock<()> = OnceLock::new();
+static COMPILER_CACHE: OnceLock<Vec<JsonDiagnostic>> = OnceLock::new();
 
 fn ensure_fixture_ready(fixture_path: &PathBuf) {
     COMPILER_READY.get_or_init(|| {
@@ -71,7 +75,8 @@ fn ensure_fixture_ready(fixture_path: &PathBuf) {
         if !node_modules.exists() {
             eprintln!("Installing dependencies for compiler-errors...");
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(fixture_path)
                 .output()
@@ -87,34 +92,62 @@ fn ensure_fixture_ready(fixture_path: &PathBuf) {
     });
 }
 
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
+}
+
+fn ensure_binary_built() {
+    BIN_READY.get_or_init(|| {
+        let _ = Command::new("cargo")
+            .args(["build", "-p", "svelte-check-rs"])
+            .output();
+    });
+}
+
+fn compiler_diagnostics(fixture_path: &PathBuf) -> Vec<JsonDiagnostic> {
+    COMPILER_CACHE
+        .get_or_init(|| {
+            ensure_fixture_ready(fixture_path);
+            ensure_binary_built();
+
+            let output = Command::new(binary_path())
+                .arg("--workspace")
+                .arg(fixture_path)
+                .arg("--output")
+                .arg("json")
+                .arg("--skip-tsgo")
+                .output()
+                .expect("Failed to run svelte-check-rs");
+
+            assert!(
+                !output.stdout.is_empty(),
+                "Expected JSON output. Stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+                panic!(
+                    "Invalid JSON output: {e}\n{}",
+                    String::from_utf8_lossy(&output.stdout)
+                )
+            })
+        })
+        .clone()
+}
+
 #[test]
-#[serial]
 fn test_component_invalid_directive_reported() {
     let fixture_path = fixtures_dir().join("compiler-errors");
-    ensure_fixture_ready(&fixture_path);
-
-    let output = Command::new(binary_path())
-        .arg("--workspace")
-        .arg(&fixture_path)
-        .arg("--output")
-        .arg("json")
-        .arg("--skip-tsgo")
-        .output()
-        .expect("Failed to run svelte-check-rs");
-
-    assert!(
-        !output.stdout.is_empty(),
-        "Expected JSON output. Stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let diagnostics: Vec<JsonDiagnostic> =
-        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-            panic!(
-                "Invalid JSON output: {e}\n{}",
-                String::from_utf8_lossy(&output.stdout)
-            )
-        });
+    let diagnostics = compiler_diagnostics(&fixture_path);
 
     let matching = diagnostics.iter().filter(|d| {
         d.filename == "src/App.svelte"
@@ -132,33 +165,9 @@ fn test_component_invalid_directive_reported() {
 }
 
 #[test]
-#[serial]
 fn test_const_tag_invalid_placement_reported() {
     let fixture_path = fixtures_dir().join("compiler-errors");
-    ensure_fixture_ready(&fixture_path);
-
-    let output = Command::new(binary_path())
-        .arg("--workspace")
-        .arg(&fixture_path)
-        .arg("--output")
-        .arg("json")
-        .arg("--skip-tsgo")
-        .output()
-        .expect("Failed to run svelte-check-rs");
-
-    assert!(
-        !output.stdout.is_empty(),
-        "Expected JSON output. Stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let diagnostics: Vec<JsonDiagnostic> =
-        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-            panic!(
-                "Invalid JSON output: {e}\n{}",
-                String::from_utf8_lossy(&output.stdout)
-            )
-        });
+    let diagnostics = compiler_diagnostics(&fixture_path);
 
     let matching = diagnostics.iter().filter(|d| {
         d.filename == "src/ConstInvalid.svelte"

@@ -288,13 +288,28 @@
               </p>
             </div>
             <div class="install-block full">
-              <div class="install-label">Replace existing scripts</div>
-              <code class="code-block"><span class="dim">// package.json</span>
-{
-  "scripts": {
-    "check": "svelte-check-rs"
-  }
-}</code>
+              <div class="install-label">macOS / Linux</div>
+              <code class="install-cmd" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh">
+                <span class="prompt">$</span><span class="install-text">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
+            </div>
+            <div class="install-block full">
+              <div class="install-label">Windows (PowerShell)</div>
+              <code class="install-cmd" data-copy="irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex">
+                <span class="prompt">></span><span class="install-text">irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex</span>
+                <button class="copy-btn" aria-label="Copy to clipboard">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </code>
             </div>
           </div>
         </div>
@@ -377,14 +392,6 @@
                 <div class="cli-row">
                   <code>--tsgo-version</code>
                   <span>Show installed tsgo version</span>
-                </div>
-                <div class="cli-row">
-                  <code>--tsgo-update</code>
-                  <span>Update tsgo to latest</span>
-                </div>
-                <div class="cli-row">
-                  <code>--tsgo-update=&lt;ver&gt;</code>
-                  <span>Install specific version</span>
                 </div>
                 <div class="cli-row">
                   <code>--bun-version</code>

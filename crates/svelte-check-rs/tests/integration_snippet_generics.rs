@@ -8,10 +8,13 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
+use fs2::FileExt;
 use serde::Deserialize;
-use serial_test::serial;
 use std::fs;
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -19,24 +22,23 @@ use std::sync::OnceLock;
 // TEST INFRASTRUCTURE
 // ============================================================================
 
-/// Path to the test fixtures directory
-fn fixtures_dir() -> PathBuf {
+fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("test-fixtures")
-        .join("projects")
+        .to_path_buf()
+}
+
+/// Path to the test fixtures directory
+fn fixtures_dir() -> PathBuf {
+    workspace_root().join("test-fixtures").join("projects")
 }
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    workspace_root()
         .join("target")
         .join("debug")
         .join("svelte-check-rs")
@@ -83,6 +85,8 @@ struct ExpectedDiagnostic {
 
 /// Fixture state tracking
 static BUNDLER_READY: OnceLock<()> = OnceLock::new();
+static BIN_READY: OnceLock<()> = OnceLock::new();
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
 
 /// Ensures dependencies are installed for a fixture (runs once per fixture)
 fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
@@ -91,12 +95,14 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
         let cache_path = cache_root(fixture_path);
         let _ = fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules exists
+        // Check if node_modules and tsgo exist
         let node_modules = fixture_path.join("node_modules");
-        if !node_modules.exists() {
+        let tsgo_bin = node_modules.join(".bin/tsgo");
+        if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for sveltekit-bundler...");
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(fixture_path)
                 .output()
@@ -111,11 +117,57 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
         }
 
         // Run svelte-kit sync to generate types
-        let _ = Command::new("bunx")
-            .args(["svelte-kit", "sync"])
-            .current_dir(fixture_path)
+        run_sveltekit_sync(fixture_path);
+    });
+}
+
+fn ensure_binary_built() {
+    BIN_READY.get_or_init(|| {
+        let _ = Command::new("cargo")
+            .args(["build", "-p", "svelte-check-rs"])
             .output();
     });
+}
+
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
+}
+
+fn run_sveltekit_sync(fixture_path: &PathBuf) {
+    let bun_path = bun_path_for(fixture_path);
+    let _ = Command::new(bun_path.as_std_path())
+        .args(["x", "svelte-kit", "sync"])
+        .current_dir(fixture_path)
+        .output();
+}
+
+fn lock_sveltekit_bundler() -> std::fs::File {
+    let lock_dir = workspace_root().join("target").join("test-locks");
+    fs::create_dir_all(&lock_dir).expect("create lock dir");
+    let lock_path = lock_dir.join("sveltekit-bundler.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open lock file");
+    file.lock_exclusive().expect("lock sveltekit-bundler");
+    file
+}
+
+fn with_bundler_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _file_lock = lock_sveltekit_bundler();
+    f()
 }
 
 /// Runs svelte-check-rs on a fixture with JSON output, restricted to a single file
@@ -123,35 +175,35 @@ fn run_check_json_single(
     fixture_path: &PathBuf,
     single_file: &PathBuf,
 ) -> (i32, Vec<JsonDiagnostic>) {
-    // Ensure fixture is ready
-    ensure_fixture_ready(fixture_path, &BUNDLER_READY);
+    with_bundler_lock(|| {
+        // Ensure fixture is ready
+        ensure_fixture_ready(fixture_path, &BUNDLER_READY);
 
-    // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+        // Build if necessary
+        ensure_binary_built();
 
-    let output = Command::new(binary_path())
-        .arg("--workspace")
-        .arg(fixture_path)
-        .arg("--single-file")
-        .arg(single_file)
-        .arg("--output")
-        .arg("json")
-        .output()
-        .expect("Failed to execute svelte-check-rs");
+        let output = Command::new(binary_path())
+            .arg("--workspace")
+            .arg(fixture_path)
+            .arg("--single-file")
+            .arg(single_file)
+            .arg("--output")
+            .arg("json")
+            .output()
+            .expect("Failed to execute svelte-check-rs");
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
-    // Parse JSON diagnostics
-    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        eprintln!("Failed to parse JSON output: {}", e);
-        eprintln!("Raw output:\n{}", stdout);
-        vec![]
-    });
+        // Parse JSON diagnostics
+        let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+            eprintln!("Failed to parse JSON output: {}", e);
+            eprintln!("Raw output:\n{}", stdout);
+            vec![]
+        });
 
-    (exit_code, diagnostics)
+        (exit_code, diagnostics)
+    })
 }
 
 /// Filters diagnostics by source (ts, svelte, etc.)
@@ -194,7 +246,6 @@ fn assert_diagnostic_present(diagnostics: &[JsonDiagnostic], expected: &Expected
 
 /// Test that a generic snippet header type-checks without diagnostics.
 #[test]
-#[serial]
 fn test_snippet_generic_header_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let file_path = fixture_path.join("src/routes/issue-32-snippet-generic-ok/+page.svelte");
@@ -211,7 +262,6 @@ fn test_snippet_generic_header_no_errors() {
 
 /// Test that generic constraint errors map to the correct line/column.
 #[test]
-#[serial]
 fn test_snippet_generic_header_error_location() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let file_path = fixture_path.join("src/routes/issue-32-snippet-generic-error/+page.svelte");
@@ -232,7 +282,6 @@ fn test_snippet_generic_header_error_location() {
 
 /// Test that optional property type errors map to the correct line/column.
 #[test]
-#[serial]
 fn test_snippet_generic_header_optional_property_error_location() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let file_path =

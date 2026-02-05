@@ -16,35 +16,37 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
+use fs2::FileExt;
 use serde::Deserialize;
-use serial_test::serial;
 use std::fs;
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 // ============================================================================
 // TEST INFRASTRUCTURE
 // ============================================================================
 
-/// Path to the test fixtures directory
-fn fixtures_dir() -> PathBuf {
+fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("test-fixtures")
-        .join("projects")
+        .to_path_buf()
+}
+
+/// Path to the test fixtures directory
+fn fixtures_dir() -> PathBuf {
+    workspace_root().join("test-fixtures").join("projects")
 }
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    workspace_root()
         .join("target")
         .join("debug")
         .join("svelte-check-rs")
@@ -89,7 +91,11 @@ struct ExpectedDiagnostic {
 }
 
 /// Fixture state tracking
+static BIN_READY: OnceLock<()> = OnceLock::new();
 static BUNDLER_READY: OnceLock<()> = OnceLock::new();
+static BUNDLER_CACHE: OnceLock<(i32, Vec<JsonDiagnostic>)> = OnceLock::new();
+static BUNDLER_LOCK: Mutex<()> = Mutex::new(());
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
 
 /// Ensures dependencies are installed for a fixture (runs once per fixture)
 fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
@@ -98,12 +104,14 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
         let cache_path = cache_root(fixture_path);
         let _ = fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules exists
+        // Check if node_modules and tsgo exist
         let node_modules = fixture_path.join("node_modules");
-        if !node_modules.exists() {
+        let tsgo_bin = node_modules.join(".bin/tsgo");
+        if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for sveltekit-bundler...");
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(fixture_path)
                 .output()
@@ -118,22 +126,72 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
         }
 
         // Run svelte-kit sync to generate types
-        let _ = Command::new("bunx")
-            .args(["svelte-kit", "sync"])
-            .current_dir(fixture_path)
+        run_sveltekit_sync(fixture_path);
+    });
+}
+
+fn ensure_binary_built() {
+    BIN_READY.get_or_init(|| {
+        let _ = Command::new("cargo")
+            .args(["build", "-p", "svelte-check-rs"])
             .output();
     });
 }
 
-/// Runs svelte-check-rs on a fixture with JSON output
-fn run_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
+}
+
+fn run_sveltekit_sync(fixture_path: &PathBuf) {
+    let bun_path = bun_path_for(fixture_path);
+    let _ = Command::new(bun_path.as_std_path())
+        .args(["x", "svelte-kit", "sync"])
+        .current_dir(fixture_path)
+        .output();
+}
+
+fn lock_fixture(name: &str) -> std::fs::File {
+    let lock_dir = workspace_root().join("target").join("test-locks");
+    fs::create_dir_all(&lock_dir).expect("create lock dir");
+    let lock_path = lock_dir.join(format!("{name}.lock"));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open lock file");
+    file.lock_exclusive().expect("lock fixture");
+    file
+}
+
+fn with_bundler_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = BUNDLER_LOCK.lock().expect("lock sveltekit-bundler mutex");
+    let _file_lock = lock_fixture("sveltekit-bundler");
+    f()
+}
+
+fn with_modules_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _file_lock = lock_fixture("svelte-modules");
+    f()
+}
+
+/// Runs svelte-check-rs on a fixture with JSON output (no cache, no locking)
+fn run_check_json_uncached(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
     // Ensure fixture is ready
     ensure_fixture_ready(fixture_path, &BUNDLER_READY);
 
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let output = Command::new(binary_path())
         .arg("--workspace")
@@ -154,6 +212,13 @@ fn run_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
     });
 
     (exit_code, diagnostics)
+}
+
+/// Runs svelte-check-rs on sveltekit-bundler with JSON output (cached)
+fn run_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
+    BUNDLER_CACHE
+        .get_or_init(|| with_bundler_lock(|| run_check_json_uncached(fixture_path)))
+        .clone()
 }
 
 fn filter_diagnostics_by_source(
@@ -229,7 +294,6 @@ where
 ///   Line 10: <svelte:head> - this should NOT produce an error
 ///   Line 19: :global(body) - this should NOT produce an error
 #[test]
-#[serial]
 fn test_colon_in_import_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -245,7 +309,6 @@ fn test_colon_in_import_no_errors() {
 /// Line numbers for reference:
 ///   Line 13: <svelte:head> - this should NOT produce an error
 #[test]
-#[serial]
 fn test_regex_with_colon_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -274,7 +337,6 @@ fn test_regex_with_colon_no_errors() {
 ///   Line 6: <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 ///   Line 7: <div tabindex="0"> - this warning should be suppressed
 #[test]
-#[serial]
 fn test_svelte_ignore_suppresses_a11y_warning() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -292,7 +354,6 @@ fn test_svelte_ignore_suppresses_a11y_warning() {
 ///   Line 6: <div tabindex="0"> - suppressed
 ///   Line 9: <div tabindex="0"> - NOT suppressed, should warn on line 9
 #[test]
-#[serial]
 fn test_svelte_ignore_only_affects_next_element() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -333,7 +394,6 @@ fn test_svelte_ignore_only_affects_next_element() {
 /// Line numbers for reference:
 ///   Line 6: <div tabindex="0"> - should produce warning on line 6
 #[test]
-#[serial]
 fn test_no_svelte_ignore_produces_warning() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -374,16 +434,17 @@ fn test_no_svelte_ignore_produces_warning() {
 /// Fixture: src/routes/issue-19-excluded/+page.svelte
 /// If NOT excluded, would produce warnings on lines 6 and 7
 #[test]
-#[serial]
 fn test_tsconfig_exclude_filters_svelte_diagnostics() {
-    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    with_bundler_lock(|| {
+        let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
-    // Update tsconfig.json to exclude the issue-19-excluded directory
-    let tsconfig_path = fixture_path.join("tsconfig.json");
-    let original_tsconfig = fs::read_to_string(&tsconfig_path).expect("Failed to read tsconfig");
+        // Update tsconfig.json to exclude the issue-19-excluded directory
+        let tsconfig_path = fixture_path.join("tsconfig.json");
+        let original_tsconfig =
+            fs::read_to_string(&tsconfig_path).expect("Failed to read tsconfig");
 
-    // Parse original and add exclude pattern
-    let updated_tsconfig = r#"{
+        // Parse original and add exclude pattern
+        let updated_tsconfig = r#"{
 	"extends": "./.svelte-kit/tsconfig.json",
 	"compilerOptions": {
 		"allowJs": true,
@@ -399,19 +460,20 @@ fn test_tsconfig_exclude_filters_svelte_diagnostics() {
 	"exclude": ["node_modules", "src/routes/issue-19-excluded"]
 }
 "#;
-    fs::write(&tsconfig_path, updated_tsconfig).expect("Failed to write updated tsconfig");
+        fs::write(&tsconfig_path, updated_tsconfig).expect("Failed to write updated tsconfig");
 
-    // Clean cache to ensure tsconfig changes are picked up
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+        // Clean cache to ensure tsconfig changes are picked up
+        let cache_path = cache_root(&fixture_path);
+        let _ = fs::remove_dir_all(&cache_path);
 
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+        let (_exit_code, diagnostics) = run_check_json_uncached(&fixture_path);
 
-    // Restore original tsconfig before asserting (ensures cleanup even on failure)
-    fs::write(&tsconfig_path, &original_tsconfig).expect("Failed to restore tsconfig");
+        // Restore original tsconfig before asserting (ensures cleanup even on failure)
+        fs::write(&tsconfig_path, &original_tsconfig).expect("Failed to restore tsconfig");
 
-    // Verify no diagnostics for excluded file
-    assert_no_diagnostics_in_file(&diagnostics, "issue-19-excluded/+page.svelte");
+        // Verify no diagnostics for excluded file
+        assert_no_diagnostics_in_file(&diagnostics, "issue-19-excluded/+page.svelte");
+    });
 }
 
 /// Test that files NOT in exclude patterns still produce diagnostics at correct lines.
@@ -420,7 +482,6 @@ fn test_tsconfig_exclude_filters_svelte_diagnostics() {
 /// Line numbers for reference:
 ///   Line 6: <div tabindex="0"> - should produce warning on line 6
 #[test]
-#[serial]
 fn test_non_excluded_files_still_checked() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -447,7 +508,6 @@ fn test_non_excluded_files_still_checked() {
 // - test-fixtures/projects/sveltekit-bundler/src/routes/issue-68-rest-props/+page.svelte
 // - test-fixtures/projects/sveltekit-bundler/src/routes/issue-68-rest-props-invalid/+page.svelte
 #[test]
-#[serial]
 fn test_issue_68_rest_props_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -458,7 +518,6 @@ fn test_issue_68_rest_props_no_error() {
 }
 
 #[test]
-#[serial]
 fn test_issue_68_rest_props_reports_type_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -483,7 +542,6 @@ fn test_issue_68_rest_props_reports_type_error() {
 // Test file:
 // - test-fixtures/projects/sveltekit-bundler/src/lib/issue-74-mount.ts
 #[test]
-#[serial]
 fn test_issue_74_computed_props_in_mount_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -493,7 +551,6 @@ fn test_issue_74_computed_props_in_mount_no_error() {
 }
 
 #[test]
-#[serial]
 fn test_issue_74_computed_props_missing_required_prop_reports_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -517,7 +574,6 @@ fn test_issue_74_computed_props_missing_required_prop_reports_error() {
 // Test file:
 // - test-fixtures/projects/sveltekit-bundler/src/routes/issue-77-multiline-style/+page.svelte
 #[test]
-#[serial]
 fn test_issue_77_multiline_style_directive_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -535,7 +591,6 @@ fn test_issue_77_multiline_style_directive_no_error() {
 // Test file:
 // - test-fixtures/projects/sveltekit-bundler/src/routes/issue-77-multiline-attr/+page.svelte
 #[test]
-#[serial]
 fn test_issue_77_multiline_normal_attribute_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -553,7 +608,6 @@ fn test_issue_77_multiline_normal_attribute_no_error() {
 // Test file:
 // - test-fixtures/projects/sveltekit-bundler/src/lib/issue-79-mount.ts
 #[test]
-#[serial]
 fn test_issue_79_mount_exports_no_error() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -572,15 +626,16 @@ fn test_issue_79_mount_exports_no_error() {
 ///   - src/__tests__/TestComponent.svelte (line 2 has a11y issue)
 ///   - src/spec/SpecComponent.svelte (line 2 has a11y issue)
 #[test]
-#[serial]
 fn test_tsconfig_exclude_wildcard_patterns() {
-    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    with_bundler_lock(|| {
+        let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
-    // Update tsconfig.json with wildcard exclude patterns
-    let tsconfig_path = fixture_path.join("tsconfig.json");
-    let original_tsconfig = fs::read_to_string(&tsconfig_path).expect("Failed to read tsconfig");
+        // Update tsconfig.json with wildcard exclude patterns
+        let tsconfig_path = fixture_path.join("tsconfig.json");
+        let original_tsconfig =
+            fs::read_to_string(&tsconfig_path).expect("Failed to read tsconfig");
 
-    let updated_tsconfig = r#"{
+        let updated_tsconfig = r#"{
 	"extends": "./.svelte-kit/tsconfig.json",
 	"compilerOptions": {
 		"allowJs": true,
@@ -596,21 +651,22 @@ fn test_tsconfig_exclude_wildcard_patterns() {
 	"exclude": ["node_modules", "**/__tests__/**", "**/spec/**"]
 }
 "#;
-    fs::write(&tsconfig_path, updated_tsconfig).expect("Failed to write updated tsconfig");
+        fs::write(&tsconfig_path, updated_tsconfig).expect("Failed to write updated tsconfig");
 
-    // Clean cache to ensure tsconfig changes are picked up
-    let cache_path = cache_root(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_path);
+        // Clean cache to ensure tsconfig changes are picked up
+        let cache_path = cache_root(&fixture_path);
+        let _ = fs::remove_dir_all(&cache_path);
 
-    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
-    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
+        let (_exit_code, diagnostics) = run_check_json_uncached(&fixture_path);
+        let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
 
-    // Restore original tsconfig before asserting
-    fs::write(&tsconfig_path, &original_tsconfig).expect("Failed to restore tsconfig");
+        // Restore original tsconfig before asserting
+        fs::write(&tsconfig_path, &original_tsconfig).expect("Failed to restore tsconfig");
 
-    // Verify no diagnostics for files in excluded test directories
-    assert_no_diagnostics_in_file(&diagnostics, "__tests__/TestComponent.svelte");
-    assert_no_diagnostics_in_file(&diagnostics, "spec/SpecComponent.svelte");
+        // Verify no diagnostics for files in excluded test directories
+        assert_no_diagnostics_in_file(&diagnostics, "__tests__/TestComponent.svelte");
+        assert_no_diagnostics_in_file(&diagnostics, "spec/SpecComponent.svelte");
+    });
 }
 
 // ============================================================================
@@ -628,6 +684,7 @@ fn test_tsconfig_exclude_wildcard_patterns() {
 
 /// Fixture state tracking for svelte-modules
 static MODULES_READY: OnceLock<()> = OnceLock::new();
+static MODULES_CACHE: OnceLock<(i32, Vec<JsonDiagnostic>)> = OnceLock::new();
 
 /// Ensures dependencies are installed for svelte-modules fixture
 fn ensure_modules_fixture_ready(fixture_path: &PathBuf) {
@@ -636,12 +693,14 @@ fn ensure_modules_fixture_ready(fixture_path: &PathBuf) {
         let cache_path = cache_root(fixture_path);
         let _ = fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules exists
+        // Check if node_modules and tsgo exist
         let node_modules = fixture_path.join("node_modules");
-        if !node_modules.exists() {
+        let tsgo_bin = node_modules.join(".bin/tsgo");
+        if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for svelte-modules...");
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(fixture_path)
                 .output()
@@ -656,22 +715,17 @@ fn ensure_modules_fixture_ready(fixture_path: &PathBuf) {
         }
 
         // Run svelte-kit sync to generate types
-        let _ = Command::new("bunx")
-            .args(["svelte-kit", "sync"])
-            .current_dir(fixture_path)
-            .output();
+        run_sveltekit_sync(fixture_path);
     });
 }
 
 /// Runs svelte-check-rs on svelte-modules fixture with JSON output
-fn run_modules_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
+fn run_modules_check_json_uncached(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
     // Ensure fixture is ready
     ensure_modules_fixture_ready(fixture_path);
 
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let output = Command::new(binary_path())
         .arg("--workspace")
@@ -694,6 +748,13 @@ fn run_modules_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) 
     (exit_code, diagnostics)
 }
 
+/// Runs svelte-check-rs on svelte-modules with JSON output (cached)
+fn run_modules_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) {
+    MODULES_CACHE
+        .get_or_init(|| with_modules_lock(|| run_modules_check_json_uncached(fixture_path)))
+        .clone()
+}
+
 /// Test that .svelte.ts files with runes don't produce TypeScript parse errors.
 ///
 /// This reproduces issue #35 where .svelte.ts files using Svelte 5 runes like:
@@ -706,7 +767,6 @@ fn run_modules_check_json(fixture_path: &PathBuf) -> (i32, Vec<JsonDiagnostic>) 
 ///
 /// Fixture: test-fixtures/projects/svelte-modules/src/lib/*.svelte.ts
 #[test]
-#[serial]
 fn test_svelte_ts_files_no_parse_errors() {
     let fixture_path = fixtures_dir().join("svelte-modules");
     let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
@@ -736,7 +796,6 @@ fn test_svelte_ts_files_no_parse_errors() {
 /// This specifically tests the path normalization issue where --workspace ./path
 /// causes the exclude patterns to have "./" but include patterns don't.
 #[test]
-#[serial]
 fn test_svelte_ts_files_relative_path_with_dot() {
     let fixture_path = fixtures_dir().join("svelte-modules");
 
@@ -744,9 +803,7 @@ fn test_svelte_ts_files_relative_path_with_dot() {
     ensure_modules_fixture_ready(&fixture_path);
 
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     // Use a relative path with ./ prefix (the problematic case)
     // We need to run from the fixtures parent directory
@@ -802,7 +859,6 @@ fn test_svelte_ts_files_relative_path_with_dot() {
 ///
 /// Fixture: test-fixtures/projects/svelte-modules/src/lib/issue-35-multiline-runes.svelte.ts
 #[test]
-#[serial]
 fn test_issue_35_multiline_state_with_trailing_comma() {
     let fixture_path = fixtures_dir().join("svelte-modules");
     let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
@@ -835,7 +891,6 @@ fn test_issue_35_multiline_state_with_trailing_comma() {
 ///
 /// Fixture: test-fixtures/projects/svelte-modules/src/lib/Issue35Component.svelte
 #[test]
-#[serial]
 fn test_issue_35_svelte_component_multiline_runes() {
     let fixture_path = fixtures_dir().join("svelte-modules");
     let (_exit_code, diagnostics) = run_modules_check_json(&fixture_path);
@@ -867,7 +922,6 @@ fn test_issue_35_svelte_component_multiline_runes() {
 /// This test verifies that the transformation produces valid TypeScript by
 /// examining the cached output file.
 #[test]
-#[serial]
 fn test_issue_35_transformed_output_is_valid() {
     let fixture_path = fixtures_dir().join("svelte-modules");
 
@@ -935,7 +989,6 @@ fn test_issue_35_transformed_output_is_valid() {
 /// Fixture: src/routes/test-issues/+page.svelte
 /// Contains void elements without closing tags
 #[test]
-#[serial]
 fn test_issue_38_void_elements_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -961,12 +1014,9 @@ fn test_issue_38_void_elements_no_errors() {
 ///
 /// This tests the parser directly without involving TypeScript checking.
 #[test]
-#[serial]
 fn test_issue_38_void_elements_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1012,12 +1062,9 @@ fn test_issue_38_void_elements_parser_only() {
 /// This test verifies the parser can handle dot notation in attributes
 /// as used by libraries like threlte.
 #[test]
-#[serial]
 fn test_issue_36_dot_notation_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1062,12 +1109,9 @@ fn test_issue_36_dot_notation_parser_only() {
 ///
 /// This test verifies the parser can handle CSS custom property syntax in attributes.
 #[test]
-#[serial]
 fn test_issue_37_css_custom_properties_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1126,12 +1170,9 @@ fn test_issue_37_css_custom_properties_parser_only() {
 ///
 /// Issue #46: Basic regex patterns like /test/ should not cause parsing issues.
 #[test]
-#[serial]
 fn test_issue_46_regex_simple_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1175,12 +1216,9 @@ fn test_issue_46_regex_simple_parser_only() {
 /// Issue #46: Regex patterns like /^(.+?)\s*\(([^)]+)\)$/ in @const tags
 /// should not cause the parser to lose track of expression boundaries.
 #[test]
-#[serial]
 fn test_issue_46_regex_const_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1224,12 +1262,9 @@ fn test_issue_46_regex_const_parser_only() {
 /// Issue #46: The main reproduction case - snippets containing @const with
 /// complex regex patterns that have parentheses, brackets, and braces.
 #[test]
-#[serial]
 fn test_issue_46_regex_snippet_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1273,12 +1308,9 @@ fn test_issue_46_regex_snippet_parser_only() {
 /// Issue #46: Arrow functions with type annotations and IIFEs containing regex
 /// should be parsed correctly without "Expression expected" errors.
 #[test]
-#[serial]
 fn test_issue_46_regex_arrow_iife_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1325,12 +1357,9 @@ fn test_issue_46_regex_arrow_iife_parser_only() {
 /// - Regex with ) in character class: /[^)]+/
 /// - Division operators that should NOT be treated as regex
 #[test]
-#[serial]
 fn test_issue_46_regex_edge_cases_parser_only() {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let fixture_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1375,7 +1404,6 @@ fn test_issue_46_regex_edge_cases_parser_only() {
 
 /// Verify that issues #87-#90 do not produce TypeScript diagnostics.
 #[test]
-#[serial]
 fn test_issue_87_90_no_ts_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1389,7 +1417,6 @@ fn test_issue_87_90_no_ts_errors() {
 
 /// Verify complex snippet props remain contextually typed (regression guard).
 #[test]
-#[serial]
 fn test_complex_snippet_contextual_typing_no_ts_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1403,7 +1430,6 @@ fn test_complex_snippet_contextual_typing_no_ts_errors() {
 
 /// Verify namespace components + generic props + snippets remain contextually typed.
 #[test]
-#[serial]
 fn test_namespace_component_generic_snippets_no_ts_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1440,7 +1466,6 @@ fn test_namespace_component_generic_snippets_no_ts_errors() {
 ///   Line 17-19: if (!mp_trj_data) { throw ... }
 ///   Line 25: <a href={mp_trj_data.figshare}> - should NOT produce "possibly undefined" error
 #[test]
-#[serial]
 fn test_issue_93_type_narrowing_after_throw() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1470,7 +1495,6 @@ fn test_issue_93_type_narrowing_after_throw() {
 ///
 /// Fixture: src/routes/issue-93-type-narrowing-guard/+page.svelte
 #[test]
-#[serial]
 fn test_issue_93_type_narrowing_with_guards() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1499,7 +1523,6 @@ fn test_issue_93_type_narrowing_with_guards() {
 ///
 /// Fixture: src/routes/issue-93-type-narrowing-return/+page.svelte
 #[test]
-#[serial]
 fn test_issue_93_if_block_narrowing() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1534,7 +1557,6 @@ fn test_issue_93_if_block_narrowing() {
 ///
 /// Fixture: src/routes/issue-93-store-alias/+page.svelte
 #[test]
-#[serial]
 fn test_issue_93_store_alias_no_redeclare() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1548,7 +1570,6 @@ fn test_issue_93_store_alias_no_redeclare() {
 ///
 /// Fixture: src/routes/issue-93-snippet-export/+page.svelte
 #[test]
-#[serial]
 fn test_issue_93_snippet_module_export() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1562,7 +1583,6 @@ fn test_issue_93_snippet_module_export() {
 ///
 /// Fixture: src/routes/issue-93-snippet-instance-typeof/+page.svelte
 #[test]
-#[serial]
 fn test_issue_93_snippet_instance_typeof() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1578,7 +1598,6 @@ fn test_issue_93_snippet_instance_typeof() {
 ///
 /// Fixture: src/routes/issue-96-label-component/+page.svelte
 #[test]
-#[serial]
 fn test_issue_96_label_component_no_a11y() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1591,7 +1610,6 @@ fn test_issue_96_label_component_no_a11y() {
 ///
 /// Fixture: src/routes/issue-96-click-on-td/+page.svelte
 #[test]
-#[serial]
 fn test_issue_96_click_on_td_in_grid_no_a11y() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);
@@ -1604,7 +1622,6 @@ fn test_issue_96_click_on_td_in_grid_no_a11y() {
 ///
 /// Fixture: src/routes/issue-96-duplicate-warnings/+page.svelte
 #[test]
-#[serial]
 fn test_issue_96_state_referenced_locally_not_duplicated() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let (_exit_code, diagnostics) = run_check_json(&fixture_path);

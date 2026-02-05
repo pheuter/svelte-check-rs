@@ -7,18 +7,13 @@ rust-version.workspace = true
 description = "tsgo process runner for TypeScript type-checking"
 
 [dependencies]
-bun-runner.workspace = true
-fs2.workspace = true
 source-map.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 camino.workspace = true
-which.workspace = true
-shellexpand.workspace = true
 tempfile.workspace = true
-dirs.workspace = true
 walkdir.workspace = true
 swc_common.workspace = true
 swc_ecma_parser.workspace = true

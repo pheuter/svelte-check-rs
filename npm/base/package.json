@@ -16,5 +16,8 @@
     "README.md",
     "LICENSE"
   ],
-  "optionalDependencies": {}
+  "optionalDependencies": {},
+  "peerDependencies": {
+    "@typescript/native-preview": ">=7.0.0-dev.0"
+  }
 }
