@@ -84,6 +84,24 @@ fn cache_root(fixture_path: &std::path::Path) -> PathBuf {
         .expect("cache_root called before cache was populated - use cache_base for cleanup")
 }
 
+/// Ensures dependencies are installed for a fixture.
+fn ensure_fixture_deps(fixture_path: &PathBuf) {
+    let node_modules = fixture_path.join("node_modules");
+    let tsgo_bin = node_modules.join(".bin/tsgo");
+    if !node_modules.exists() || !tsgo_bin.exists() {
+        let output = Command::new("bun")
+            .arg("install")
+            .current_dir(fixture_path)
+            .output()
+            .expect("Failed to run bun install");
+        assert!(
+            output.status.success(),
+            "bun install failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 /// A diagnostic from the JSON output
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -186,15 +204,7 @@ fn test_cache_migration_from_legacy_path() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -228,15 +238,7 @@ fn test_no_cache_does_not_write_cache() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -271,15 +273,7 @@ fn test_modified_typescript_types_are_detected() {
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -385,15 +379,7 @@ fn test_new_typescript_file_is_detected() {
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -446,15 +432,7 @@ fn test_fixed_type_error_is_detected() {
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -533,15 +511,7 @@ fn test_imported_module_changes_propagate() {
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -637,15 +607,7 @@ fn test_deleted_file_removed_from_cache() {
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -701,15 +663,7 @@ fn test_rapid_modifications_detected() {
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -767,15 +721,7 @@ fn test_whitespace_changes_detected() {
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -833,15 +779,7 @@ fn test_lockfile_change_invalidates_cache() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -887,15 +825,7 @@ fn test_node_modules_change_invalidates_cache() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
-    let node_modules = fixture_path.join("node_modules");
-    if !node_modules.exists() {
-        let output = Command::new("bun")
-            .arg("install")
-            .current_dir(&fixture_path)
-            .output()
-            .expect("Failed to run bun install");
-        assert!(output.status.success(), "bun install failed");
-    }
+    ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
     let _ = Command::new("bunx")
@@ -916,6 +846,7 @@ fn test_node_modules_change_invalidates_cache() {
 
     // Touch node_modules to simulate reinstall (directory mtime changes)
     sleep_for_timestamp_resolution();
+    let node_modules = fixture_path.join("node_modules");
     let reinstall_marker = node_modules.join(".svelte-check-rs-reinstall-marker");
     let _ = fs::remove_file(&reinstall_marker);
     fs::write(&reinstall_marker, "reinstall").expect("Failed to write node_modules marker");

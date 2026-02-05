@@ -260,7 +260,7 @@ checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "bun-runner"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "blake3",
  "camino",
@@ -1634,15 +1634,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shellexpand"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
-dependencies = [
- "dirs",
-]
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1721,7 +1712,7 @@ dependencies = [
 
 [[package]]
 name = "source-map"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -1793,7 +1784,7 @@ checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
 name = "svelte-check-rs"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "bun-runner",
  "camino",
@@ -1823,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-diagnostics"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -1840,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-parser"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "insta",
  "logos",
@@ -1855,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "svelte-transformer"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -2182,17 +2173,13 @@ dependencies = [
 
 [[package]]
 name = "tsgo-runner"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "blake3",
- "bun-runner",
  "camino",
- "dirs",
- "fs2",
  "pretty_assertions",
  "serde",
  "serde_json",
- "shellexpand",
  "source-map",
  "swc_common",
  "swc_ecma_ast",
@@ -2202,7 +2189,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "walkdir",
- "which",
 ]
 
 [[package]]

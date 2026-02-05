@@ -18,13 +18,19 @@ async fn main() -> Result<()> {
 
     // Handle tsgo version command
     if args.tsgo_version {
-        match TsgoRunner::get_tsgo_version().await {
+        let workspace = if args.workspace.as_str() == "." {
+            std::env::current_dir()
+                .ok()
+                .and_then(|p| camino::Utf8PathBuf::try_from(p).ok())
+                .unwrap_or_else(|| args.workspace.to_owned())
+        } else {
+            args.workspace.to_owned()
+        };
+
+        match TsgoRunner::get_tsgo_version(&workspace).await {
             Ok((version, path)) => {
                 println!("tsgo {}", version);
                 println!("path: {}", path);
-                if let Some(cache_dir) = TsgoRunner::get_cache_dir() {
-                    println!("cache: {}", cache_dir);
-                }
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -50,18 +56,6 @@ async fn main() -> Result<()> {
             }
         }
         return Ok(());
-    }
-
-    // Handle tsgo update command
-    if let Some(version_opt) = &args.tsgo_update {
-        let version = version_opt.as_deref();
-        match TsgoRunner::update_tsgo(version).await {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
     }
 
     // Handle bun update command
@@ -114,12 +108,12 @@ fn print_debug_paths(workspace: &Utf8Path) {
 
     // tsgo binary
     println!("tsgo:");
-    if let Some(path) = TsgoRunner::find_tsgo(Some(&workspace)) {
-        println!("  resolved: {}", path);
-    } else {
-        println!("  resolved: (not found - will be auto-installed on first run)");
-        if let Some(cache_dir) = TsgoRunner::get_cache_dir() {
-            println!("  cache:    {}/node_modules/.bin/tsgo", cache_dir);
+    match TsgoRunner::resolve_tsgo(&workspace) {
+        Ok(path) => println!("  resolved: {}", path),
+        Err(_) => {
+            println!(
+                "  resolved: (not found - install @typescript/native-preview in your workspace)"
+            );
         }
     }
     println!();

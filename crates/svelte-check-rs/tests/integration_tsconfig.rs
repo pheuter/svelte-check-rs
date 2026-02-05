@@ -101,9 +101,10 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
         let cache_path = cache_root(&fixture_path);
         let _ = std::fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules exists
+        // Check if node_modules and tsgo exist
         let node_modules = fixture_path.join("node_modules");
-        if !node_modules.exists() {
+        let tsgo_bin = node_modules.join(".bin/tsgo");
+        if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for {}...", fixture_name);
 
             let output = Command::new("bun")

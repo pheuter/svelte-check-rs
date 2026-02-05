@@ -98,9 +98,10 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
         let cache_path = cache_root(fixture_path);
         let _ = fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules exists
+        // Check if node_modules and tsgo exist
         let node_modules = fixture_path.join("node_modules");
-        if !node_modules.exists() {
+        let tsgo_bin = node_modules.join(".bin/tsgo");
+        if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for sveltekit-bundler...");
 
             let output = Command::new("bun")
@@ -636,9 +637,10 @@ fn ensure_modules_fixture_ready(fixture_path: &PathBuf) {
         let cache_path = cache_root(fixture_path);
         let _ = fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules exists
+        // Check if node_modules and tsgo exist
         let node_modules = fixture_path.join("node_modules");
-        if !node_modules.exists() {
+        let tsgo_bin = node_modules.join(".bin/tsgo");
+        if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for svelte-modules...");
 
             let output = Command::new("bun")

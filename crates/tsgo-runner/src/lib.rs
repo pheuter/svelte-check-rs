@@ -1,7 +1,8 @@
 //! tsgo process runner for TypeScript type-checking.
 //!
 //! This crate interfaces with tsgo (the Go-based TypeScript compiler) to perform
-//! type-checking on transformed Svelte files.
+//! type-checking on transformed Svelte files. tsgo is expected to be available in
+//! the workspace `node_modules/.bin` and can be resolved via `TsgoRunner::resolve_tsgo`.
 //!
 //! # Example
 //!
@@ -12,9 +13,11 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
+//!     let project_root = Utf8PathBuf::from("/path/to/project");
+//!     let tsgo_path = TsgoRunner::resolve_tsgo(&project_root).unwrap();
 //!     let runner = TsgoRunner::new(
-//!         Utf8PathBuf::from("/usr/local/bin/tsgo"),
-//!         Utf8PathBuf::from("/path/to/project"),
+//!         tsgo_path,
+//!         project_root,
 //!         None,
 //!         HashMap::new(),
 //!         true,
