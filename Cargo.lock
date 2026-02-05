@@ -1789,6 +1789,7 @@ dependencies = [
  "bun-runner",
  "camino",
  "clap",
+ "fs2",
  "globset",
  "insta",
  "miette",

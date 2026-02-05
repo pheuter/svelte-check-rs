@@ -16,8 +16,11 @@
 // Skip all tests on Windows - tsgo and path handling differs
 #![cfg(not(target_os = "windows"))]
 
+use fs2::FileExt;
 use serde::Deserialize;
 use serial_test::serial;
+use std::fs;
+use std::fs::OpenOptions;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -25,24 +28,23 @@ use std::sync::OnceLock;
 // SHARED TEST INFRASTRUCTURE
 // ============================================================================
 
-/// Path to the test fixtures directory
-fn fixtures_dir() -> std::path::PathBuf {
+fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("test-fixtures")
-        .join("projects")
+        .to_path_buf()
+}
+
+/// Path to the test fixtures directory
+fn fixtures_dir() -> std::path::PathBuf {
+    workspace_root().join("test-fixtures").join("projects")
 }
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    workspace_root()
         .join("target")
         .join("debug")
         .join("svelte-check-rs")
@@ -54,6 +56,21 @@ fn cache_root(fixture_path: &std::path::Path) -> std::path::PathBuf {
         .join("node_modules")
         .join(".cache")
         .join("svelte-check-rs")
+}
+
+fn lock_fixture(fixture_name: &str) -> std::fs::File {
+    let lock_dir = workspace_root().join("target").join("test-locks");
+    fs::create_dir_all(&lock_dir).expect("create lock dir");
+    let lock_path = lock_dir.join(format!("{fixture_name}.lock"));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open lock file");
+    file.lock_exclusive().expect("lock fixture");
+    file
 }
 
 /// A diagnostic from the JSON output
@@ -87,6 +104,7 @@ struct ExpectedError {
 }
 
 /// Fixture state tracking
+static BIN_READY: OnceLock<()> = OnceLock::new();
 static BUNDLER_READY: OnceLock<()> = OnceLock::new();
 static NODENEXT_READY: OnceLock<()> = OnceLock::new();
 static NODE16_READY: OnceLock<()> = OnceLock::new();
@@ -130,6 +148,14 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
     });
 }
 
+fn ensure_binary_built() {
+    BIN_READY.get_or_init(|| {
+        let _ = Command::new("cargo")
+            .args(["build", "-p", "svelte-check-rs"])
+            .output();
+    });
+}
+
 /// Runs svelte-check-rs on a fixture with JSON output
 fn run_check_json(fixture_name: &str) -> (i32, Vec<JsonDiagnostic>) {
     let (exit_code, diagnostics, _stderr) = run_check_json_internal(fixture_name, false);
@@ -148,6 +174,8 @@ fn run_check_json_internal(
     fixture_name: &str,
     emit_ts: bool,
 ) -> (i32, Vec<JsonDiagnostic>, String) {
+    let _lock = lock_fixture(fixture_name);
+
     // Map fixture name to its ready flag
     let ready = match fixture_name {
         "sveltekit-bundler" => &BUNDLER_READY,
@@ -164,9 +192,7 @@ fn run_check_json_internal(
     let binary = binary_path();
 
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let output = Command::new(&binary)
         .arg("--workspace")

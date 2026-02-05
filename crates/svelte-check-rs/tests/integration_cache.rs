@@ -12,11 +12,14 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use fs2::FileExt;
 use serde::Deserialize;
 use serial_test::serial;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -24,24 +27,23 @@ use std::time::Duration;
 // TEST INFRASTRUCTURE
 // ============================================================================
 
-/// Path to the test fixtures directory
-fn fixtures_dir() -> PathBuf {
+fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("test-fixtures")
-        .join("projects")
+        .to_path_buf()
+}
+
+/// Path to the test fixtures directory
+fn fixtures_dir() -> PathBuf {
+    workspace_root().join("test-fixtures").join("projects")
 }
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    workspace_root()
         .join("target")
         .join("debug")
         .join("svelte-check-rs")
@@ -102,6 +104,31 @@ fn ensure_fixture_deps(fixture_path: &PathBuf) {
     }
 }
 
+static BIN_READY: OnceLock<()> = OnceLock::new();
+
+fn ensure_binary_built() {
+    BIN_READY.get_or_init(|| {
+        let _ = Command::new("cargo")
+            .args(["build", "-p", "svelte-check-rs"])
+            .output();
+    });
+}
+
+fn lock_sveltekit_bundler() -> std::fs::File {
+    let lock_dir = workspace_root().join("target").join("test-locks");
+    fs::create_dir_all(&lock_dir).expect("create lock dir");
+    let lock_path = lock_dir.join("sveltekit-bundler.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open lock file");
+    file.lock_exclusive().expect("lock sveltekit-bundler");
+    file
+}
+
 /// A diagnostic from the JSON output
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -134,9 +161,7 @@ fn run_check_json_with_args(
     extra_args: &[&str],
 ) -> (i32, Vec<JsonDiagnostic>) {
     // Build if necessary
-    let _ = Command::new("cargo")
-        .args(["build", "-p", "svelte-check-rs"])
-        .output();
+    ensure_binary_built();
 
     let mut command = Command::new(binary_path());
     let output = command
@@ -201,6 +226,7 @@ fn sleep_for_timestamp_resolution() {
 #[test]
 #[serial]
 fn test_cache_migration_from_legacy_path() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
@@ -235,6 +261,7 @@ fn test_cache_migration_from_legacy_path() {
 #[test]
 #[serial]
 fn test_no_cache_does_not_write_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
@@ -267,6 +294,7 @@ fn test_no_cache_does_not_write_cache() {
 #[test]
 #[serial]
 fn test_modified_typescript_types_are_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
@@ -373,6 +401,7 @@ export function getUser(): TestUser {
 #[test]
 #[serial]
 fn test_new_typescript_file_is_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
@@ -426,6 +455,7 @@ export function brokenFunction(): number {
 #[test]
 #[serial]
 fn test_fixed_type_error_is_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
@@ -505,6 +535,7 @@ export function getValue(): number {
 #[test]
 #[serial]
 fn test_imported_module_changes_propagate() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
@@ -601,6 +632,7 @@ export type SharedData = {
 #[test]
 #[serial]
 fn test_deleted_file_removed_from_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
@@ -657,6 +689,7 @@ async function fetchValue() {
 #[test]
 #[serial]
 fn test_rapid_modifications_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
@@ -715,6 +748,7 @@ fn test_rapid_modifications_detected() {
 #[test]
 #[serial]
 fn test_whitespace_changes_detected() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Clean cache to start fresh
@@ -776,6 +810,7 @@ fn test_whitespace_changes_detected() {
 #[test]
 #[serial]
 fn test_lockfile_change_invalidates_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
@@ -822,6 +857,7 @@ fn test_lockfile_change_invalidates_cache() {
 #[test]
 #[serial]
 fn test_node_modules_change_invalidates_cache() {
+    let _lock = lock_sveltekit_bundler();
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
 
     // Ensure dependencies are installed
