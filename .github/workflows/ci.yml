@@ -38,9 +38,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install bun
-        uses: oven-sh/setup-bun@v2
-
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
