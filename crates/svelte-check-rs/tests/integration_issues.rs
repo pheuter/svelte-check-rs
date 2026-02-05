@@ -16,11 +16,13 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
 use fs2::FileExt;
 use serde::Deserialize;
 use std::fs;
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
@@ -93,6 +95,7 @@ static BIN_READY: OnceLock<()> = OnceLock::new();
 static BUNDLER_READY: OnceLock<()> = OnceLock::new();
 static BUNDLER_CACHE: OnceLock<(i32, Vec<JsonDiagnostic>)> = OnceLock::new();
 static BUNDLER_LOCK: Mutex<()> = Mutex::new(());
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
 
 /// Ensures dependencies are installed for a fixture (runs once per fixture)
 fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
@@ -107,7 +110,8 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
         if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for sveltekit-bundler...");
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(fixture_path)
                 .output()
@@ -122,10 +126,7 @@ fn ensure_fixture_ready(fixture_path: &PathBuf, ready: &'static OnceLock<()>) {
         }
 
         // Run svelte-kit sync to generate types
-        let _ = Command::new("bunx")
-            .args(["svelte-kit", "sync"])
-            .current_dir(fixture_path)
-            .output();
+        run_sveltekit_sync(fixture_path);
     });
 }
 
@@ -135,6 +136,27 @@ fn ensure_binary_built() {
             .args(["build", "-p", "svelte-check-rs"])
             .output();
     });
+}
+
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
+}
+
+fn run_sveltekit_sync(fixture_path: &PathBuf) {
+    let bun_path = bun_path_for(fixture_path);
+    let _ = Command::new(bun_path.as_std_path())
+        .args(["x", "svelte-kit", "sync"])
+        .current_dir(fixture_path)
+        .output();
 }
 
 fn lock_fixture(name: &str) -> std::fs::File {
@@ -677,7 +699,8 @@ fn ensure_modules_fixture_ready(fixture_path: &PathBuf) {
         if !node_modules.exists() || !tsgo_bin.exists() {
             eprintln!("Installing dependencies for svelte-modules...");
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(fixture_path)
                 .output()
@@ -692,10 +715,7 @@ fn ensure_modules_fixture_ready(fixture_path: &PathBuf) {
         }
 
         // Run svelte-kit sync to generate types
-        let _ = Command::new("bunx")
-            .args(["svelte-kit", "sync"])
-            .current_dir(fixture_path)
-            .output();
+        run_sveltekit_sync(fixture_path);
     });
 }
 

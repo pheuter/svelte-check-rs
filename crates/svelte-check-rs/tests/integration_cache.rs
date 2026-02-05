@@ -12,11 +12,14 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
 use fs2::FileExt;
 use serde::Deserialize;
 use serial_test::serial;
 use std::fs;
 use std::fs::OpenOptions;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -91,7 +94,8 @@ fn ensure_fixture_deps(fixture_path: &PathBuf) {
     let node_modules = fixture_path.join("node_modules");
     let tsgo_bin = node_modules.join(".bin/tsgo");
     if !node_modules.exists() || !tsgo_bin.exists() {
-        let output = Command::new("bun")
+        let bun_path = bun_path_for(fixture_path);
+        let output = Command::new(bun_path.as_std_path())
             .arg("install")
             .current_dir(fixture_path)
             .output()
@@ -105,6 +109,7 @@ fn ensure_fixture_deps(fixture_path: &PathBuf) {
 }
 
 static BIN_READY: OnceLock<()> = OnceLock::new();
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
 
 fn ensure_binary_built() {
     BIN_READY.get_or_init(|| {
@@ -112,6 +117,27 @@ fn ensure_binary_built() {
             .args(["build", "-p", "svelte-check-rs"])
             .output();
     });
+}
+
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
+}
+
+fn run_sveltekit_sync(fixture_path: &PathBuf) {
+    let bun_path = bun_path_for(fixture_path);
+    let _ = Command::new(bun_path.as_std_path())
+        .args(["x", "svelte-kit", "sync"])
+        .current_dir(fixture_path)
+        .output();
 }
 
 fn lock_sveltekit_bundler() -> std::fs::File {
@@ -233,10 +259,7 @@ fn test_cache_migration_from_legacy_path() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     let legacy_cache = fixture_path.join(".svelte-check-rs");
     let legacy_marker = legacy_cache.join("cache/legacy.txt");
@@ -268,10 +291,7 @@ fn test_no_cache_does_not_write_cache() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Clean cache to start fresh
     let cache_base_path = cache_base(&fixture_path);
@@ -304,10 +324,7 @@ fn test_modified_typescript_types_are_detected() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a test TypeScript file with an initial type
     let test_file = fixture_path.join("src/lib/cache-test-types.ts");
@@ -411,10 +428,7 @@ fn test_new_typescript_file_is_detected() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Run svelte-check-rs to populate cache (without the new file)
     let (_exit_code1, _diagnostics1) = run_check_json(&fixture_path);
@@ -465,10 +479,7 @@ fn test_fixed_type_error_is_detected() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a TypeScript file with a type error
     let test_file = fixture_path.join("src/lib/fixable-error.ts");
@@ -545,10 +556,7 @@ fn test_imported_module_changes_propagate() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a shared types module
     let types_file = fixture_path.join("src/lib/shared-types.ts");
@@ -642,10 +650,7 @@ fn test_deleted_file_removed_from_cache() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Create a TypeScript file that triggers a tsgo patch
     let temp_file = fixture_path.join("src/lib/temp-file.ts");
@@ -699,10 +704,7 @@ fn test_rapid_modifications_detected() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     let test_file = fixture_path.join("src/lib/rapid-changes.ts");
 
@@ -758,10 +760,7 @@ fn test_whitespace_changes_detected() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     let test_file = fixture_path.join("src/lib/whitespace-test.ts");
 
@@ -817,10 +816,7 @@ fn test_lockfile_change_invalidates_cache() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));
@@ -864,10 +860,7 @@ fn test_node_modules_change_invalidates_cache() {
     ensure_fixture_deps(&fixture_path);
 
     // Run svelte-kit sync
-    let _ = Command::new("bunx")
-        .args(["svelte-kit", "sync"])
-        .current_dir(&fixture_path)
-        .output();
+    run_sveltekit_sync(&fixture_path);
 
     // Clean cache to start fresh
     let _ = fs::remove_dir_all(cache_base(&fixture_path));

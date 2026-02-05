@@ -7,9 +7,11 @@
 
 #![cfg(not(target_os = "windows"))]
 
+use bun_runner::BunRunner;
+use camino::Utf8PathBuf;
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -60,6 +62,7 @@ struct JsonPosition {
 }
 
 static COMPILER_READY: OnceLock<()> = OnceLock::new();
+static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
 static BIN_READY: OnceLock<()> = OnceLock::new();
 static COMPILER_CACHE: OnceLock<Vec<JsonDiagnostic>> = OnceLock::new();
 
@@ -72,7 +75,8 @@ fn ensure_fixture_ready(fixture_path: &PathBuf) {
         if !node_modules.exists() {
             eprintln!("Installing dependencies for compiler-errors...");
 
-            let output = Command::new("bun")
+            let bun_path = bun_path_for(fixture_path);
+            let output = Command::new(bun_path.as_std_path())
                 .arg("install")
                 .current_dir(fixture_path)
                 .output()
@@ -86,6 +90,19 @@ fn ensure_fixture_ready(fixture_path: &PathBuf) {
             }
         }
     });
+}
+
+fn bun_path_for(workspace: &Path) -> Utf8PathBuf {
+    BUN_PATH
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let workspace = Utf8PathBuf::from_path_buf(workspace.to_path_buf())
+                .expect("workspace path must be utf-8");
+            runtime
+                .block_on(BunRunner::ensure_bun(Some(&workspace)))
+                .expect("ensure bun")
+        })
+        .clone()
 }
 
 fn ensure_binary_built() {
