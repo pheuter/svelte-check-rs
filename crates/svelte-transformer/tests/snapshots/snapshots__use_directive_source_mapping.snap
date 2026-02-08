@@ -156,6 +156,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 // === INSTANCE SCRIPT ===
@@ -181,5 +185,5 @@ export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (2) ===
-  0: generated 5998..6118 -> original 18..138
-  1: generated 6201..6213 -> original 159..171
+  0: generated 6170..6290 -> original 18..138
+  1: generated 6373..6385 -> original 159..171

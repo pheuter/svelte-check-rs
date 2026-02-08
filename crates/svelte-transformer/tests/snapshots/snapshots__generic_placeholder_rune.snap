@@ -151,6 +151,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 // === INSTANCE SCRIPT ===
@@ -166,8 +170,12 @@ return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, 
 
 // === COMPONENT TYPE EXPORT ===
 type __SvelteProps_Placeholder_<T> = Awaited<ReturnType<typeof __svelte_render<T>>>["props"];
-type __SvelteExports_Placeholder_<T> = Awaited<ReturnType<typeof __svelte_render<T>>>["exports"];
-declare const __SvelteComponent_Placeholder_: __SvelteComponent<__SvelteProps_Placeholder_<any>, __SvelteExports_Placeholder_<any>>;
+declare const __SvelteComponent_Placeholder_: {
+<T>(this: void, internals: any, props: __SvelteProps_Placeholder_<T> & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render<T>>>["exports"];
+__svelte_generic: true;
+element?: typeof HTMLElement;
+z_$$bindings?: any;
+};
 export default __SvelteComponent_Placeholder_;
 
 

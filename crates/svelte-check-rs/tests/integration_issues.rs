@@ -1601,10 +1601,6 @@ fn test_issue_93_snippet_instance_typeof() {
 // `<script generics="T extends ...">`) can be passed to `mount()` without
 // producing TS2769 "No overload matches this call" errors.
 //
-// The issue is that generic components produce a raw object type with a
-// generic call signature that doesn't match the non-generic `mount()` overload.
-// A permissive fallback overload catches these cases.
-//
 // Test file:
 // - test-fixtures/projects/sveltekit-bundler/src/lib/issue-102-generic-mount.ts
 #[test]
@@ -1614,6 +1610,25 @@ fn test_issue_102_generic_mount_no_error() {
     let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     assert_no_diagnostics_in_file(&diagnostics, "lib/issue-102-generic-mount.ts");
+}
+
+// This test verifies that generic components preserve type inference when
+// used in templates. A generic component with conditional types
+// (e.g., `ValueType = TMode extends 'single' ? string : string[]`)
+// must resolve correctly based on the actual generic argument, not `any`.
+//
+// If the generic component export uses `Props<any>`, `ValueType<any>` becomes
+// `string | string[]` instead of `string`, breaking callback type narrowing.
+//
+// Test file:
+// - test-fixtures/projects/sveltekit-bundler/src/lib/issue-102-generic-inference.svelte
+#[test]
+fn test_issue_102_generic_inference_preserved_in_templates() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    assert_no_diagnostics_in_file(&diagnostics, "lib/issue-102-generic-inference.svelte");
 }
 
 /// Issue #96: Label wrapping a component should not trigger a11y-label-has-associated-control.

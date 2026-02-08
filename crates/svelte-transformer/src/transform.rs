@@ -750,14 +750,6 @@ fn generics_ref(params: &[GenericParam]) -> String {
     format!("<{}>", refs)
 }
 
-fn generics_any_ref(params: &[GenericParam]) -> String {
-    if params.is_empty() {
-        return String::new();
-    }
-    let refs = params.iter().map(|_| "any").collect::<Vec<_>>().join(", ");
-    format!("<{}>", refs)
-}
-
 /// Rewrites `.svelte` imports to `.svelte.js` for NodeNext/Node16 module resolution.
 ///
 /// This is necessary because NodeNext requires explicit file extensions for relative imports.
@@ -1138,7 +1130,6 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     let has_generics = !generic_decls.is_empty();
     let generics_def_str = generics_def(&generic_decls);
     let generics_ref_str = generics_ref(&generic_decls);
-    let generics_any_ref_str = generics_any_ref(&generic_decls);
 
     let helpers_import_path = options.helpers_import_path.as_deref();
 
@@ -1318,6 +1309,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 "#;
@@ -1630,18 +1625,19 @@ declare module "svelte" {
     let export_line = if has_generics && has_render {
         let internal_name = format!("__SvelteComponent_{}_", component_name);
         let props_name = format!("__SvelteProps_{}_", component_name);
-        let exports_name = format!("__SvelteExports_{}_", component_name);
         format!(
             "type {props_name}{generics_def} = Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"props\"];\n\
-type {exports_name}{generics_def} = Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"exports\"];\n\
-declare const {internal_name}: __SvelteComponent<{props_name}{generics_any_ref}, {exports_name}{generics_any_ref}>;\n\
+declare const {internal_name}: {{\n\
+  {generics_def}(this: void, internals: any, props: {props_name}{generics_ref} & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"exports\"];\n\
+  __svelte_generic: true;\n\
+  element?: typeof HTMLElement;\n\
+  z_$$bindings?: any;\n\
+}};\n\
 export default {internal_name};\n",
             props_name = props_name,
-            exports_name = exports_name,
             internal_name = internal_name,
             generics_def = generics_def_str,
-            generics_ref = generics_ref_str,
-            generics_any_ref = generics_any_ref_str
+            generics_ref = generics_ref_str
         )
     } else if has_render {
         let internal_name = format!("__SvelteComponent_{}_", component_name);

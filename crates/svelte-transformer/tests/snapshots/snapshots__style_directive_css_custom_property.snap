@@ -154,6 +154,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 // === INSTANCE SCRIPT ===
@@ -181,12 +185,12 @@ export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (9) ===
-  0: generated 5998..6020 -> original 18..40
-  1: generated 6020..6029 -> original 40..49
-  2: generated 6029..6047 -> original 49..67
-  3: generated 6047..6061 -> original 67..81
-  4: generated 6061..6063 -> original 81..83
-  5: generated 6098..6141 -> original 124..167
-  6: generated 6187..6188 -> original 180..181
-  7: generated 6202..6207 -> original 214..219
-  8: generated 6211..6216 -> original 238..241
+  0: generated 6170..6192 -> original 18..40
+  1: generated 6192..6201 -> original 40..49
+  2: generated 6201..6219 -> original 49..67
+  3: generated 6219..6233 -> original 67..81
+  4: generated 6233..6235 -> original 81..83
+  5: generated 6270..6313 -> original 124..167
+  6: generated 6359..6360 -> original 180..181
+  7: generated 6374..6379 -> original 214..219
+  8: generated 6383..6388 -> original 238..241
