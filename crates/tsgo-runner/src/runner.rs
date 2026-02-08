@@ -10,7 +10,7 @@ use source_map::SourceMap;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
-use tempfile::Builder;
+
 use thiserror::Error;
 use tokio::process::Command;
 use walkdir::WalkDir;
@@ -239,10 +239,6 @@ pub struct TsgoRunner {
     tsconfig_path: Option<Utf8PathBuf>,
     /// Additional path aliases to merge into the tsconfig.
     extra_paths: HashMap<String, Vec<String>>,
-    /// Whether to cache .svelte-kit contents in a stable location.
-    use_sveltekit_cache: bool,
-    /// Whether to use the persistent cache directory and incremental build info.
-    use_cache: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -340,16 +336,12 @@ impl TsgoRunner {
         project_root: Utf8PathBuf,
         tsconfig_path: Option<Utf8PathBuf>,
         extra_paths: HashMap<String, Vec<String>>,
-        use_sveltekit_cache: bool,
-        use_cache: bool,
     ) -> Self {
         Self {
             tsgo_path,
             project_root,
             tsconfig_path,
             extra_paths,
-            use_sveltekit_cache,
-            use_cache,
         }
     }
 
@@ -489,18 +481,11 @@ impl TsgoRunner {
     /// 3. Run `svelte-kit sync` to generate/update types
     ///
     /// Returns `Ok(true)` if sync was run, `Ok(false)` if skipped (not a SvelteKit project).
-    pub async fn ensure_sveltekit_sync(
-        project_root: &Utf8Path,
-        use_cache: bool,
-    ) -> Result<bool, TsgoError> {
+    pub async fn ensure_sveltekit_sync(project_root: &Utf8Path) -> Result<bool, TsgoError> {
         // Check if this is a SvelteKit project by searching for @sveltejs/kit
         // in node_modules, including parent directories for monorepo support
         if !Self::is_sveltekit_project(project_root) {
             return Ok(false);
-        }
-
-        if !use_cache {
-            return Self::run_sveltekit_sync(project_root, None).await;
         }
 
         let cache_root = Self::project_cache_root_for(project_root)?;
@@ -1220,55 +1205,23 @@ impl TsgoRunner {
     ) -> Result<TsgoCheckOutput, TsgoError> {
         let total_start = Instant::now();
         let mut stats = TsgoCheckStats::default();
-        let cache_root = if self.use_cache {
-            Some(Self::project_cache_root_for(&self.project_root)?)
-        } else {
-            None
-        };
+        let cache_root = Self::project_cache_root_for(&self.project_root)?;
         let mut tsconfig_overrides = Map::new();
 
-        if self.use_cache {
-            // Enable incremental builds for faster subsequent runs
-            tsconfig_overrides.insert("incremental".to_string(), Value::Bool(true));
-            let tsbuildinfo_path = cache_root
-                .as_ref()
-                .expect("cache_root set when use_cache is true")
-                .join("tsgo.tsbuildinfo");
-            tsconfig_overrides.insert(
-                "tsBuildInfoFile".to_string(),
-                Value::String(tsbuildinfo_path.to_string()),
-            );
-        } else {
-            // Force incremental off to avoid writing tsbuildinfo files.
-            tsconfig_overrides.insert("incremental".to_string(), Value::Bool(false));
-        }
+        // Enable incremental builds for faster subsequent runs
+        tsconfig_overrides.insert("incremental".to_string(), Value::Bool(true));
+        let tsbuildinfo_path = cache_root.join("tsgo.tsbuildinfo");
+        tsconfig_overrides.insert(
+            "tsBuildInfoFile".to_string(),
+            Value::String(tsbuildinfo_path.to_string()),
+        );
 
         // Verify tsgo exists
         if !self.tsgo_path.exists() {
             return Err(TsgoError::NotFound(self.tsgo_path.clone()));
         }
 
-        let temp_dir = if self.use_cache {
-            None
-        } else {
-            Some(
-                Builder::new()
-                    .prefix("svelte-check-rs-")
-                    .tempdir()
-                    .map_err(|e| TsgoError::TempFileFailed(format!("create temp dir: {e}")))?,
-            )
-        };
-
-        // Use a stable cache directory for transformed files under node_modules/.cache when enabled.
-        // Otherwise, use a fresh temp directory per run.
-        let temp_path = if let Some(cache_root) = &cache_root {
-            cache_root.clone()
-        } else if let Some(dir) = &temp_dir {
-            Utf8PathBuf::try_from(dir.path().to_path_buf())
-                .map_err(|_| TsgoError::TempFileFailed("temp dir path is not valid UTF-8".into()))?
-        } else {
-            return Err(TsgoError::TempFileFailed("temp dir not available".into()));
-        };
+        let temp_path = cache_root;
 
         std::fs::create_dir_all(&temp_path)
             .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
@@ -1349,21 +1302,15 @@ impl TsgoRunner {
 
         stats.timings.write_time = write_start.elapsed();
 
-        // Keep a stable copy of .svelte-kit to avoid invalidating tsgo incremental builds.
-        // When caching is enabled, write directly into the cache root to avoid duplicate copies.
+        // Always sync .svelte-kit into the temp/cache directory so that its `types/`
+        // subdirectory lives under the same root as the transformed files.  tsgo's rootDirs
+        // resolution requires .svelte-kit/types to NOT be a subdirectory of another rootDir
+        // (the project root), otherwise `$types` imports fail to resolve.
         let kit_source = self.project_root.join(".svelte-kit");
         let kit_include = if kit_source.exists() {
-            if self.use_sveltekit_cache {
-                let target = temp_path.join(".svelte-kit");
-                sync_sveltekit_cache(&kit_source, &target)?;
-                Some(target)
-            } else {
-                let cached = temp_path.join(".svelte-kit");
-                if cached.exists() {
-                    let _ = std::fs::remove_dir_all(&cached);
-                }
-                Some(kit_source)
-            }
+            let target = temp_path.join(".svelte-kit");
+            sync_sveltekit_cache(&kit_source, &target)?;
+            Some(target)
         } else {
             None
         };

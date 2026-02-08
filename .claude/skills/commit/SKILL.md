@@ -24,9 +24,9 @@ $ARGUMENTS
 
 !`git diff`
 
-### Recent Commits (for message style reference)
+### Recent Commits
 
-!`git log --oneline -10`
+!`git log --oneline -5`
 
 ### Current Branch
 
@@ -34,66 +34,21 @@ $ARGUMENTS
 
 ### Default Branch
 
-!`git remote show origin | grep 'HEAD branch' | cut -d' ' -f5`
+!`git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'`
 
-## Steps
+## Workflow
 
-1. **IMPORTANT: Ensure you have the complete diff.** If the staged or unstaged changes above are truncated (showing "Output too large" with a saved file path), you MUST use the Read tool to read the full diff file before proceeding. Never review or commit based on partial/truncated output.
+1. **Read full diff if truncated.** If changes above show "Output too large" with a file path, read that file first. Never review based on partial output.
 
-2. Review ALL the changes for:
+2. **Review changes** for bugs, security issues (secrets, .env files), and incomplete work. If issues found, ask the user how to proceed.
 
-   - Code quality issues
-   - Potential bugs or errors
-   - Security concerns (no secrets, credentials, .env files)
-   - Missing or incomplete implementations
-   - Consider running `cargo test` to verify changes don't break existing functionality
+3. **Prepare commit:**
+   - If PR requested and on the default branch, create a descriptive branch first
+   - Run any format/lint commands specified in project guidelines — fix any issues
+   - Stage relevant changes (skip secrets/generated files)
+   - Commit following project conventions
+   - Push (use `-u origin <branch>` for new branches)
 
-3. If issues are found, use **AskUserQuestion** to ask how to proceed:
-
-   - Present the issues clearly
-   - Offer options: fix the issues, proceed anyway, or abort
-
-4. If changes look good (or user approves):
-
-   - If user requested a PR and we're on main/master, create a new branch first with a descriptive name based on the changes
-   - **IMPORTANT: Run `cargo fmt` to format the entire workspace before staging.** This must be done every time, even if you think files are already formatted.
-   - Run `cargo clippy --all-targets -- -D warnings` to check for lint issues. Fix any warnings before committing.
-   - Stage all relevant changes (avoid staging secrets or generated files)
-   - Create a commit with a conventional commit message based on the changes
-   - Push to the current branch (use `-u origin <branch>` if new branch)
-
-5. If user requested a PR:
-   - Use `gh pr create` to open a pull request
-   - If user requested a draft PR, use `--draft` flag
-   - Generate a clear title and description based on the changes
-   - Target the default branch (usually `main`)
+4. **If PR requested:** use `gh pr create` (add `--draft` if requested) with a clear title and description targeting the default branch. Follow PR conventions from CLAUDE.md.
 
 If there are no changes to commit, let me know.
-
-## Commit Message Guidelines
-
-- Use conventional commits format: `type(scope): description`
-- Types: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`
-- Scopes are optional; use semantic scopes as needed (examples: `parser`, `transformer`, `diagnostics`, `a11y`, `css`, `cli`, `tsgo`, `bun`, `compiler`)
-- Keep the first line under 72 characters
-- Reference the "why" not just the "what"
-- Match the style of recent commits shown above
-
-## PR Guidelines
-
-- PR title should match the commit message style (conventional commits)
-- PR description should include:
-  - Brief summary of changes using clear headings (e.g., **Summary**, **Details**, **Testing**)
-  - Any relevant context or motivation
-  - Testing notes if applicable
-- Use `--draft` when work is in progress or needs review before finalizing
-- When merging PRs, use **squash** merges and delete the branch (local + remote)
-
-## Tool Usage
-
-- **AskUserQuestion**: Use this tool whenever clarification is needed:
-  - When issues are found during review (step 3)
-  - When it's unclear which files should be staged
-  - When the commit scope is ambiguous (one commit vs multiple)
-  - When PR details need user input (title, description, draft vs ready)
-- **Task tools**: For complex scenarios involving multiple commits or extensive changes, use TaskCreate/TaskUpdate/TaskList to track progress
