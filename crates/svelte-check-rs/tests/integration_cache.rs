@@ -280,31 +280,6 @@ fn test_cache_migration_from_legacy_path() {
     );
 }
 
-/// Test that --no-cache avoids writing to the project cache directory.
-#[test]
-#[serial]
-fn test_no_cache_does_not_write_cache() {
-    let _lock = lock_sveltekit_bundler();
-    let fixture_path = fixtures_dir().join("sveltekit-bundler");
-
-    // Ensure dependencies are installed
-    ensure_fixture_deps(&fixture_path);
-
-    // Run svelte-kit sync
-    run_sveltekit_sync(&fixture_path);
-
-    // Clean cache to start fresh
-    let cache_base_path = cache_base(&fixture_path);
-    let _ = fs::remove_dir_all(&cache_base_path);
-
-    let (_exit_code, _diagnostics) = run_check_json_with_args(&fixture_path, &["--no-cache"]);
-
-    assert!(
-        find_cache_namespace(&fixture_path).is_none(),
-        "Cache directory should not be created when --no-cache is used"
-    );
-}
-
 /// Test that modifying a TypeScript file invalidates the cache and new types are detected.
 ///
 /// This test reproduces the exact bug found in careswitch-web where:

@@ -89,15 +89,13 @@ Some package managers (for example, bun) may auto-install peer dependencies, but
 | `--preserveWatchOutput` | Don't clear screen in watch mode |
 | `--fail-on-warnings` | Exit with error on warnings |
 | `--ignore <PATTERNS>` | Glob patterns to ignore |
-| `--no-cache` | Disable per-project cache + incremental builds (fresh run) |
-| `--disable-sveltekit-cache` | Disable cached .svelte-kit mirror |
 | `--skip-tsgo` | Skip TypeScript type-checking |
 | `--tsgo-version` | Show installed tsgo version + path |
 | `--bun-version` | Show installed bun version + path |
 | `--bun-update[=<VER>]` | Update bun to latest or specific version |
 | `--debug-paths` | Show resolved binaries (tsgo, bun, svelte-kit) |
 
-**Caching:** By default, svelte-check-rs writes transformed files and tsgo incremental build info to `node_modules/.cache/svelte-check-rs/`. Use `--no-cache` for a fully fresh run (useful in CI).
+**Caching:** svelte-check-rs writes transformed files and tsgo incremental build info to `node_modules/.cache/svelte-check-rs/`. Cache invalidation is automatic: dependency changes (lockfiles, node_modules markers) clear the entire cache, and source file changes are handled via content-addressed writes.
 
 ## Project Structure
 

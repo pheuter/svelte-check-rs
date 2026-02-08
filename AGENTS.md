@@ -61,7 +61,6 @@ cargo run -p svelte-check-rs -- --workspace ./path/to/project [--emit-ts]
 - `--output json`: Machine-readable diagnostics with exact locations
 - `--timings`: Show parse/transform/check timing breakdown
 - `--cache-stats`: Show cache statistics (files written/skipped)
-- `--no-cache`: Disable per-project cache + incremental builds (fresh run)
 - `--watch`: File watcher mode (uses `notify` crate, 1s polling)
 - `--debug-paths`: Show resolved tsgo, bun, package manager, svelte-kit paths
 - `--show-config`: Print resolved configuration (tsconfig, svelte.config.js, excludes)
