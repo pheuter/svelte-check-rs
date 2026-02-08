@@ -157,6 +157,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 // === INSTANCE SCRIPT ===
@@ -186,6 +190,7 @@ return { props: null as any as __SvelteOptionalProps<{
 type __SvelteProps_Select_<T extends { id: string; label: string }> = Awaited<ReturnType<typeof __svelte_render<T>>>["props"];
 declare const __SvelteComponent_Select_: {
 <T extends { id: string; label: string }>(this: void, internals: any, props: __SvelteProps_Select_<T> & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render<T>>>["exports"];
+__svelte_generic: true;
 element?: typeof HTMLElement;
 z_$$bindings?: any;
 };

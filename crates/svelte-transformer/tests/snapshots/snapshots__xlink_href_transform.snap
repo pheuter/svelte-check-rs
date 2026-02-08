@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 25
 expression: output
 ---
 === Source ===
@@ -147,6 +148,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 

@@ -1309,6 +1309,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 "#;
@@ -1625,6 +1629,7 @@ declare module "svelte" {
             "type {props_name}{generics_def} = Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"props\"];\n\
 declare const {internal_name}: {{\n\
   {generics_def}(this: void, internals: any, props: {props_name}{generics_ref} & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"exports\"];\n\
+  __svelte_generic: true;\n\
   element?: typeof HTMLElement;\n\
   z_$$bindings?: any;\n\
 }};\n\

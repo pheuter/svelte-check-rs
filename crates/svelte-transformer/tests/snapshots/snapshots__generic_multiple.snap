@@ -188,6 +188,10 @@ declare module "svelte" {
       props: __SvelteLoosen<Props>;
     }
   ): Exports;
+  export function mount(
+    component: { __svelte_generic: true },
+    options: { target: any; props?: Record<string, any>; [key: string]: any }
+  ): Record<string, any>;
 }
 
 // === INSTANCE SCRIPT ===
@@ -243,6 +247,7 @@ return { props: null as any as __SvelteOptionalProps<Props, "value" | "item">, e
 type __SvelteProps_Combobox_<T extends {label: string; value: string}, TMode extends 'single' | 'multiple'> = Awaited<ReturnType<typeof __svelte_render<T, TMode>>>["props"];
 declare const __SvelteComponent_Combobox_: {
 <T extends {label: string; value: string}, TMode extends 'single' | 'multiple'>(this: void, internals: any, props: __SvelteProps_Combobox_<T, TMode> & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render<T, TMode>>>["exports"];
+__svelte_generic: true;
 element?: typeof HTMLElement;
 z_$$bindings?: any;
 };
