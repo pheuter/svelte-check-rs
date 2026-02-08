@@ -1594,6 +1594,28 @@ fn test_issue_93_snippet_instance_typeof() {
     );
 }
 
+// ============================================================================
+// ISSUE #102: GENERIC COMPONENTS WITH MOUNT()
+// ============================================================================
+// This test verifies that generic Svelte components (those using
+// `<script generics="T extends ...">`) can be passed to `mount()` without
+// producing TS2769 "No overload matches this call" errors.
+//
+// The issue is that generic components produce a raw object type with a
+// generic call signature that doesn't match the non-generic `mount()` overload.
+// A permissive fallback overload catches these cases.
+//
+// Test file:
+// - test-fixtures/projects/sveltekit-bundler/src/lib/issue-102-generic-mount.ts
+#[test]
+fn test_issue_102_generic_mount_no_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    assert_no_diagnostics_in_file(&diagnostics, "lib/issue-102-generic-mount.ts");
+}
+
 /// Issue #96: Label wrapping a component should not trigger a11y-label-has-associated-control.
 ///
 /// Fixture: src/routes/issue-96-label-component/+page.svelte
