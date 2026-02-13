@@ -1514,9 +1514,17 @@ declare module "svelte" {
             }
             template_emitted = true;
 
+            // Only fall back to SvelteKit's PageProps/LayoutProps when the component
+            // actually consumes props (via $props() or $props.id() accessor).
+            // Components without $props() have no declared props, so forcing
+            // PageProps would make mount() incorrectly require props.
             let render_props_type = props_type
                 .as_deref()
-                .or(default_props_type)
+                .or(if rune_result.uses_props_accessor {
+                    default_props_type
+                } else {
+                    None
+                })
                 .unwrap_or("Record<string, unknown>");
             let return_stmt = format!(
                 "return {{ props: null as any as {}, exports: {}, slots: {}, events: {} }};\n",
@@ -1573,7 +1581,11 @@ declare module "svelte" {
 
             let render_props_type = props_type
                 .as_deref()
-                .or(default_props_type)
+                .or(if rune_result.uses_props_accessor {
+                    default_props_type
+                } else {
+                    None
+                })
                 .unwrap_or("Record<string, unknown>");
             let return_stmt = format!(
                 "return {{ props: null as any as {}, exports: {}, slots: {}, events: {} }};\n",

@@ -1631,6 +1631,26 @@ fn test_issue_102_generic_inference_preserved_in_templates() {
     assert_no_diagnostics_in_file(&diagnostics, "lib/issue-102-generic-inference.svelte");
 }
 
+// ============================================================================
+// ISSUE #105: SVELTEKIT PAGE WITHOUT $PROPS() AND MOUNT()
+// ============================================================================
+// This test verifies that SvelteKit route components that don't use $props()
+// don't get PageProps forced as their render return type. Without this fix,
+// mount() would incorrectly require props for components that don't declare any,
+// causing TS2769 "No overload matches this call" false positives.
+//
+// Test files:
+// - test-fixtures/projects/sveltekit-bundler/src/routes/issue-105-page-no-props/+page.svelte
+// - test-fixtures/projects/sveltekit-bundler/src/lib/issue-105-mount-no-props.ts
+#[test]
+fn test_issue_105_mount_page_without_props_no_error() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    assert_no_diagnostics_in_file(&diagnostics, "lib/issue-105-mount-no-props.ts");
+}
+
 /// Issue #96: Label wrapping a component should not trigger a11y-label-has-associated-control.
 ///
 /// Fixture: src/routes/issue-96-label-component/+page.svelte

@@ -1691,3 +1691,39 @@ fn test_complex_props_type_trajectory_pattern() {
 </script>"#,
     );
 }
+
+// ============================================================================
+// SVELTEKIT ROUTE PROPS REGRESSION TESTS (#105)
+// ============================================================================
+
+/// Regression test for #105: SvelteKit +page.svelte WITHOUT $props() should NOT
+/// force PageProps as the render return type. Components that don't declare props
+/// should use Record<string, unknown>, making mount() props optional.
+#[test]
+fn test_sveltekit_page_without_props() {
+    transform_snapshot_with_filename(
+        "sveltekit_page_no_props",
+        "+page.svelte",
+        r#"<script lang="ts">
+  import { page } from '$app/stores';
+
+  let title = $derived($page.data.title);
+</script>
+
+<h1>{title}</h1>"#,
+    );
+}
+
+/// Verify that SvelteKit +page.svelte WITH $props() still correctly uses PageProps.
+#[test]
+fn test_sveltekit_page_with_props() {
+    transform_snapshot_with_filename(
+        "sveltekit_page_with_props",
+        "+page.svelte",
+        r#"<script lang="ts">
+  let { data } = $props();
+</script>
+
+<h1>{data.title}</h1>"#,
+    );
+}
