@@ -180,7 +180,16 @@ impl<'src> Parser<'src> {
         let mut chars = self.source[start_offset..].char_indices().peekable();
         while let Some((i, c)) = chars.next() {
             let absolute_i = start_offset + i;
-            let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
+            // Count consecutive preceding backslashes. An even count means the backslashes
+            // are paired (escaped backslashes) and the current character is NOT escaped.
+            // A naive `bytes[pos-1] == '\\'` check fails for `\\'` because both backslashes
+            // form an escaped backslash, yet the quote following them appears to have a `\`
+            // predecessor.
+            let preceding_backslashes = (0..absolute_i)
+                .rev()
+                .take_while(|&j| bytes.get(j) == Some(&b'\\'))
+                .count();
+            let is_escaped = preceding_backslashes % 2 == 1;
 
             if in_string && !in_template_literal {
                 // Regular string - just look for end quote
@@ -295,8 +304,11 @@ impl<'src> Parser<'src> {
                             let quote = c;
                             for (si, sc) in chars.by_ref() {
                                 let string_abs_i = start_offset + si;
-                                let sc_escaped =
-                                    string_abs_i > 0 && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                let preceding_backslashes = (0..string_abs_i)
+                                    .rev()
+                                    .take_while(|&j| bytes.get(j) == Some(&b'\\'))
+                                    .count();
+                                let sc_escaped = preceding_backslashes % 2 == 1;
                                 if sc == quote && !sc_escaped {
                                     break;
                                 }
@@ -525,7 +537,11 @@ impl<'src> Parser<'src> {
         let mut chars = self.source[start_offset..].char_indices().peekable();
         while let Some((i, c)) = chars.next() {
             let absolute_i = start_offset + i;
-            let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
+            let preceding_backslashes = (0..absolute_i)
+                .rev()
+                .take_while(|&j| bytes.get(j) == Some(&b'\\'))
+                .count();
+            let is_escaped = preceding_backslashes % 2 == 1;
 
             if in_string && !in_template_literal {
                 if c == string_char && !is_escaped {
@@ -581,8 +597,11 @@ impl<'src> Parser<'src> {
                             let quote = c;
                             for (si, sc) in chars.by_ref() {
                                 let string_abs_i = start_offset + si;
-                                let sc_escaped =
-                                    string_abs_i > 0 && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                let preceding_bs = (0..string_abs_i)
+                                    .rev()
+                                    .take_while(|&j| bytes.get(j) == Some(&b'\\'))
+                                    .count();
+                                let sc_escaped = preceding_bs % 2 == 1;
                                 if sc == quote && !sc_escaped {
                                     break;
                                 }
@@ -714,7 +733,8 @@ impl<'src> Parser<'src> {
             let c = expr[i..].chars().next().unwrap();
 
             if in_string {
-                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                let preceding_bs = (0..i).rev().take_while(|&j| bytes.get(j) == Some(&b'\\')).count();
+                let is_escaped = preceding_bs % 2 == 1;
                 if c == string_char && !is_escaped {
                     in_string = false;
                 }
@@ -756,7 +776,8 @@ impl<'src> Parser<'src> {
             let c = expr[i..].chars().next().unwrap();
 
             if in_string {
-                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                let preceding_bs = (0..i).rev().take_while(|&j| bytes.get(j) == Some(&b'\\')).count();
+                let is_escaped = preceding_bs % 2 == 1;
                 if c == string_char && !is_escaped {
                     in_string = false;
                 }
@@ -795,7 +816,8 @@ impl<'src> Parser<'src> {
 
         for (i, c) in expr.char_indices() {
             if in_string {
-                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                let preceding_bs = (0..i).rev().take_while(|&j| bytes.get(j) == Some(&b'\\')).count();
+                let is_escaped = preceding_bs % 2 == 1;
                 if c == string_char && !is_escaped {
                     in_string = false;
                 }
@@ -1786,7 +1808,8 @@ impl<'src> Parser<'src> {
                 while end < full_text.len() && depth > 0 {
                     let c = full_text[end..].chars().next().unwrap();
                     if in_string {
-                        let is_escaped = end > 0 && bytes.get(end - 1) == Some(&b'\\');
+                        let preceding_bs = (0..end).rev().take_while(|&j| bytes.get(j) == Some(&b'\\')).count();
+                        let is_escaped = preceding_bs % 2 == 1;
                         if c == string_char && !is_escaped {
                             in_string = false;
                         }

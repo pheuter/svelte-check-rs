@@ -321,6 +321,18 @@ fn test_snapshot_use_directive_with_modifiers() {
     );
 }
 
+// === Escape sequences in attribute expressions ===
+
+#[test]
+fn test_snapshot_expression_double_backslash_string() {
+    // String ending with \\ before closing quote — naive lookbehind incorrectly treats
+    // the closing quote as escaped.
+    parse_snapshot(
+        "expression_double_backslash_string",
+        r#"<button onclick={() => open('C:\\Users\\')}>Open</button>"#,
+    );
+}
+
 // === Issue #40: XML Namespace Attributes ===
 
 #[test]
