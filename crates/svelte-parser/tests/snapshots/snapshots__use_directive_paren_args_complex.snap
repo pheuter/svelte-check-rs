@@ -1,0 +1,84 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div use:tooltip(getText('hello')) class="box"></div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 53,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 34,
+                                },
+                                kind: Use,
+                                name: "tooltip",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 16,
+                                            end: 34,
+                                        },
+                                        expression_span: Span {
+                                            start: 17,
+                                            end: 33,
+                                        },
+                                        expression: "getText('hello')",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 35,
+                                    end: 46,
+                                },
+                                name: "class",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 42,
+                                            end: 45,
+                                        },
+                                        value: "box",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 53,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 53,
+    },
+}

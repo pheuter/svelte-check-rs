@@ -321,6 +321,26 @@ fn test_snapshot_use_directive_with_modifiers() {
     );
 }
 
+// === use:action(args) shorthand syntax ===
+
+#[test]
+fn test_snapshot_use_directive_paren_args() {
+    // use:action(args) shorthand — equivalent to use:action={args}
+    parse_snapshot(
+        "use_directive_paren_args",
+        r#"<img use:handleMount(file) alt="test" />"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_paren_args_complex() {
+    // use:action(complex_expression) with a nested call
+    parse_snapshot(
+        "use_directive_paren_args_complex",
+        r#"<div use:tooltip(getText('hello')) class="box"></div>"#,
+    );
+}
+
 // === Issue #40: XML Namespace Attributes ===
 
 #[test]

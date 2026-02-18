@@ -1649,6 +1649,25 @@ impl<'src> Parser<'src> {
                 } else {
                     None
                 }
+            } else if self.check(TokenKind::LParen) {
+                // use:action(args) shorthand — Svelte allows `use:action(args)` as
+                // an alternative to `use:action={args}`. Read the parenthesized
+                // expression and treat it as the directive value.
+                let paren_start = self.current().span.start;
+                self.advance(); // consume '('
+                let (expr, expr_span) = self.read_expression_until(')');
+                self.eat(TokenKind::RParen);
+                let end = self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|t| t.span.end)
+                    .unwrap_or(paren_start);
+                Some(ExpressionValue {
+                    span: Span::new(paren_start, end),
+                    expression_span: expr_span,
+                    expression: expr,
+                    is_quoted: false,
+                })
             } else {
                 None
             };
