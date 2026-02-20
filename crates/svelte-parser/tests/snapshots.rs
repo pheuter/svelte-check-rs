@@ -341,6 +341,24 @@ fn test_snapshot_use_directive_paren_args_nested() {
     );
 }
 
+#[test]
+fn test_snapshot_use_directive_paren_args_with_close_paren_in_string() {
+    // `)` inside a quoted string must not terminate the paren absorber
+    parse_snapshot(
+        "use_directive_paren_args_string_with_close_paren",
+        r#"<div use:action('a)b')></div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_paren_args_with_pipe_in_string() {
+    // `|` inside parenthesized content must not be treated as a modifier separator
+    parse_snapshot(
+        "use_directive_paren_args_string_with_pipe",
+        r#"<div use:action('a|b')></div>"#,
+    );
+}
+
 // === Issue #108: Escaped backslashes in expressions ===
 
 #[test]

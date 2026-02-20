@@ -828,6 +828,48 @@ impl<'src> Parser<'src> {
         None
     }
 
+    /// Splits a directive argument name on top-level `|` characters,
+    /// ignoring `|` inside parenthesized or quoted content. Returns the
+    /// directive name as the first element and modifiers as the rest.
+    fn split_modifiers(arg_name: &str) -> Vec<String> {
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut paren_depth: i32 = 0;
+        let mut in_string = false;
+        let mut string_char = ' ';
+
+        for c in arg_name.chars() {
+            if in_string {
+                current.push(c);
+                if c == string_char {
+                    in_string = false;
+                }
+                continue;
+            }
+            match c {
+                '\'' | '"' | '`' => {
+                    in_string = true;
+                    string_char = c;
+                    current.push(c);
+                }
+                '(' => {
+                    paren_depth += 1;
+                    current.push(c);
+                }
+                ')' => {
+                    paren_depth -= 1;
+                    current.push(c);
+                }
+                '|' if paren_depth == 0 => {
+                    parts.push(std::mem::take(&mut current));
+                }
+                _ => current.push(c),
+            }
+        }
+        parts.push(current);
+        parts
+    }
+
     // === Parsing methods ===
 
     /// Parses a complete Svelte document.
@@ -1578,24 +1620,39 @@ impl<'src> Parser<'src> {
                 && self.current().span.start == prev_end
                 && self.check(TokenKind::LParen)
             {
-                // Consume tokens until matching `)`, tracking paren depth
+                // Consume tokens until matching `)`, tracking paren depth.
+                // Must respect string context so `)` inside quotes is not counted.
                 let mut paren_depth = 0;
+                let mut in_string = false;
+                let mut string_quote = TokenKind::Eof; // placeholder
                 loop {
                     if self.check(TokenKind::Eof) {
                         break;
                     }
-                    let is_open = self.check(TokenKind::LParen);
-                    let is_close = self.check(TokenKind::RParen);
+                    let kind = self.current().kind;
                     full_name.push_str(self.current_text());
                     prev_end = self.current().span.end;
                     self.advance();
-                    if is_open {
-                        paren_depth += 1;
-                    } else if is_close {
-                        paren_depth -= 1;
-                        if paren_depth == 0 {
-                            break;
+
+                    if in_string {
+                        if kind == string_quote {
+                            in_string = false;
                         }
+                        continue;
+                    }
+                    match kind {
+                        TokenKind::SingleQuote | TokenKind::DoubleQuote => {
+                            in_string = true;
+                            string_quote = kind;
+                        }
+                        TokenKind::LParen => paren_depth += 1,
+                        TokenKind::RParen => {
+                            paren_depth -= 1;
+                            if paren_depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1625,13 +1682,14 @@ impl<'src> Parser<'src> {
 
         if let Some((kind, directive_name, arg_name)) = directive_info {
             // Parse modifiers (|modifier)
-            // Split on '|' - first part is directive name, rest are modifiers
-            let parts: Vec<&str> = arg_name.split('|').collect();
-            let remaining = parts.first().unwrap_or(&"").to_string();
+            // Split on '|' at the top level only — `|` inside parenthesized
+            // content like `action('a|b')` is part of the name, not a modifier.
+            let parts = Self::split_modifiers(&arg_name);
+            let remaining = parts.first().map(|s| s.as_str()).unwrap_or("").to_string();
             let modifiers: Vec<SmolStr> = parts[1..]
                 .iter()
                 .filter(|s| !s.is_empty())
-                .map(|s| SmolStr::new(*s))
+                .map(|s| SmolStr::new(s.as_str()))
                 .collect();
 
             // Error if directive name is empty (e.g., style:, on:, bind:)
