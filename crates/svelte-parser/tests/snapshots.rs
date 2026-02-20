@@ -321,6 +321,55 @@ fn test_snapshot_use_directive_with_modifiers() {
     );
 }
 
+// === Issue #107: use:action(args) shorthand syntax ===
+
+#[test]
+fn test_snapshot_use_directive_paren_args() {
+    // use:action(args) — parens absorbed into directive name per official Svelte parser
+    parse_snapshot(
+        "use_directive_paren_args",
+        r#"<img use:handleMount(file) alt="test" />"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_paren_args_nested() {
+    // use:action(fn('x')) — nested call expression in parens
+    parse_snapshot(
+        "use_directive_paren_args_nested",
+        r#"<div use:tooltip(getText('hello')) class="box"></div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_paren_args_with_close_paren_in_string() {
+    // `)` inside a quoted string must not terminate the paren absorber
+    parse_snapshot(
+        "use_directive_paren_args_string_with_close_paren",
+        r#"<div use:action('a)b')></div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_use_directive_paren_args_with_pipe_in_string() {
+    // `|` inside parenthesized content must not be treated as a modifier separator
+    parse_snapshot(
+        "use_directive_paren_args_string_with_pipe",
+        r#"<div use:action('a|b')></div>"#,
+    );
+}
+
+// === Issue #108: Escaped backslashes in expressions ===
+
+#[test]
+fn test_snapshot_expression_escaped_backslash() {
+    // String ending with \\ — naive lookbehind incorrectly treats closing quote as escaped
+    parse_snapshot(
+        "expression_escaped_backslash",
+        r#"<button onclick={() => open('C:\\Users\\')}>Open</button>"#,
+    );
+}
+
 // === Issue #40: XML Namespace Attributes ===
 
 #[test]

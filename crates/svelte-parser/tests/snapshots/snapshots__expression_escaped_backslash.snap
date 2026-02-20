@@ -1,0 +1,75 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<button onclick={() => open('C:\\Users\\')}>Open</button>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 57,
+                    },
+                    name: "button",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 8,
+                                    end: 43,
+                                },
+                                name: "onclick",
+                                value: Expression(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 16,
+                                            end: 43,
+                                        },
+                                        expression_span: Span {
+                                            start: 17,
+                                            end: 42,
+                                        },
+                                        expression: "() => open('C:\\\\Users\\\\')",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 44,
+                                    end: 48,
+                                },
+                                data: "Open",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 57,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 57,
+    },
+}

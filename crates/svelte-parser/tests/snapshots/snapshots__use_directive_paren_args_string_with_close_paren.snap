@@ -1,0 +1,53 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div use:action('a)b')></div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 29,
+                    },
+                    name: "div",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 22,
+                                },
+                                kind: Use,
+                                name: "action('a)b')",
+                                modifiers: [],
+                                expression: None,
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 29,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 29,
+    },
+}
