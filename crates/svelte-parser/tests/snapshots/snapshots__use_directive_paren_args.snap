@@ -1,0 +1,71 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<img use:handleMount(file) alt="test" />
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 40,
+                    },
+                    name: "img",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 5,
+                                    end: 26,
+                                },
+                                kind: Use,
+                                name: "handleMount(file)",
+                                modifiers: [],
+                                expression: None,
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 27,
+                                    end: 37,
+                                },
+                                name: "alt",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 32,
+                                            end: 36,
+                                        },
+                                        value: "test",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 40,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 40,
+    },
+}

@@ -64,6 +64,18 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Returns true if the character at `pos` is escaped by a preceding backslash.
+    /// Correctly handles consecutive backslashes: `\\` (even count) means NOT escaped,
+    /// `\\\` (odd count) means escaped. Mirrors the official Svelte parser's
+    /// `count_leading_backslashes` logic in `bracket.js`.
+    fn is_char_escaped(bytes: &[u8], pos: usize) -> bool {
+        let preceding_backslashes = (0..pos)
+            .rev()
+            .take_while(|&j| bytes.get(j) == Some(&b'\\'))
+            .count();
+        preceding_backslashes % 2 == 1
+    }
+
     // === Token helpers ===
 
     /// Returns the current token.
@@ -180,7 +192,7 @@ impl<'src> Parser<'src> {
         let mut chars = self.source[start_offset..].char_indices().peekable();
         while let Some((i, c)) = chars.next() {
             let absolute_i = start_offset + i;
-            let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
+            let is_escaped = Self::is_char_escaped(bytes, absolute_i);
 
             if in_string && !in_template_literal {
                 // Regular string - just look for end quote
@@ -218,8 +230,7 @@ impl<'src> Parser<'src> {
                             while nested_depth > 0 {
                                 if let Some((ni, nc)) = chars.next() {
                                     let nested_abs_i = start_offset + ni;
-                                    let nc_escaped = nested_abs_i > 0
-                                        && bytes.get(nested_abs_i - 1) == Some(&b'\\');
+                                    let nc_escaped = Self::is_char_escaped(bytes, nested_abs_i);
 
                                     if nested_expr_depth == 0 {
                                         // In template literal text
@@ -242,9 +253,8 @@ impl<'src> Parser<'src> {
                                                 let quote = nc;
                                                 for (si, sc) in chars.by_ref() {
                                                     let string_abs_i = start_offset + si;
-                                                    let sc_escaped = string_abs_i > 0
-                                                        && bytes.get(string_abs_i - 1)
-                                                            == Some(&b'\\');
+                                                    let sc_escaped =
+                                                        Self::is_char_escaped(bytes, string_abs_i);
                                                     if sc == quote && !sc_escaped {
                                                         break;
                                                     }
@@ -295,8 +305,7 @@ impl<'src> Parser<'src> {
                             let quote = c;
                             for (si, sc) in chars.by_ref() {
                                 let string_abs_i = start_offset + si;
-                                let sc_escaped =
-                                    string_abs_i > 0 && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                let sc_escaped = Self::is_char_escaped(bytes, string_abs_i);
                                 if sc == quote && !sc_escaped {
                                     break;
                                 }
@@ -473,7 +482,7 @@ impl<'src> Parser<'src> {
 
         while let Some((ri, rc)) = chars.next() {
             let regex_abs_i = start_offset + ri;
-            let rc_escaped = regex_abs_i > 0 && bytes.get(regex_abs_i - 1) == Some(&b'\\');
+            let rc_escaped = Self::is_char_escaped(bytes, regex_abs_i);
 
             if rc_escaped {
                 // Escaped character - skip it
@@ -525,7 +534,7 @@ impl<'src> Parser<'src> {
         let mut chars = self.source[start_offset..].char_indices().peekable();
         while let Some((i, c)) = chars.next() {
             let absolute_i = start_offset + i;
-            let is_escaped = absolute_i > 0 && bytes.get(absolute_i - 1) == Some(&b'\\');
+            let is_escaped = Self::is_char_escaped(bytes, absolute_i);
 
             if in_string && !in_template_literal {
                 if c == string_char && !is_escaped {
@@ -581,8 +590,7 @@ impl<'src> Parser<'src> {
                             let quote = c;
                             for (si, sc) in chars.by_ref() {
                                 let string_abs_i = start_offset + si;
-                                let sc_escaped =
-                                    string_abs_i > 0 && bytes.get(string_abs_i - 1) == Some(&b'\\');
+                                let sc_escaped = Self::is_char_escaped(bytes, string_abs_i);
                                 if sc == quote && !sc_escaped {
                                     break;
                                 }
@@ -714,7 +722,7 @@ impl<'src> Parser<'src> {
             let c = expr[i..].chars().next().unwrap();
 
             if in_string {
-                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                let is_escaped = Self::is_char_escaped(bytes, i);
                 if c == string_char && !is_escaped {
                     in_string = false;
                 }
@@ -756,7 +764,7 @@ impl<'src> Parser<'src> {
             let c = expr[i..].chars().next().unwrap();
 
             if in_string {
-                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                let is_escaped = Self::is_char_escaped(bytes, i);
                 if c == string_char && !is_escaped {
                     in_string = false;
                 }
@@ -795,7 +803,7 @@ impl<'src> Parser<'src> {
 
         for (i, c) in expr.char_indices() {
             if in_string {
-                let is_escaped = i > 0 && bytes.get(i - 1) == Some(&b'\\');
+                let is_escaped = Self::is_char_escaped(bytes, i);
                 if c == string_char && !is_escaped {
                     in_string = false;
                 }
@@ -1560,6 +1568,37 @@ impl<'src> Parser<'src> {
                 prev_end = self.current().span.end;
                 self.advance();
             }
+
+            // Absorb adjacent parenthesized content into the name.
+            // Svelte allows `use:action(args)` where `(args)` is part of the directive
+            // name, NOT a separate expression. The official Svelte parser's
+            // `read_until(/[\s=/>"']/)` does not stop at `(`, so it reads the entire
+            // `action(args)` as the name string.
+            while self.pos < self.tokens.len()
+                && self.current().span.start == prev_end
+                && self.check(TokenKind::LParen)
+            {
+                // Consume tokens until matching `)`, tracking paren depth
+                let mut paren_depth = 0;
+                loop {
+                    if self.check(TokenKind::Eof) {
+                        break;
+                    }
+                    let is_open = self.check(TokenKind::LParen);
+                    let is_close = self.check(TokenKind::RParen);
+                    full_name.push_str(self.current_text());
+                    prev_end = self.current().span.end;
+                    self.advance();
+                    if is_open {
+                        paren_depth += 1;
+                    } else if is_close {
+                        paren_depth -= 1;
+                        if paren_depth == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         // Check for directive (name:arg)
@@ -1786,7 +1825,7 @@ impl<'src> Parser<'src> {
                 while end < full_text.len() && depth > 0 {
                     let c = full_text[end..].chars().next().unwrap();
                     if in_string {
-                        let is_escaped = end > 0 && bytes.get(end - 1) == Some(&b'\\');
+                        let is_escaped = Self::is_char_escaped(bytes, end);
                         if c == string_char && !is_escaped {
                             in_string = false;
                         }
