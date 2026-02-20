@@ -1,0 +1,302 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<Form>
+  <Input type="radio" name="group" value="a" bind:group={selected}>
+    {#snippet label()}
+      Option A
+    {/snippet}
+  </Input>
+  <Input type="radio" name="group" value="b" bind:group={selected}>
+    {#snippet label()}
+      Option B
+    {/snippet}
+  </Input>
+</Form>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 278,
+                    },
+                    name: "Form",
+                    attributes: [],
+                    children: [
+                        Component(
+                            Component {
+                                span: Span {
+                                    start: 9,
+                                    end: 138,
+                                },
+                                name: "Input",
+                                attributes: [
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 16,
+                                                end: 28,
+                                            },
+                                            name: "type",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 22,
+                                                        end: 27,
+                                                    },
+                                                    value: "radio",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 29,
+                                                end: 41,
+                                            },
+                                            name: "name",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 35,
+                                                        end: 40,
+                                                    },
+                                                    value: "group",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 42,
+                                                end: 51,
+                                            },
+                                            name: "value",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 49,
+                                                        end: 50,
+                                                    },
+                                                    value: "a",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    Directive(
+                                        Directive {
+                                            span: Span {
+                                                start: 52,
+                                                end: 73,
+                                            },
+                                            kind: Bind,
+                                            name: "group",
+                                            modifiers: [],
+                                            expression: Some(
+                                                ExpressionValue {
+                                                    span: Span {
+                                                        start: 52,
+                                                        end: 73,
+                                                    },
+                                                    expression_span: Span {
+                                                        start: 64,
+                                                        end: 72,
+                                                    },
+                                                    expression: "selected",
+                                                    is_quoted: false,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ],
+                                children: [
+                                    SnippetBlock(
+                                        SnippetBlock {
+                                            span: Span {
+                                                start: 79,
+                                                end: 127,
+                                            },
+                                            name: "label",
+                                            parameters_span: Span {
+                                                start: 95,
+                                                end: 95,
+                                            },
+                                            parameters: "",
+                                            body: Fragment {
+                                                nodes: [
+                                                    Text(
+                                                        Text {
+                                                            span: Span {
+                                                                start: 104,
+                                                                end: 113,
+                                                            },
+                                                            data: "OptionA\n",
+                                                            is_whitespace: false,
+                                                        },
+                                                    ),
+                                                ],
+                                                span: Span {
+                                                    start: 97,
+                                                    end: 113,
+                                                },
+                                            },
+                                        },
+                                    ),
+                                ],
+                                self_closing: false,
+                            },
+                        ),
+                        Component(
+                            Component {
+                                span: Span {
+                                    start: 141,
+                                    end: 270,
+                                },
+                                name: "Input",
+                                attributes: [
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 148,
+                                                end: 160,
+                                            },
+                                            name: "type",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 154,
+                                                        end: 159,
+                                                    },
+                                                    value: "radio",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 161,
+                                                end: 173,
+                                            },
+                                            name: "name",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 167,
+                                                        end: 172,
+                                                    },
+                                                    value: "group",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 174,
+                                                end: 183,
+                                            },
+                                            name: "value",
+                                            value: Text(
+                                                TextValue {
+                                                    span: Span {
+                                                        start: 181,
+                                                        end: 182,
+                                                    },
+                                                    value: "b",
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    Directive(
+                                        Directive {
+                                            span: Span {
+                                                start: 184,
+                                                end: 205,
+                                            },
+                                            kind: Bind,
+                                            name: "group",
+                                            modifiers: [],
+                                            expression: Some(
+                                                ExpressionValue {
+                                                    span: Span {
+                                                        start: 184,
+                                                        end: 205,
+                                                    },
+                                                    expression_span: Span {
+                                                        start: 196,
+                                                        end: 204,
+                                                    },
+                                                    expression: "selected",
+                                                    is_quoted: false,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ],
+                                children: [
+                                    SnippetBlock(
+                                        SnippetBlock {
+                                            span: Span {
+                                                start: 211,
+                                                end: 259,
+                                            },
+                                            name: "label",
+                                            parameters_span: Span {
+                                                start: 227,
+                                                end: 227,
+                                            },
+                                            parameters: "",
+                                            body: Fragment {
+                                                nodes: [
+                                                    Text(
+                                                        Text {
+                                                            span: Span {
+                                                                start: 236,
+                                                                end: 245,
+                                                            },
+                                                            data: "OptionB\n",
+                                                            is_whitespace: false,
+                                                        },
+                                                    ),
+                                                ],
+                                                span: Span {
+                                                    start: 229,
+                                                    end: 245,
+                                                },
+                                            },
+                                        },
+                                    ),
+                                ],
+                                self_closing: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 278,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 278,
+    },
+}
