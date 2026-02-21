@@ -1,0 +1,130 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<Input bind:value={name} />
+<Img src="photo.jpg" />
+<Link href="/about" />
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 27,
+                    },
+                    name: "Input",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 7,
+                                    end: 24,
+                                },
+                                kind: Bind,
+                                name: "value",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 7,
+                                            end: 24,
+                                        },
+                                        expression_span: Span {
+                                            start: 19,
+                                            end: 23,
+                                        },
+                                        expression: "name",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+            Component(
+                Component {
+                    span: Span {
+                        start: 28,
+                        end: 51,
+                    },
+                    name: "Img",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 33,
+                                    end: 48,
+                                },
+                                name: "src",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 38,
+                                            end: 47,
+                                        },
+                                        value: "photo.jpg",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+            Component(
+                Component {
+                    span: Span {
+                        start: 52,
+                        end: 74,
+                    },
+                    name: "Link",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 58,
+                                    end: 71,
+                                },
+                                name: "href",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 64,
+                                            end: 70,
+                                        },
+                                        value: "/about",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 74,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 74,
+    },
+}

@@ -1,0 +1,66 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<Input bind:value={name}></Input>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Component(
+                Component {
+                    span: Span {
+                        start: 0,
+                        end: 33,
+                    },
+                    name: "Input",
+                    attributes: [
+                        Directive(
+                            Directive {
+                                span: Span {
+                                    start: 7,
+                                    end: 24,
+                                },
+                                kind: Bind,
+                                name: "value",
+                                modifiers: [],
+                                expression: Some(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 7,
+                                            end: 24,
+                                        },
+                                        expression_span: Span {
+                                            start: 19,
+                                            end: 23,
+                                        },
+                                        expression: "name",
+                                        is_quoted: false,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 33,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 33,
+    },
+}

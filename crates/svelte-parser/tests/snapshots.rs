@@ -576,3 +576,44 @@ fn test_snapshot_complex_snippet_const_regex() {
 </div>"#,
     );
 }
+
+// Regression: components named after HTML void elements (Input, Img, Link, etc.)
+// must not be treated as void/self-closing when they have explicit closing tags.
+// See: https://github.com/pheuter/svelte-check-rs/issues/113
+
+#[test]
+fn test_snapshot_component_named_input_with_children() {
+    parse_snapshot(
+        "component_void_name_with_children",
+        r#"<Form>
+  <Input type="radio" name="group" value="a" bind:group={selected}>
+    {#snippet label()}
+      Option A
+    {/snippet}
+  </Input>
+  <Input type="radio" name="group" value="b" bind:group={selected}>
+    {#snippet label()}
+      Option B
+    {/snippet}
+  </Input>
+</Form>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_component_named_input_empty() {
+    parse_snapshot(
+        "component_void_name_empty",
+        r#"<Input bind:value={name}></Input>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_component_void_names_self_closing() {
+    parse_snapshot(
+        "component_void_names_self_closing",
+        r#"<Input bind:value={name} />
+<Img src="photo.jpg" />
+<Link href="/about" />"#,
+    );
+}

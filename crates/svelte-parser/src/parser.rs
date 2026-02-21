@@ -1347,8 +1347,10 @@ impl<'src> Parser<'src> {
         let attributes = self.parse_attributes();
 
         // Check for self-closing syntax (/>) or HTML void element
+        // Components (PascalCase) are never void elements, even if their
+        // lowercased name collides with an HTML void element (e.g. Input, Img, Link).
         let explicit_self_closing = self.eat(TokenKind::SlashRAngle);
-        let is_void = is_void_element(&name);
+        let is_void = !is_component && is_void_element(&name);
         let self_closing = explicit_self_closing || is_void;
 
         if !explicit_self_closing {
