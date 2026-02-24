@@ -8,7 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
 use source_map::LineIndex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -419,6 +419,7 @@ async fn run_single_check(
     }
 
     struct FileResult {
+        file_path: Utf8PathBuf,
         output: Option<FileOutput>,
         transformed: Option<(Utf8PathBuf, TransformedFile)>,
         compiler_input: Option<BunInput>,
@@ -440,6 +441,7 @@ async fn run_single_check(
                 Err(e) => {
                     eprintln!("Failed to read {}: {}", file_path, e);
                     return FileResult {
+                        file_path: file_path.clone(),
                         output: None,
                         transformed: None,
                         compiler_input: None,
@@ -591,6 +593,7 @@ async fn run_single_check(
             });
 
             FileResult {
+                file_path: file_path.clone(),
                 output,
                 transformed,
                 compiler_input,
@@ -607,6 +610,7 @@ async fn run_single_check(
                 Err(e) => {
                     eprintln!("Failed to read {}: {}", file_path, e);
                     return FileResult {
+                        file_path: file_path.clone(),
                         output: None,
                         transformed: None,
                         compiler_input: None,
@@ -696,6 +700,7 @@ async fn run_single_check(
             };
 
             FileResult {
+                file_path: file_path.clone(),
                 output,
                 transformed,
                 compiler_input: None,
@@ -708,10 +713,14 @@ async fn run_single_check(
     let mut transformed_files = TransformedFiles::new();
     let mut compiler_inputs: Vec<BunInput> = Vec::new();
     let mut compiler_sources: HashMap<Utf8PathBuf, String> = HashMap::new();
+    let mut files_with_diagnostics: HashSet<Utf8PathBuf> = HashSet::new();
     for result in component_results
         .into_iter()
         .chain(module_results.into_iter())
     {
+        if result.output.is_some() {
+            files_with_diagnostics.insert(result.file_path);
+        }
         if let Some(output) = result.output {
             outputs.push(output);
         }
@@ -756,6 +765,7 @@ async fn run_single_check(
 
                 // Count and print compiler diagnostics
                 for diag in &diagnostics {
+                    files_with_diagnostics.insert(diag.file.clone());
                     match diag.severity {
                         BunDiagnosticSeverity::Error => {
                             error_count.fetch_add(1, Ordering::Relaxed);
@@ -828,6 +838,7 @@ async fn run_single_check(
 
                     // Count and print TypeScript diagnostics
                     for diag in &ts_diagnostics {
+                        files_with_diagnostics.insert(diag.file.clone());
                         match diag.severity {
                             tsgo_runner::DiagnosticSeverity::Error => {
                                 error_count.fetch_add(1, Ordering::Relaxed);
@@ -985,7 +996,7 @@ async fn run_single_check(
     }
 
     let summary = CheckSummary {
-        file_count: total_file_count,
+        file_count: files_with_diagnostics.len(),
         error_count: error_count.load(Ordering::Relaxed),
         warning_count: warning_count.load(Ordering::Relaxed),
         fail_on_warnings: args.fail_on_warnings,

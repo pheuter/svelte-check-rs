@@ -242,7 +242,7 @@ impl Formatter {
 /// Summary of a check run.
 #[derive(Debug, Default)]
 pub struct CheckSummary {
-    /// Number of files checked.
+    /// Number of files with diagnostics.
     pub file_count: usize,
     /// Number of errors.
     pub error_count: usize,
