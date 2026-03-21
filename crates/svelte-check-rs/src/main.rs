@@ -16,6 +16,9 @@ use tsgo_runner::TsgoRunner;
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    let version_only = args.tsgo_version || args.bun_version;
+    let mut tsgo_version_failed = false;
+
     // Handle tsgo version command
     if args.tsgo_version {
         let workspace = if args.workspace.as_str() == "." {
@@ -34,10 +37,17 @@ async fn main() -> Result<()> {
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
-                std::process::exit(1);
+                if args.bun_version {
+                    tsgo_version_failed = true;
+                } else {
+                    std::process::exit(1);
+                }
             }
         }
-        return Ok(());
+    }
+
+    if args.tsgo_version && args.bun_version {
+        println!();
     }
 
     // Handle bun version command
@@ -54,6 +64,12 @@ async fn main() -> Result<()> {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
+        }
+    }
+
+    if version_only {
+        if tsgo_version_failed {
+            std::process::exit(1);
         }
         return Ok(());
     }
