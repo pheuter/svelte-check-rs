@@ -1696,3 +1696,21 @@ fn test_issue_96_state_referenced_locally_not_duplicated() {
         count, diagnostics
     );
 }
+
+// ============================================================================
+// ISSUE #121: experimental.async from svelte.config.js for Svelte compiler
+// ============================================================================
+//
+// `svelte-check-rs` must pass `compilerOptions.experimental.async` through to
+// `svelte/compiler` so top-level / template `await` matches project config.
+//
+// Fixture: src/routes/issue-121-experimental-async/+page.svelte
+// Config: test-fixtures/projects/sveltekit-bundler/svelte.config.js
+#[test]
+fn test_issue_121_experimental_async_respected_by_compiler() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
+
+    assert_no_diagnostics_in_file(&diagnostics, "issue-121-experimental-async/+page.svelte");
+}

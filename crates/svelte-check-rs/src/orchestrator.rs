@@ -3,7 +3,10 @@
 use crate::cli::{Args, TimingFormat};
 use crate::config::{SvelteConfig, SvelteFileKind, TsConfig};
 use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
-use bun_runner::{BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunInput, BunRunner};
+use bun_runner::{
+    BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunExperimentalOptions, BunInput,
+    BunRunner,
+};
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
@@ -196,7 +199,17 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     // Load configuration
     let svelte_config = SvelteConfig::load(&workspace);
     let extra_paths = svelte_alias_paths(&svelte_config);
-    let compiler_runes = svelte_config.compiler_options.runes;
+    let compiler_bun_options = BunCompileOptions {
+        runes: svelte_config.compiler_options.runes,
+        dev: None,
+        generate: None,
+        experimental: svelte_config
+            .compiler_options
+            .experimental_async
+            .map(|enabled| BunExperimentalOptions {
+                async_: Some(enabled),
+            }),
+    };
 
     // Load tsconfig to detect module resolution strategy
     let ts_config_path = if let Some(ref custom_path) = args.tsconfig {
@@ -372,7 +385,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
-            compiler_runes,
+            compiler_bun_options,
             &extra_paths,
         )
         .await
@@ -383,7 +396,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
-            compiler_runes,
+            compiler_bun_options,
             &extra_paths,
         )
         .await
@@ -397,7 +410,7 @@ async fn run_single_check(
     files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
-    compiler_runes: Option<bool>,
+    compiler_bun_options: BunCompileOptions,
     extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     let total_start = Instant::now();
@@ -585,11 +598,7 @@ async fn run_single_check(
             let compiler_input = Some(BunInput {
                 filename: file_path.clone(),
                 source: source.clone(),
-                options: BunCompileOptions {
-                    runes: compiler_runes,
-                    dev: None,
-                    generate: None,
-                },
+                options: compiler_bun_options.clone(),
             });
 
             FileResult {
@@ -1487,7 +1496,7 @@ async fn run_watch_mode(
     initial_files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
-    compiler_runes: Option<bool>,
+    compiler_bun_options: BunCompileOptions,
     extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -1502,7 +1511,7 @@ async fn run_watch_mode(
         initial_files.clone(),
         file_scan_time,
         use_nodenext_imports,
-        compiler_runes,
+        compiler_bun_options.clone(),
         extra_paths,
     )
     .await?;
@@ -1550,7 +1559,7 @@ async fn run_watch_mode(
                 initial_files.clone(),
                 file_scan_time,
                 use_nodenext_imports,
-                compiler_runes,
+                compiler_bun_options.clone(),
                 extra_paths,
             )
             .await;
