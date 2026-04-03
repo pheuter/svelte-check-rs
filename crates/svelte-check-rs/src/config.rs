@@ -7,8 +7,8 @@ use std::fs;
 use std::sync::Arc;
 use swc_common::SourceMap;
 use swc_ecma_ast::{
-    ExportDefaultExpr, Expr, KeyValueProp, Lit, ModuleDecl, ModuleItem, ObjectLit, Prop, PropName,
-    PropOrSpread,
+    Decl, ExportDefaultExpr, Expr, KeyValueProp, Lit, ModuleDecl, ModuleItem, ObjectLit, Pat, Prop,
+    PropName, PropOrSpread, Stmt, VarDeclKind,
 };
 use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 
@@ -81,6 +81,9 @@ pub struct KitConfig {
 pub struct SvelteCompilerOptions {
     /// Enable runes mode.
     pub runes: Option<bool>,
+
+    /// `compilerOptions.experimental.async` from `svelte.config.js`.
+    pub experimental_async: Option<bool>,
 }
 
 impl SvelteConfig {
@@ -139,20 +142,51 @@ impl SvelteConfig {
 
         let mut config = SvelteConfig::default();
 
-        // Find the default export
+        let object_by_name = Self::collect_top_level_object_consts(&module.body);
+
+        // Find the default export (`export default { ... }` or `export default config`)
         for item in &module.body {
             if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(ExportDefaultExpr {
                 expr,
                 ..
             })) = item
             {
-                if let Expr::Object(obj) = expr.as_ref() {
+                let root = match expr.as_ref() {
+                    Expr::Object(obj) => Some(obj),
+                    Expr::Ident(ident) => object_by_name.get(ident.sym.as_ref()).copied(),
+                    _ => None,
+                };
+                if let Some(obj) = root {
                     Self::extract_config_from_object(obj, &mut config);
                 }
             }
         }
 
         Ok(config)
+    }
+
+    /// Maps `const name = { ... }` at module top level to the object literal (for resolving
+    /// `export default name` in SvelteKit configs).
+    fn collect_top_level_object_consts(body: &[ModuleItem]) -> HashMap<&str, &ObjectLit> {
+        let mut out = HashMap::new();
+        for item in body {
+            let ModuleItem::Stmt(Stmt::Decl(Decl::Var(var))) = item else {
+                continue;
+            };
+            if var.kind != VarDeclKind::Const {
+                continue;
+            }
+            for decl in &var.decls {
+                let Pat::Ident(binding) = &decl.name else {
+                    continue;
+                };
+                let Some(Expr::Object(obj)) = decl.init.as_ref().map(|e| e.as_ref()) else {
+                    continue;
+                };
+                out.insert(binding.id.sym.as_str(), obj);
+            }
+        }
+        out
     }
 
     /// Gets a string value from a PropName.
@@ -260,6 +294,27 @@ impl SvelteConfig {
                     if key_name == "runes" {
                         if let Expr::Lit(Lit::Bool(b)) = value.as_ref() {
                             config.compiler_options.runes = Some(b.value);
+                        }
+                    } else if key_name == "experimental" {
+                        if let Expr::Object(exp_obj) = value.as_ref() {
+                            Self::extract_compiler_experimental(exp_obj, config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_compiler_experimental(obj: &ObjectLit, config: &mut SvelteConfig) {
+        for prop in &obj.props {
+            if let PropOrSpread::Prop(prop) = prop {
+                if let Prop::KeyValue(KeyValueProp { key, value }) = prop.as_ref() {
+                    let Some(key_name) = Self::prop_name_str(key) else {
+                        continue;
+                    };
+                    if key_name == "async" {
+                        if let Expr::Lit(Lit::Bool(b)) = value.as_ref() {
+                            config.compiler_options.experimental_async = Some(b.value);
                         }
                     }
                 }
@@ -551,6 +606,17 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_sveltekit_bundler_config_includes_experimental_async() {
+        let path = Utf8Path::new("../../test-fixtures/projects/sveltekit-bundler");
+        let config = SvelteConfig::load(path);
+        assert_eq!(
+            config.compiler_options.experimental_async,
+            Some(true),
+            "expected const config + export default to resolve compilerOptions.experimental.async"
+        );
+    }
+
+    #[test]
     fn test_parse_svelte_config_js() {
         // Parse the test fixture svelte.config.js
         let path = Utf8Path::new("../../test-fixtures/projects/simple-app");
@@ -582,7 +648,10 @@ mod tests {
                     }
                 },
                 compilerOptions: {
-                    runes: true
+                    runes: true,
+                    experimental: {
+                        async: true
+                    }
                 }
             };
         "#;
@@ -601,6 +670,7 @@ mod tests {
             Some(&"./src/utils".to_string())
         );
         assert_eq!(config.compiler_options.runes, Some(true));
+        assert_eq!(config.compiler_options.experimental_async, Some(true));
 
         // Cleanup
         std::fs::remove_file(config_path).ok();

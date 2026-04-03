@@ -58,6 +58,10 @@ for await (const line of rl) {
     runes: options.runes
   };
 
+  if (options.experimental != null && typeof options.experimental === 'object') {
+    compileOptions.experimental = options.experimental;
+  }
+
   let diagnostics = [];
 
   try {
@@ -117,6 +121,14 @@ pub enum BunError {
     ParseError(String),
 }
 
+/// Subset of Svelte `compile()` options under `experimental`.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct BunExperimentalOptions {
+    /// `experimental.async` — enables `await` in components when `true`.
+    #[serde(rename = "async", skip_serializing_if = "Option::is_none")]
+    pub async_: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct BunCompileOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +137,8 @@ pub struct BunCompileOptions {
     pub dev: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental: Option<BunExperimentalOptions>,
 }
 
 #[derive(Debug, Clone)]
@@ -659,5 +673,6 @@ mod tests {
     fn test_bun_compile_options_default() {
         let options = BunCompileOptions::default();
         assert!(options.runes.is_none());
+        assert!(options.experimental.is_none());
     }
 }
