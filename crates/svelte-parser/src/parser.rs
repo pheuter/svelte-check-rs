@@ -1391,6 +1391,7 @@ impl<'src> Parser<'src> {
 
         loop {
             self.skip_whitespace();
+            self.skip_tag_comments();
 
             if self.check(TokenKind::RAngle)
                 || self.check(TokenKind::SlashRAngle)
@@ -1407,6 +1408,46 @@ impl<'src> Parser<'src> {
         }
 
         attributes
+    }
+
+    /// Skips `// line` and `/* block */` comments that may appear between
+    /// attributes inside an element opening tag.
+    fn skip_tag_comments(&mut self) {
+        loop {
+            let offset = u32::from(self.current().span.start) as usize;
+            let bytes = self.source.as_bytes();
+            if offset + 1 >= bytes.len() || bytes[offset] != b'/' {
+                return;
+            }
+            let end_offset = match bytes[offset + 1] {
+                b'/' => {
+                    // Line comment: consume to next newline (exclusive).
+                    let mut e = offset + 2;
+                    while e < bytes.len() && bytes[e] != b'\n' {
+                        e += 1;
+                    }
+                    e
+                }
+                b'*' => {
+                    // Block comment: consume to closing `*/`.
+                    let mut e = offset + 2;
+                    while e + 1 < bytes.len() && !(bytes[e] == b'*' && bytes[e + 1] == b'/') {
+                        e += 1;
+                    }
+                    if e + 1 < bytes.len() {
+                        e + 2
+                    } else {
+                        bytes.len()
+                    }
+                }
+                _ => return,
+            };
+            let end = TextSize::from(end_offset as u32);
+            while !self.check(TokenKind::Eof) && self.current().span.end <= end {
+                self.advance();
+            }
+            self.skip_whitespace();
+        }
     }
 
     /// Parses a single attribute.
