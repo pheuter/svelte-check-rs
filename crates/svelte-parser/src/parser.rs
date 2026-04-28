@@ -1741,8 +1741,40 @@ impl<'src> Parser<'src> {
                 is_quoted: false,
             })
         } else {
-            AttributeValue::True
+            self.parse_unquoted_attribute_value()
         }
+    }
+
+    /// Parses an unquoted attribute value, e.g. `class=foo`, `href=https://x.y/z`.
+    ///
+    /// Per the HTML spec, unquoted values are terminated by whitespace, `>`,
+    /// `=`, `<`, `"`, `'`, or `` ` ``. `/` is permitted inside the value, so
+    /// `<a href=/>` has value "/" (the element is not self-closing).
+    fn parse_unquoted_attribute_value(&mut self) -> AttributeValue {
+        let start = self.current().span.start;
+        let start_offset = u32::from(start) as usize;
+        let bytes = self.source.as_bytes();
+        let mut end_offset = start_offset;
+        while end_offset < bytes.len() {
+            let b = bytes[end_offset];
+            if b.is_ascii_whitespace() || matches!(b, b'>' | b'<' | b'=' | b'"' | b'\'' | b'`') {
+                break;
+            }
+            end_offset += 1;
+        }
+        if end_offset == start_offset {
+            return AttributeValue::True;
+        }
+        let end = TextSize::from(end_offset as u32);
+        let span = Span::new(start, end);
+        let value = self.source[start_offset..end_offset].to_string();
+
+        // Advance past tokens covered by the unquoted value.
+        while !self.check(TokenKind::Eof) && self.current().span.end <= end {
+            self.advance();
+        }
+
+        AttributeValue::Text(TextValue { span, value })
     }
 
     /// Parses a quoted attribute value that may contain expressions.
