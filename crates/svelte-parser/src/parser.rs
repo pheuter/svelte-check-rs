@@ -20,6 +20,28 @@ fn is_void_element(name: &str) -> bool {
     HTML_VOID_ELEMENTS.contains(&name.to_lowercase().as_str())
 }
 
+/// Returns true if `parent` should be implicitly closed when an opening tag
+/// `<child>` is encountered. Mirrors HTML5 optional-end-tag rules.
+fn implicit_close_on_open(parent: &str, child: &str) -> bool {
+    matches!((parent, child), ("li", "li"))
+}
+
+/// Returns true if `parent` should be implicitly closed when a closing tag
+/// `</closing>` is encountered.
+fn implicit_close_on_close(parent: &str, closing: &str) -> bool {
+    matches!(
+        (parent, closing),
+        ("li", "ul") | ("li", "ol") | ("li", "menu")
+    )
+}
+
+/// Returns true if the element's end tag may be omitted per the HTML spec.
+/// Currently only covers `<li>` (the tags exercised by the upstream parity
+/// suite); extend as additional cases surface.
+fn has_optional_end_tag(name: &str) -> bool {
+    matches!(name, "li")
+}
+
 /// The Svelte parser.
 pub struct Parser<'src> {
     /// The source being parsed.
@@ -2093,6 +2115,7 @@ impl<'src> Parser<'src> {
     fn parse_children(&mut self, parent_tag: &str) -> Vec<TemplateNode> {
         let mut children = Vec::new();
         let close_tag = format!("</{}", parent_tag);
+        let parent_lc = parent_tag.to_ascii_lowercase();
 
         while !self.check(TokenKind::Eof) {
             // Check for closing tag
@@ -2106,9 +2129,20 @@ impl<'src> Parser<'src> {
                 break;
             }
 
+            // Implicit close: a new opening tag that closes the parent (e.g. <li> in <li>).
+            if let Some(next_tag) = self.peek_opening_tag_name() {
+                if implicit_close_on_open(&parent_lc, &next_tag) {
+                    break;
+                }
+            }
+
             if let Some(node) = self.parse_template_node() {
                 children.push(node);
-            } else if !self.check(TokenKind::Eof) && !self.check(TokenKind::LAngleSlash) {
+            } else if !self.check(TokenKind::Eof)
+                && !self.check(TokenKind::LAngleSlash)
+                && !self.check(TokenKind::LBraceSlash)
+                && !self.check(TokenKind::LBraceColon)
+            {
                 self.advance();
             } else {
                 break;
@@ -2120,10 +2154,34 @@ impl<'src> Parser<'src> {
 
     /// Parses a closing tag.
     fn parse_closing_tag(&mut self, expected_name: &str) {
+        let expected_lc = expected_name.to_ascii_lowercase();
+
+        // Implicit close (sibling opening): the upcoming opening tag closes
+        // the parent (e.g. <li> while still inside <li>). Don't emit an error
+        // and don't consume anything; the sibling will be handled by the
+        // grandparent.
+        if let Some(opening) = self.peek_opening_tag_name() {
+            if implicit_close_on_open(&expected_lc, &opening) {
+                return;
+            }
+        }
+
+        // Implicit close (ancestor closing): the upcoming closing tag is for
+        // an ancestor (e.g. </ul> while inside <li>). Don't consume it.
+        if let Some(closing) = self.peek_closing_tag_name() {
+            if closing != expected_lc && implicit_close_on_close(&expected_lc, &closing) {
+                return;
+            }
+        }
+
         if !self.eat(TokenKind::LAngleSlash) {
-            self.error(ParseErrorKind::UnclosedTag {
-                tag_name: expected_name.to_string(),
-            });
+            // Elements with optional end tags (per HTML spec) silently close
+            // when no `</tag>` is present.
+            if !has_optional_end_tag(&expected_lc) {
+                self.error(ParseErrorKind::UnclosedTag {
+                    tag_name: expected_name.to_string(),
+                });
+            }
             return;
         }
 
@@ -2657,6 +2715,50 @@ impl<'src> Parser<'src> {
     fn check_source(&self, s: &str) -> bool {
         let offset = u32::from(self.current().span.start) as usize;
         self.source[offset..].starts_with(s)
+    }
+
+    /// If the current position starts an opening tag (`<name`), returns the
+    /// lowercased tag name. Does not advance.
+    fn peek_opening_tag_name(&self) -> Option<String> {
+        if !self.check(TokenKind::LAngle) {
+            return None;
+        }
+        let lt_end = u32::from(self.current().span.end) as usize;
+        let bytes = self.source.as_bytes();
+        if lt_end >= bytes.len() {
+            return None;
+        }
+        let first = bytes[lt_end];
+        if !first.is_ascii_alphabetic() {
+            return None;
+        }
+        let mut end = lt_end;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'-' | b'_' | b':'))
+        {
+            end += 1;
+        }
+        Some(self.source[lt_end..end].to_ascii_lowercase())
+    }
+
+    /// If the current position starts a closing tag (`</name`), returns the
+    /// lowercased tag name. Does not advance.
+    fn peek_closing_tag_name(&self) -> Option<String> {
+        if !self.check(TokenKind::LAngleSlash) {
+            return None;
+        }
+        let slash_end = u32::from(self.current().span.end) as usize;
+        let bytes = self.source.as_bytes();
+        let mut end = slash_end;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'-' | b'_' | b':'))
+        {
+            end += 1;
+        }
+        if end == slash_end {
+            return None;
+        }
+        Some(self.source[slash_end..end].to_ascii_lowercase())
     }
 
     /// Handles an invalid block continuation tag like {:els} (typo for {:else}).
