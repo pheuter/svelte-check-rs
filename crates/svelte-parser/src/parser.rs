@@ -1818,6 +1818,29 @@ impl<'src> Parser<'src> {
                         expression: expr,
                         is_quoted: false,
                     })
+                } else if self.check(TokenKind::LBraceSlash) {
+                    // Lexer collapsed `{//` (line comment) or `{/*` (block
+                    // comment) into LBraceSlash. Read the whole `{...}` from
+                    // source.
+                    let lbrace_start = self.current().span.start;
+                    let start_offset = u32::from(lbrace_start) as usize;
+                    let (expr, expr_span) = self.read_expression_from_offset(start_offset + 1, '}');
+                    let expr_end = expr_span.end;
+                    while !self.check(TokenKind::Eof) && self.current().span.end <= expr_end {
+                        self.advance();
+                    }
+                    self.eat(TokenKind::RBrace);
+                    let end = self
+                        .tokens
+                        .get(self.pos.saturating_sub(1))
+                        .map(|t| t.span.end)
+                        .unwrap_or(lbrace_start);
+                    Some(ExpressionValue {
+                        span: Span::new(lbrace_start, end),
+                        expression_span: expr_span,
+                        expression: expr,
+                        is_quoted: false,
+                    })
                 } else if self.check(TokenKind::DoubleQuote) || self.check(TokenKind::SingleQuote) {
                     // Handle quoted string values like style:color="red"
                     let quote = if self.check(TokenKind::DoubleQuote) {
