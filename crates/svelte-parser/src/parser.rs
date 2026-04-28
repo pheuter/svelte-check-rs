@@ -42,6 +42,13 @@ fn has_optional_end_tag(name: &str) -> bool {
     matches!(name, "li")
 }
 
+/// Returns true if the element's children are parsed as raw text (with
+/// mustache expressions still recognized). HTML "escapable raw text"
+/// elements: `<textarea>` and `<title>`.
+fn is_escapable_raw_text(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "textarea" | "title")
+}
+
 /// The Svelte parser.
 pub struct Parser<'src> {
     /// The source being parsed.
@@ -1330,6 +1337,8 @@ impl<'src> Parser<'src> {
         // Parse children if not self-closing
         let children = if self_closing {
             Vec::new()
+        } else if is_escapable_raw_text(&name) {
+            self.parse_raw_text_children(&name)
         } else {
             self.parse_children(&name)
         };
@@ -2043,6 +2052,94 @@ impl<'src> Parser<'src> {
     }
 
     /// Parses children until a closing tag.
+    /// Parses children of an HTML escapable raw-text element (`<textarea>`,
+    /// `<title>`). Content is treated as raw text — nested HTML markup is
+    /// not interpreted — except that `{...}` mustache expressions remain
+    /// active. The element terminates at `</tagname` followed by whitespace,
+    /// `/`, `>`, or EOF (case-insensitive).
+    fn parse_raw_text_children(&mut self, parent_tag: &str) -> Vec<TemplateNode> {
+        let mut children = Vec::new();
+        let parent_lc = parent_tag.to_ascii_lowercase();
+        let bytes = self.source.as_bytes();
+
+        while !self.check(TokenKind::Eof) {
+            let cur_offset = u32::from(self.current().span.start) as usize;
+
+            if self.is_real_close_tag_at(cur_offset, &parent_lc) {
+                break;
+            }
+
+            if bytes.get(cur_offset) == Some(&b'{')
+                && !matches!(
+                    bytes.get(cur_offset + 1),
+                    Some(b'@') | Some(b'#') | Some(b':')
+                )
+            {
+                if let Some(node) = self.parse_expression_tag() {
+                    children.push(node);
+                    continue;
+                }
+            }
+
+            // Read raw text up to the next `{` or real closing tag.
+            let text_start_offset = cur_offset;
+            let mut end_offset = cur_offset;
+            while end_offset < bytes.len() {
+                if bytes[end_offset] == b'{' {
+                    break;
+                }
+                if bytes[end_offset] == b'<'
+                    && end_offset + 1 < bytes.len()
+                    && bytes[end_offset + 1] == b'/'
+                    && self.is_real_close_tag_at(end_offset, &parent_lc)
+                {
+                    break;
+                }
+                end_offset += 1;
+            }
+            if end_offset == text_start_offset {
+                // No progress: avoid infinite loop.
+                self.advance();
+                continue;
+            }
+            let text = self.source[text_start_offset..end_offset].to_string();
+            let is_whitespace = text.chars().all(|c| c.is_whitespace());
+            let span = Span::new(self.current().span.start, TextSize::from(end_offset as u32));
+            while !self.check(TokenKind::Eof) && self.current().span.end <= span.end {
+                self.advance();
+            }
+            children.push(TemplateNode::Text(Text {
+                span,
+                data: text,
+                is_whitespace,
+            }));
+        }
+
+        children
+    }
+
+    /// Returns true if the source at `offset` is a "real" `</tagname` closing
+    /// tag for `expected_lc` — i.e. `</tagname` followed by whitespace, `/`,
+    /// `>`, or EOF.
+    fn is_real_close_tag_at(&self, offset: usize, expected_lc: &str) -> bool {
+        let bytes = self.source.as_bytes();
+        if offset + 2 + expected_lc.len() > bytes.len() {
+            return false;
+        }
+        if bytes[offset] != b'<' || bytes[offset + 1] != b'/' {
+            return false;
+        }
+        let name_start = offset + 2;
+        let name_end = name_start + expected_lc.len();
+        if !self.source[name_start..name_end].eq_ignore_ascii_case(expected_lc) {
+            return false;
+        }
+        match bytes.get(name_end) {
+            None => true,
+            Some(&b) => b.is_ascii_whitespace() || matches!(b, b'/' | b'>'),
+        }
+    }
+
     fn parse_children(&mut self, parent_tag: &str) -> Vec<TemplateNode> {
         let mut children = Vec::new();
         let close_tag = format!("</{}", parent_tag);
@@ -2161,6 +2258,8 @@ impl<'src> Parser<'src> {
             });
         }
 
+        // Tolerate whitespace between the tag name and `>` (e.g. `</textarea\n>`).
+        self.skip_whitespace();
         self.eat(TokenKind::RAngle);
     }
 
