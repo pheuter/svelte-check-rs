@@ -60,7 +60,6 @@ pub struct Parser<'src> {
     /// Parse errors collected during parsing.
     errors: Vec<ParseError>,
     /// Parser options.
-    #[allow(dead_code)]
     options: ParseOptions,
     /// EOF token for when we're past the end
     eof_token: Token,
@@ -161,7 +160,16 @@ impl<'src> Parser<'src> {
 
     /// Reports an error at the current position.
     fn error(&mut self, kind: ParseErrorKind) {
-        self.errors.push(ParseError::new(kind, self.current().span));
+        let span = self.current().span;
+        self.error_at(kind, span);
+    }
+
+    /// Reports an error at a specific span. Suppressed in loose mode.
+    fn error_at(&mut self, kind: ParseErrorKind, span: Span) {
+        if self.options.loose {
+            return;
+        }
+        self.errors.push(ParseError::new(kind, span));
     }
 
     /// Skips whitespace and newlines.
@@ -1802,12 +1810,13 @@ impl<'src> Parser<'src> {
 
             // Error if directive name is empty (e.g., style:, on:, bind:)
             if remaining.is_empty() {
-                self.errors.push(ParseError::new(
+                let span = Span::new(start, self.current().span.end);
+                self.error_at(
                     ParseErrorKind::InvalidDirective {
                         message: format!("`{}:` name cannot be empty", directive_name),
                     },
-                    Span::new(start, self.current().span.end),
-                ));
+                    span,
+                );
             }
 
             // Parse value - directives can have expression or quoted string values
@@ -2961,10 +2970,10 @@ impl<'src> Parser<'src> {
             )
         };
 
-        self.errors.push(ParseError::new(
+        self.error_at(
             ParseErrorKind::InvalidBlockSyntax { message },
             Span::new(start, end),
-        ));
+        );
 
         None
     }
