@@ -26,6 +26,10 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn binary_path() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_svelte-check-rs") {
+        return PathBuf::from(path);
+    }
+
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
