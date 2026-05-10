@@ -534,6 +534,27 @@ fn test_issue_68_rest_props_reports_type_error() {
 }
 
 // ============================================================================
+// TSGO DIAGNOSTICS: PARENTHESES IN PATHS
+// ============================================================================
+// SvelteKit route groups use parentheses in directory names. tsgo reports
+// diagnostics as `path(line,column): error ...`, so the parser must not treat
+// route-group parentheses as the diagnostic position.
+#[test]
+fn test_tsgo_diagnostics_with_parentheses_in_path() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let expected = ExpectedDiagnostic {
+        filename: "(issue-tsgo-parentheses)/+page.svelte",
+        line: 2,
+        code: "TS2322",
+        message_contains: "not assignable",
+    };
+    assert_diagnostic_present(&diagnostics, &expected);
+}
+
+// ============================================================================
 // ISSUE #74: COMPUTED PROPERTY NAMES IN MOUNT PROPS
 // ============================================================================
 // This test verifies that computed property names in mount() props do not
