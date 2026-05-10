@@ -1101,15 +1101,12 @@ impl TsgoRunner {
                     // Always cache SvelteKit files so relative imports resolve within temp_src.
                     write_contents = Some(transformed);
                     is_kit_file = true;
-                } else if is_ts_like_file(path) {
-                    // For non-kit TypeScript files, apply Promise.all empty array fix if needed
-                    if let Ok(content) = std::fs::read_to_string(path) {
-                        if let Some(patched) =
-                            kit::transform_promise_all_empty_arrays(path, &content)
-                        {
-                            write_contents = Some(patched);
-                        }
-                    }
+                } else if is_ts_like_file(path) && !is_svelte_module_file(path) {
+                    let content = std::fs::read_to_string(path)
+                        .map_err(|e| TsgoError::TempFileFailed(e.to_string()))?;
+                    write_contents = Some(
+                        kit::transform_promise_all_empty_arrays(path, &content).unwrap_or(content),
+                    );
                 }
 
                 let Some(contents) = write_contents else {
@@ -1881,6 +1878,11 @@ fn is_ts_like_file(path: &Utf8Path) -> bool {
         path.extension(),
         Some("ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs")
     )
+}
+
+fn is_svelte_module_file(path: &Utf8Path) -> bool {
+    let path = path.as_str();
+    path.ends_with(".svelte.ts") || path.ends_with(".svelte.js")
 }
 
 /// A transformed file ready for type-checking.
