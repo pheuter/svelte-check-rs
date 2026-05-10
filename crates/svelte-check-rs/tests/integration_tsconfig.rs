@@ -47,6 +47,9 @@ fn fixtures_dir() -> std::path::PathBuf {
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_svelte-check-rs") {
+        return std::path::PathBuf::from(path);
+    }
     if let Some(path) = option_env!("CARGO_BIN_EXE_svelte-check-rs") {
         return std::path::PathBuf::from(path);
     }

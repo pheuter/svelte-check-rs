@@ -26,6 +26,9 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn binary_path() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_svelte-check-rs") {
+        return PathBuf::from(path);
+    }
     if let Some(path) = option_env!("CARGO_BIN_EXE_svelte-check-rs") {
         return PathBuf::from(path);
     }
