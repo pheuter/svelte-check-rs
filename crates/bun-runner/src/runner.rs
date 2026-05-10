@@ -574,12 +574,8 @@ impl BunWorker {
 
     async fn check_batch(&mut self, inputs: Vec<BunInput>) -> Result<Vec<BunDiagnostic>, BunError> {
         let mut pending = HashMap::new();
-        let mut next_id = 1u64;
 
-        for input in &inputs {
-            let id = next_id;
-            next_id += 1;
-
+        for (id, input) in (1u64..).zip(inputs.iter()) {
             let request = BunRequest {
                 id,
                 filename: input.filename.to_string(),

@@ -78,13 +78,11 @@ pub(crate) fn split_snippet_name(name: &str) -> SnippetNameParts {
                 }
                 angle_depth += 1;
             }
-            '>' => {
-                if angle_depth > 0 && prev_char != Some('=') {
-                    angle_depth -= 1;
-                    if angle_depth == 0 {
-                        end = Some(i);
-                        break;
-                    }
+            '>' if angle_depth > 0 && prev_char != Some('=') => {
+                angle_depth -= 1;
+                if angle_depth == 0 {
+                    end = Some(i);
+                    break;
                 }
             }
             _ => {}

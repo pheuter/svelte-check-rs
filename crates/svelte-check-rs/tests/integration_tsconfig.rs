@@ -47,6 +47,13 @@ fn fixtures_dir() -> std::path::PathBuf {
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_svelte-check-rs") {
+        return std::path::PathBuf::from(path);
+    }
+    if let Some(path) = option_env!("CARGO_BIN_EXE_svelte-check-rs") {
+        return std::path::PathBuf::from(path);
+    }
+
     workspace_root()
         .join("target")
         .join("debug")
@@ -408,6 +415,13 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
         ExpectedError {
             filename: "src/routes/issue-68-rest-props-invalid/+page.svelte",
             line: 8,
+            code: "TS2322",
+            message_contains: "not assignable",
+        },
+        // Route-group path diagnostic parser regression (intentional negative case)
+        ExpectedError {
+            filename: "src/routes/(issue-tsgo-parentheses)/route/+page.svelte",
+            line: 2,
             code: "TS2322",
             message_contains: "not assignable",
         },
@@ -972,8 +986,8 @@ fn test_all_configs_have_expected_error_counts() {
         .filter(|d| d.diagnostic_type == "Error")
         .count();
 
-    // Bundler: 10 original + 3 use directive + 2 snippet generic + 1 issue-68 + 1 issue-74 = 17
-    assert_eq!(bundler_errors, 17, "Bundler should have exactly 17 errors");
+    // Bundler: 10 original + 3 use directive + 2 snippet generic + 1 issue-68 + 1 route-group + 1 issue-74 = 18
+    assert_eq!(bundler_errors, 18, "Bundler should have exactly 18 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"

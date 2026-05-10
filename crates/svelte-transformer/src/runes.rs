@@ -1214,44 +1214,30 @@ impl<'a> RuneScanner<'a> {
 
             match ch {
                 '}' => brace_depth += 1,
-                '{' => {
-                    if brace_depth > 0 {
-                        brace_depth -= 1;
-                    }
-                }
+                '{' if brace_depth > 0 => brace_depth -= 1,
                 ')' => paren_depth += 1,
-                '(' => {
-                    if paren_depth > 0 {
-                        paren_depth -= 1;
-                    }
-                }
+                '(' if paren_depth > 0 => paren_depth -= 1,
                 ']' => bracket_depth += 1,
-                '[' => {
-                    if bracket_depth > 0 {
-                        bracket_depth -= 1;
-                    }
-                }
-                ':' => {
-                    if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 {
-                        let mut j = idx;
-                        while j > 0 {
-                            let prev_idx = j - 1;
-                            if comment_mask.get(prev_idx).copied().unwrap_or(false) {
-                                j -= 1;
-                                continue;
-                            }
-                            let prev = before_equals.as_bytes()[prev_idx];
-                            if !prev.is_ascii_whitespace() {
-                                let is_ident = (prev as char).is_ascii_alphanumeric()
-                                    || prev == b'_'
-                                    || prev == b'$';
-                                if prev == b'}' || prev == b')' || prev == b']' || is_ident {
-                                    type_start = Some(idx);
-                                }
-                                break;
-                            }
+                '[' if bracket_depth > 0 => bracket_depth -= 1,
+                ':' if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                    let mut j = idx;
+                    while j > 0 {
+                        let prev_idx = j - 1;
+                        if comment_mask.get(prev_idx).copied().unwrap_or(false) {
                             j -= 1;
+                            continue;
                         }
+                        let prev = before_equals.as_bytes()[prev_idx];
+                        if !prev.is_ascii_whitespace() {
+                            let is_ident = (prev as char).is_ascii_alphanumeric()
+                                || prev == b'_'
+                                || prev == b'$';
+                            if prev == b'}' || prev == b')' || prev == b']' || is_ident {
+                                type_start = Some(idx);
+                            }
+                            break;
+                        }
+                        j -= 1;
                     }
                 }
                 _ => {}

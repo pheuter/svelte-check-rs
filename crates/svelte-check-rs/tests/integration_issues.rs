@@ -46,6 +46,13 @@ fn fixtures_dir() -> PathBuf {
 
 /// Path to the svelte-check-rs binary
 fn binary_path() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_svelte-check-rs") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = option_env!("CARGO_BIN_EXE_svelte-check-rs") {
+        return PathBuf::from(path);
+    }
+
     workspace_root()
         .join("target")
         .join("debug")
@@ -527,6 +534,27 @@ fn test_issue_68_rest_props_reports_type_error() {
     let expected = ExpectedDiagnostic {
         filename: "issue-68-rest-props-invalid/+page.svelte",
         line: 8,
+        code: "TS2322",
+        message_contains: "not assignable",
+    };
+    assert_diagnostic_present(&diagnostics, &expected);
+}
+
+// ============================================================================
+// TSGO DIAGNOSTICS: PARENTHESES IN PATHS
+// ============================================================================
+// SvelteKit route groups use parentheses in directory names. tsgo reports
+// diagnostics as `path(line,column): error ...`, so the parser must not treat
+// route-group parentheses as the diagnostic position.
+#[test]
+fn test_tsgo_diagnostics_with_parentheses_in_path() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let expected = ExpectedDiagnostic {
+        filename: "(issue-tsgo-parentheses)/route/+page.svelte",
+        line: 2,
         code: "TS2322",
         message_contains: "not assignable",
     };

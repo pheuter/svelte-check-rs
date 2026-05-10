@@ -71,9 +71,17 @@ fn parse_diagnostic_line(line: &str, files: &TransformedFiles) -> Option<TsgoDia
     // tsgo outputs: file.tsx(line,column): error TS1234: message
     // We need to parse this format
 
-    // Find the opening paren for position
-    let paren_start = line.find('(')?;
-    let paren_end = line.find(')')?;
+    // Find the diagnostic position suffix. Paths can contain parentheses in
+    // SvelteKit route groups, e.g. `src/routes/(app)/+page.server.ts(10,5)`.
+    let (paren_start, paren_end) = line.match_indices("):").find_map(|(candidate_end, _)| {
+        let rest = line[candidate_end + 2..].trim_start();
+        if !(rest.starts_with("error") || rest.starts_with("warning")) {
+            return None;
+        }
+        line[..candidate_end]
+            .rfind('(')
+            .map(|candidate_start| (candidate_start, candidate_end))
+    })?;
 
     let file_path = &line[..paren_start];
     let position = &line[paren_start + 1..paren_end];
@@ -264,6 +272,23 @@ mod tests {
         let diag = parse_diagnostic_line(line, &files).unwrap();
         assert_eq!(diag.file.as_str(), "src/App.svelte.ts");
         assert_eq!(diag.start.line, 10);
+        assert_eq!(diag.start.column, 5);
+        assert_eq!(diag.code, "TS2322");
+        assert!(diag.message.contains("Type"));
+        assert_eq!(diag.severity, DiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn test_parse_diagnostic_line_with_parentheses_in_path() {
+        let line = "src/routes/(app)/imports/+page.server.ts(87,5): error TS2322: Type 'string' is not assignable to type 'number'";
+        let files = TransformedFiles::new();
+
+        let diag = parse_diagnostic_line(line, &files).unwrap();
+        assert_eq!(
+            diag.file.as_str(),
+            "src/routes/(app)/imports/+page.server.ts"
+        );
+        assert_eq!(diag.start.line, 87);
         assert_eq!(diag.start.column, 5);
         assert_eq!(diag.code, "TS2322");
         assert!(diag.message.contains("Type"));
