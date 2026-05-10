@@ -723,10 +723,7 @@ async fn run_single_check(
     let mut compiler_inputs: Vec<BunInput> = Vec::new();
     let mut compiler_sources: HashMap<Utf8PathBuf, String> = HashMap::new();
     let mut files_with_diagnostics: HashSet<Utf8PathBuf> = HashSet::new();
-    for result in component_results
-        .into_iter()
-        .chain(module_results.into_iter())
-    {
+    for result in component_results.into_iter().chain(module_results) {
         if result.output.is_some() {
             files_with_diagnostics.insert(result.file_path);
         }
@@ -1579,15 +1576,13 @@ fn line_column_to_offset(source: &str, line: usize, column: usize) -> u32 {
     for (i, ch) in source.char_indices() {
         if current_line == line {
             // Found the target line, now count columns
-            let mut col = 1;
-            for (j, c) in source[i..].char_indices() {
+            for (col, (j, c)) in (1..).zip(source[i..].char_indices()) {
                 if col == column {
                     return (i + j) as u32;
                 }
                 if c == '\n' {
                     break;
                 }
-                col += 1;
             }
             // Column not found, return start of line
             return i as u32;

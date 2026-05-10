@@ -546,7 +546,7 @@ fn test_tsgo_diagnostics_with_parentheses_in_path() {
     let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
 
     let expected = ExpectedDiagnostic {
-        filename: "(issue-tsgo-parentheses)/+page.svelte",
+        filename: "(issue-tsgo-parentheses)/route/+page.svelte",
         line: 2,
         code: "TS2322",
         message_contains: "not assignable",
