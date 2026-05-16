@@ -12,6 +12,12 @@ use swc_ecma_ast::{
 };
 use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 
+/// Extensions svelte-check-rs natively understands.
+///
+/// Longer suffixes first so a filename like `foo.svelte.ts` matches
+/// `.svelte.ts` rather than `.svelte`.
+const NATIVE_EXTENSIONS: &[&str] = &[".svelte.ts", ".svelte.js", ".svelte"];
+
 /// The kind of Svelte file being processed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SvelteFileKind {
@@ -322,20 +328,40 @@ impl SvelteConfig {
         }
     }
 
-    /// Returns the default file extensions to process.
+    /// Returns the file extensions to walk during discovery.
     ///
-    /// By default, processes:
+    /// Always includes the natively-supported extensions:
     /// - `.svelte` - Component files
     /// - `.svelte.ts` - TypeScript module files with runes
     /// - `.svelte.js` - JavaScript module files with runes
+    ///
+    /// Any extra extensions declared in `svelte.config.js` (e.g. `.svx` from
+    /// mdsvex) are appended so they are still discovered and reported, but the
+    /// orchestrator filters out the unrecognized ones with a user-facing
+    /// warning rather than feeding them into the type-checker.
+    ///
+    /// Order matters: longer suffixes must come before `.svelte` so that
+    /// `.svelte.ts` matches before `.svelte`.
     pub fn file_extensions(&self) -> Vec<&str> {
-        if self.extensions.is_empty() {
-            // Note: Order matters! .svelte.ts/.svelte.js must come before .svelte
-            // to ensure proper matching (longer suffixes first)
-            vec![".svelte.ts", ".svelte.js", ".svelte"]
-        } else {
-            self.extensions.iter().map(|s| s.as_str()).collect()
+        let mut extensions: Vec<&str> = NATIVE_EXTENSIONS.to_vec();
+        for ext in &self.extensions {
+            let s = ext.as_str();
+            if !extensions.contains(&s) {
+                extensions.push(s);
+            }
         }
+        extensions
+    }
+
+    /// Returns extensions declared in `svelte.config.js` that we don't
+    /// natively support. Files with these extensions are discovered (so we can
+    /// report them) but skipped from the rest of the pipeline.
+    pub fn unsupported_extensions(&self) -> Vec<&str> {
+        self.extensions
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|s| !NATIVE_EXTENSIONS.contains(s))
+            .collect()
     }
 
     /// Returns whether runes mode is enabled (defaults to true for Svelte 5).
@@ -718,5 +744,49 @@ mod tests {
         // Default does not require explicit extensions
         let opts = CompilerOptions::default();
         assert!(!opts.requires_explicit_extensions());
+    }
+
+    #[test]
+    fn test_file_extensions_defaults_when_unset() {
+        let config = SvelteConfig::default();
+        assert_eq!(
+            config.file_extensions(),
+            vec![".svelte.ts", ".svelte.js", ".svelte"]
+        );
+        assert!(config.unsupported_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_file_extensions_merges_with_user_extensions() {
+        // Issue #126: when svelte.config.js declares extensions like `.svx`
+        // from mdsvex, we still need to discover the natively-supported ones
+        // (`.svelte`, `.svelte.ts`, `.svelte.js`) AND the user's extras.
+        let config = SvelteConfig {
+            extensions: vec![".svelte".to_string(), ".svx".to_string()],
+            ..Default::default()
+        };
+        let extensions = config.file_extensions();
+        assert!(extensions.contains(&".svelte"));
+        assert!(extensions.contains(&".svelte.ts"));
+        assert!(extensions.contains(&".svelte.js"));
+        assert!(extensions.contains(&".svx"));
+        // `.svelte` listed twice (once natively, once by user) must dedupe.
+        assert_eq!(extensions.iter().filter(|e| **e == ".svelte").count(), 1);
+    }
+
+    #[test]
+    fn test_unsupported_extensions_excludes_natives() {
+        let config = SvelteConfig {
+            extensions: vec![
+                ".svelte".to_string(),
+                ".svelte.ts".to_string(),
+                ".svx".to_string(),
+                ".mdx".to_string(),
+            ],
+            ..Default::default()
+        };
+        let mut unsupported = config.unsupported_extensions();
+        unsupported.sort();
+        assert_eq!(unsupported, vec![".mdx", ".svx"]);
     }
 }

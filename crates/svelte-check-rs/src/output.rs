@@ -265,21 +265,28 @@ impl CheckSummary {
         } else {
             "warnings"
         };
-        let file_word = if self.file_count == 1 {
-            "file"
-        } else {
-            "files"
-        };
 
-        format!(
-            "====================================\nsvelte-check-rs found {} {} and {} {} in {} {}",
-            self.error_count,
-            error_word,
-            self.warning_count,
-            warning_word,
-            self.file_count,
-            file_word
-        )
+        if self.file_count == 0 {
+            format!(
+                "svelte-check-rs found {} {} and {} {}",
+                self.error_count, error_word, self.warning_count, warning_word
+            )
+        } else {
+            let file_word = if self.file_count == 1 {
+                "file"
+            } else {
+                "files"
+            };
+            format!(
+                "====================================\nsvelte-check-rs found {} {} and {} {} in {} {}",
+                self.error_count,
+                error_word,
+                self.warning_count,
+                warning_word,
+                self.file_count,
+                file_word
+            )
+        }
     }
 }
 
@@ -328,8 +335,39 @@ mod tests {
         };
 
         let output = summary.format();
+        assert!(output.contains("===="));
         assert!(output.contains("2 errors"));
         assert!(output.contains("3 warnings"));
-        assert!(output.contains("5 files"));
+        assert!(output.contains("in 5 files"));
+    }
+
+    #[test]
+    fn test_summary_clean_omits_divider_and_file_count() {
+        // Matches language-tools svelte-check: when there are no files with
+        // problems, drop both the divider line and the "in N files" suffix.
+        let summary = CheckSummary {
+            file_count: 0,
+            error_count: 0,
+            warning_count: 0,
+            fail_on_warnings: false,
+        };
+
+        let output = summary.format();
+        assert_eq!(output, "svelte-check-rs found 0 errors and 0 warnings");
+    }
+
+    #[test]
+    fn test_summary_single_file() {
+        let summary = CheckSummary {
+            file_count: 1,
+            error_count: 1,
+            warning_count: 0,
+            fail_on_warnings: false,
+        };
+
+        let output = summary.format();
+        assert!(output.contains("===="));
+        assert!(output.contains("1 error "));
+        assert!(output.contains("in 1 file"));
     }
 }
