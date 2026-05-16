@@ -11,7 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
 use source_map::LineIndex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -25,6 +25,54 @@ use tsgo_runner::{
 use walkdir::WalkDir;
 
 const SHARED_HELPERS_MODULE: &str = "__svelte_check_rs_helpers";
+
+/// Returns the extension label (with leading dot) we should display for a
+/// discovered file whose `SvelteFileKind` is unrecognized. Prefers the longest
+/// configured user extension that the filename ends with; falls back to the
+/// raw `Path::extension()` so unexpected files still get a useful label.
+fn unsupported_extension_label(file_name: &str, user_extensions: &[&str]) -> String {
+    let mut best: Option<&str> = None;
+    for ext in user_extensions {
+        if !file_name.ends_with(ext) {
+            continue;
+        }
+        match best {
+            None => best = Some(ext),
+            Some(prev) if ext.len() > prev.len() => best = Some(ext),
+            _ => {}
+        }
+    }
+    if let Some(ext) = best {
+        return ext.to_string();
+    }
+    match file_name.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => format!(".{}", ext),
+        _ => file_name.to_string(),
+    }
+}
+
+/// Builds the per-extension "N files with unregistered extension (.X) skipped"
+/// warning lines for files we discovered but can't process.
+fn format_unsupported_warnings(files: &[Utf8PathBuf], user_extensions: &[&str]) -> Vec<String> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let mut by_ext: BTreeMap<String, usize> = BTreeMap::new();
+    for f in files {
+        let label = unsupported_extension_label(f.file_name().unwrap_or(""), user_extensions);
+        *by_ext.entry(label).or_insert(0) += 1;
+    }
+    by_ext
+        .into_iter()
+        .map(|(ext, count)| {
+            let plural = if count == 1 { "file" } else { "files" };
+            format!(
+                "warning: {} {} with unregistered extension ({}) skipped",
+                count, plural, ext
+            )
+        })
+        .collect()
+}
 
 fn ensure_relative_path(path: &Utf8Path) -> Utf8PathBuf {
     if !path.is_absolute() {
@@ -343,6 +391,22 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     } else {
         None
     };
+
+    // Split off files whose extension we don't natively understand (e.g. `.svx`
+    // from mdsvex). They were registered in `svelte.config.js#extensions` so
+    // they showed up in the walk, but we can't transform them — feeding them to
+    // the Svelte/TS pipeline would either be silently dropped or break tsgo. We
+    // warn the user once per extension and exclude them from everything below.
+    let (files, unsupported_files): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|f| SvelteFileKind::from_path(f).is_some());
+
+    if !unsupported_files.is_empty() {
+        let user_extensions = svelte_config.unsupported_extensions();
+        for line in format_unsupported_warnings(&unsupported_files, &user_extensions) {
+            eprintln!("{}", line);
+        }
+    }
 
     // Handle --single-file flag: filter to just the specified file
     let files = if let Some(ref single_file) = args.single_file {
@@ -1648,6 +1712,45 @@ mod tests {
 
         // Patterns with * but no ** should be unchanged
         assert_eq!(normalize_tsconfig_pattern("src/*.test.ts"), "src/*.test.ts");
+    }
+
+    #[test]
+    fn test_unsupported_extension_label_prefers_longest_user_extension() {
+        let label = unsupported_extension_label("page.svx", &[".svx"]);
+        assert_eq!(label, ".svx");
+
+        // Longer configured extension should win over a shorter one.
+        let label = unsupported_extension_label("page.svelte.md", &[".md", ".svelte.md"]);
+        assert_eq!(label, ".svelte.md");
+    }
+
+    #[test]
+    fn test_unsupported_extension_label_falls_back_to_path_extension() {
+        // No user extension matches → fall back to the trailing dotted suffix.
+        let label = unsupported_extension_label("notes.txt", &[]);
+        assert_eq!(label, ".txt");
+    }
+
+    #[test]
+    fn test_format_unsupported_warnings_groups_by_extension() {
+        let files = vec![
+            Utf8PathBuf::from("src/a.svx"),
+            Utf8PathBuf::from("src/b.svx"),
+            Utf8PathBuf::from("src/c.mdx"),
+        ];
+        let lines = format_unsupported_warnings(&files, &[".svx", ".mdx"]);
+        assert_eq!(
+            lines,
+            vec![
+                "warning: 1 file with unregistered extension (.mdx) skipped".to_string(),
+                "warning: 2 files with unregistered extension (.svx) skipped".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_format_unsupported_warnings_empty() {
+        assert!(format_unsupported_warnings(&[], &[]).is_empty());
     }
 
     #[test]
