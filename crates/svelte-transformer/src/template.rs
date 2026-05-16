@@ -1212,6 +1212,31 @@ impl TemplateContext {
         if directive.kind == DirectiveKind::Use {
             return;
         }
+        // Shorthand `bind:foo` / `class:foo` is sugar for `bind:foo={foo}` /
+        // `class:foo={foo}`. The parser leaves `expression: None` for shorthand
+        // forms; emit a read of the directive name so tsgo sees the local
+        // variable as used (otherwise `noUnusedLocals` fires a false positive).
+        if directive.expression.is_none()
+            && matches!(directive.kind, DirectiveKind::Bind | DirectiveKind::Class)
+            && directive.name != "this"
+        {
+            let prefix_len: u32 = match directive.kind {
+                DirectiveKind::Bind => 5,  // "bind:"
+                DirectiveKind::Class => 6, // "class:"
+                _ => unreachable!(),
+            };
+            let context = match directive.kind {
+                DirectiveKind::Bind => ExpressionContext::Binding,
+                DirectiveKind::Class => ExpressionContext::Attribute,
+                _ => unreachable!(),
+            };
+            let name_span = Span::new(
+                directive.span.start + ByteOffset::from(prefix_len),
+                directive.span.start + ByteOffset::from(prefix_len + directive.name.len() as u32),
+            );
+            self.emit_expression(&directive.name, name_span, context);
+            return;
+        }
         if let Some(expr) = &directive.expression {
             let context = match directive.kind {
                 DirectiveKind::On => ExpressionContext::EventHandler,

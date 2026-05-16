@@ -488,6 +488,23 @@ fn test_binding_checked() {
     );
 }
 
+// Regression: shorthand `bind:foo` and `class:foo` must emit a read of the
+// local variable so that tsgo's `noUnusedLocals` does not flag it.
+// Reported in: https://github.com/pheuter/svelte-check-rs/issues
+#[test]
+fn test_shorthand_bind_and_class_emit_reads() {
+    transform_snapshot(
+        "shorthand_bind_and_class_emit_reads",
+        r#"<script lang="ts">
+    let checked = $state(false);
+    let active = $state(true);
+</script>
+
+<input type="checkbox" bind:checked />
+<div class:active>Toggle</div>"#,
+    );
+}
+
 // ============================================================================
 // COMPLEX COMPONENT TESTS
 // ============================================================================
