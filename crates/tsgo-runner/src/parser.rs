@@ -231,6 +231,13 @@ fn strip_cache_prefix(path: &str) -> Option<String> {
         if let Some(idx) = normalized.find(marker) {
             let rel = &normalized[idx + marker.len()..];
             if !rel.is_empty() {
+                if marker == "/node_modules/.cache/svelte-check-rs/" {
+                    if let Some((_, project_rel)) = rel.split_once('/') {
+                        if !project_rel.is_empty() {
+                            return Some(project_rel.to_string());
+                        }
+                    }
+                }
                 return Some(rel.to_string());
             }
         }
@@ -300,5 +307,14 @@ mod tests {
         let files = TransformedFiles::new();
         let diagnostics = parse_tsgo_output("", &files).unwrap();
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_strip_cache_prefix_skips_project_namespace() {
+        let path = "/repo/node_modules/.cache/svelte-check-rs/abcdef/src/App.svelte.ts";
+        assert_eq!(
+            strip_cache_prefix(path),
+            Some("src/App.svelte.ts".to_string())
+        );
     }
 }

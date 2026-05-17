@@ -148,19 +148,19 @@ pub struct BunInput {
     pub options: BunCompileOptions,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BunDiagnosticSeverity {
     Error,
     Warning,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BunPosition {
     pub line: u32,
     pub column: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BunDiagnostic {
     pub file: Utf8PathBuf,
     pub code: String,
@@ -426,33 +426,208 @@ impl BunRunner {
             return Ok(Vec::new());
         }
 
-        let worker_count = self.worker_count.min(inputs.len()).max(1);
-        let mut chunks: Vec<Vec<BunInput>> = vec![Vec::new(); worker_count];
-        for (idx, input) in inputs.into_iter().enumerate() {
-            chunks[idx % worker_count].push(input);
+        let svelte_version = self.resolve_svelte_version();
+        let cache_dir = self.compiler_cache_dir();
+        let mut diagnostics_by_key: HashMap<String, Vec<BunDiagnostic>> = HashMap::new();
+        let mut misses = Vec::new();
+        let mut ordered_keys = Vec::with_capacity(inputs.len());
+
+        for input in inputs {
+            let key = compiler_cache_key(&input, svelte_version.as_deref())?;
+            ordered_keys.push(key.clone());
+            if let Some(cached) = cache_dir
+                .as_ref()
+                .and_then(|dir| read_cached_diagnostics(&dir.join(format!("{key}.json"))))
+            {
+                diagnostics_by_key.insert(key, cached);
+            } else {
+                misses.push((key, input));
+            }
         }
 
-        let mut handles = Vec::new();
-        for chunk in chunks.into_iter().filter(|c| !c.is_empty()) {
-            let bun_path = self.bun_path.clone();
-            let workspace_root = self.workspace_root.clone();
-            let script_path = self.script_path.clone();
-            handles.push(tokio::spawn(async move {
-                let mut worker = BunWorker::spawn(bun_path, workspace_root, script_path).await?;
-                worker.check_batch(chunk).await
-            }));
+        if !misses.is_empty() {
+            let worker_count = self.worker_count.min(misses.len()).max(1);
+            let mut chunks: Vec<Vec<(String, BunInput)>> = vec![Vec::new(); worker_count];
+            for (idx, entry) in misses.into_iter().enumerate() {
+                chunks[idx % worker_count].push(entry);
+            }
+
+            let mut handles = Vec::new();
+            for chunk in chunks.into_iter().filter(|c| !c.is_empty()) {
+                let bun_path = self.bun_path.clone();
+                let workspace_root = self.workspace_root.clone();
+                let script_path = self.script_path.clone();
+                handles.push(tokio::spawn(async move {
+                    let mut key_by_file = HashMap::new();
+                    let inputs: Vec<BunInput> = chunk
+                        .into_iter()
+                        .map(|(key, input)| {
+                            key_by_file.insert(input.filename.clone(), key);
+                            input
+                        })
+                        .collect();
+                    let mut worker =
+                        BunWorker::spawn(bun_path, workspace_root, script_path).await?;
+                    let diagnostics = worker.check_batch(inputs).await?;
+                    Ok::<_, BunError>((key_by_file, diagnostics))
+                }));
+            }
+
+            for handle in handles {
+                let (key_by_file, chunk_diags) = handle
+                    .await
+                    .map_err(|e| BunError::ProtocolError(format!("join error: {e}")))??;
+                for key in key_by_file.values() {
+                    diagnostics_by_key.entry(key.clone()).or_default();
+                }
+                for diag in chunk_diags {
+                    if let Some(key) = key_by_file.get(&diag.file) {
+                        diagnostics_by_key
+                            .entry(key.clone())
+                            .or_default()
+                            .push(diag);
+                    }
+                }
+            }
+
+            if let Some(dir) = &cache_dir {
+                for key in &ordered_keys {
+                    if let Some(diagnostics) = diagnostics_by_key.get(key) {
+                        let _ =
+                            write_cached_diagnostics(&dir.join(format!("{key}.json")), diagnostics);
+                    }
+                }
+            }
         }
 
         let mut diagnostics = Vec::new();
-        for handle in handles {
-            let chunk_diags = handle
-                .await
-                .map_err(|e| BunError::ProtocolError(format!("join error: {e}")))??;
-            diagnostics.extend(chunk_diags);
+        for key in ordered_keys {
+            if let Some(mut cached) = diagnostics_by_key.remove(&key) {
+                diagnostics.append(&mut cached);
+            }
         }
 
         Ok(diagnostics)
     }
+
+    fn compiler_cache_dir(&self) -> Option<Utf8PathBuf> {
+        let cache_base = self
+            .workspace_node_modules_dir()
+            .map(|node_modules| node_modules.join(".cache/svelte-check-rs"))
+            .or_else(Self::get_cache_dir)?;
+        let cache_dir = cache_base
+            .join("compiler-diagnostics")
+            .join(project_cache_namespace(&self.workspace_root));
+        fs::create_dir_all(&cache_dir).ok()?;
+        Some(cache_dir)
+    }
+
+    fn workspace_node_modules_dir(&self) -> Option<Utf8PathBuf> {
+        let mut current = Some(self.workspace_root.as_path());
+        while let Some(dir) = current {
+            let candidate = dir.join("node_modules");
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            current = dir.parent();
+        }
+        None
+    }
+
+    fn resolve_svelte_version(&self) -> Option<String> {
+        let mut current = Some(self.workspace_root.as_path());
+        while let Some(dir) = current {
+            let package_json = dir.join("node_modules/svelte/package.json");
+            if let Ok(contents) = fs::read_to_string(&package_json) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if let Some(version) = value.get("version").and_then(|v| v.as_str()) {
+                        return Some(version.to_string());
+                    }
+                }
+            }
+            current = dir.parent();
+        }
+        None
+    }
+}
+
+fn compiler_cache_key(input: &BunInput, svelte_version: Option<&str>) -> Result<String, BunError> {
+    let options = serde_json::to_vec(&input.options)
+        .map_err(|e| BunError::ProtocolError(format!("failed to serialize options: {e}")))?;
+    let mut hasher = Hasher::new();
+    hasher.update(b"compiler-diagnostics-v1");
+    hasher.update(BUN_SCRIPT_SOURCE.as_bytes());
+    hasher.update(svelte_version.unwrap_or("unknown").as_bytes());
+    hasher.update(input.filename.as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(input.source.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&options);
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn read_cached_diagnostics(path: &Utf8Path) -> Option<Vec<BunDiagnostic>> {
+    let contents = fs::read(path).ok()?;
+    serde_json::from_slice(&contents).ok()
+}
+
+fn write_cached_diagnostics(
+    path: &Utf8Path,
+    diagnostics: &[BunDiagnostic],
+) -> Result<(), BunError> {
+    let contents = serde_json::to_vec(diagnostics)
+        .map_err(|e| BunError::ProtocolError(format!("failed to serialize cache: {e}")))?;
+    fs::write(path, contents)
+        .map_err(|e| BunError::ProtocolError(format!("failed to write cache: {e}")))?;
+    Ok(())
+}
+
+fn clean_path(path: &Utf8Path) -> Utf8PathBuf {
+    let mut prefix: Option<String> = None;
+    let mut root: Option<String> = None;
+    let mut parts: Vec<String> = Vec::new();
+
+    for component in path.components() {
+        match component {
+            camino::Utf8Component::Prefix(prefix_component) => {
+                prefix = Some(prefix_component.as_str().to_string());
+            }
+            camino::Utf8Component::RootDir => {
+                root = Some(component.as_str().to_string());
+            }
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::ParentDir => {
+                if parts.last().is_some_and(|part| part != "..") {
+                    parts.pop();
+                } else if root.is_none() && prefix.is_none() {
+                    parts.push("..".to_string());
+                } else {
+                    // Already rooted; keep the path normalized at the root.
+                }
+            }
+            camino::Utf8Component::Normal(name) => parts.push(name.to_string()),
+        }
+    }
+
+    let mut out = Utf8PathBuf::new();
+    if let Some(prefix) = prefix {
+        out.push(prefix);
+    }
+    if let Some(root) = root {
+        out.push(root);
+    }
+    for part in parts {
+        out.push(part);
+    }
+    out
+}
+
+fn project_cache_namespace(project_root: &Utf8Path) -> String {
+    Hasher::new()
+        .update(clean_path(project_root).as_str().as_bytes())
+        .finalize()
+        .to_hex()
+        .to_string()
 }
 
 fn find_bun_in_bin(bin: &Utf8Path) -> Option<Utf8PathBuf> {
