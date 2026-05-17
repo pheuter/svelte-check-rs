@@ -798,6 +798,9 @@ async fn run_single_check(
             transformed_files.add(virtual_path, transformed_file);
         }
         if let Some(input) = result.compiler_input {
+            // Only the JSON formatter (`format_compiler_diagnostics_json`) reads
+            // `compiler_sources` to attach source snippets. The human formatter
+            // does not, so skip the clone to keep peak memory low for large repos.
             if output_json {
                 compiler_sources.insert(input.filename.clone(), input.source.clone());
             }

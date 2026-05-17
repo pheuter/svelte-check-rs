@@ -577,8 +577,17 @@ fn write_cached_diagnostics(
 ) -> Result<(), BunError> {
     let contents = serde_json::to_vec(diagnostics)
         .map_err(|e| BunError::ProtocolError(format!("failed to serialize cache: {e}")))?;
-    fs::write(path, contents)
+    // Write through a sibling tmp file and rename so concurrent svelte-check-rs
+    // processes can never observe a partially-written cache entry.
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, contents)
         .map_err(|e| BunError::ProtocolError(format!("failed to write cache: {e}")))?;
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(BunError::ProtocolError(format!(
+            "failed to commit cache: {e}"
+        )));
+    }
     Ok(())
 }
 
@@ -845,5 +854,71 @@ mod tests {
         let options = BunCompileOptions::default();
         assert!(options.runes.is_none());
         assert!(options.experimental.is_none());
+    }
+
+    fn make_input(filename: &str, source: &str) -> BunInput {
+        BunInput {
+            filename: Utf8PathBuf::from(filename),
+            source: source.to_string(),
+            options: BunCompileOptions::default(),
+        }
+    }
+
+    #[test]
+    fn compiler_cache_key_is_stable_for_identical_inputs() {
+        let a = make_input("App.svelte", "<h1>hi</h1>");
+        let b = make_input("App.svelte", "<h1>hi</h1>");
+        let key_a = compiler_cache_key(&a, Some("5.0.0")).unwrap();
+        let key_b = compiler_cache_key(&b, Some("5.0.0")).unwrap();
+        assert_eq!(key_a, key_b);
+    }
+
+    #[test]
+    fn compiler_cache_key_changes_with_source() {
+        let a = make_input("App.svelte", "<h1>hi</h1>");
+        let b = make_input("App.svelte", "<h1>bye</h1>");
+        assert_ne!(
+            compiler_cache_key(&a, Some("5.0.0")).unwrap(),
+            compiler_cache_key(&b, Some("5.0.0")).unwrap()
+        );
+    }
+
+    #[test]
+    fn compiler_cache_key_changes_with_options() {
+        let a = make_input("App.svelte", "<h1>hi</h1>");
+        let mut b = make_input("App.svelte", "<h1>hi</h1>");
+        b.options.runes = Some(true);
+        assert_ne!(
+            compiler_cache_key(&a, Some("5.0.0")).unwrap(),
+            compiler_cache_key(&b, Some("5.0.0")).unwrap()
+        );
+    }
+
+    #[test]
+    fn compiler_cache_key_changes_with_svelte_version() {
+        let input = make_input("App.svelte", "<h1>hi</h1>");
+        assert_ne!(
+            compiler_cache_key(&input, Some("5.0.0")).unwrap(),
+            compiler_cache_key(&input, Some("5.1.0")).unwrap()
+        );
+    }
+
+    #[test]
+    fn compiler_cache_key_distinguishes_missing_version() {
+        let input = make_input("App.svelte", "<h1>hi</h1>");
+        assert_ne!(
+            compiler_cache_key(&input, None).unwrap(),
+            compiler_cache_key(&input, Some("5.0.0")).unwrap()
+        );
+    }
+
+    #[test]
+    fn compiler_cache_key_changes_with_filename() {
+        let a = make_input("a.svelte", "<h1>hi</h1>");
+        let b = make_input("b.svelte", "<h1>hi</h1>");
+        assert_ne!(
+            compiler_cache_key(&a, Some("5.0.0")).unwrap(),
+            compiler_cache_key(&b, Some("5.0.0")).unwrap()
+        );
     }
 }
