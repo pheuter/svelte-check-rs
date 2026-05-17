@@ -1348,10 +1348,6 @@ declare module "svelte" {
 
     // Get the default props type for SvelteKit route files
     let default_props_type = route_kind.props_type();
-    // Generate template body without function wrapper for embedding in render function
-    let template_body_result = generate_template_body_with_spans(&doc.fragment, false);
-    // Generate template with function wrapper for fallback (template-only components)
-    let template_result = generate_template_check_with_spans(&doc.fragment);
     let mut template_emitted = false;
 
     // Transform module script if present
@@ -1467,6 +1463,9 @@ declare module "svelte" {
         } else {
             None
         };
+        // Instance-script components embed the template in the render function so
+        // TypeScript control-flow narrowing from the script reaches template checks.
+        let template_body_result = generate_template_body_with_spans(&doc.fragment, false);
         let mut store_names = rune_result.store_names.clone();
         for name in &template_body_result.store_names {
             store_names.insert(name.clone());
@@ -1599,14 +1598,18 @@ declare module "svelte" {
         }
     }
 
-    // Generate template type-check block with span tracking
-    if !template_emitted && !template_result.code.is_empty() {
-        // Use the structured template code which properly handles component props,
-        // object literals, and control flow structures
-        output.push_str(&template_result.code);
+    // Template-only components use the standalone wrapper. Skip this when the
+    // instance-script branch above already emitted the template inline.
+    if !template_emitted {
+        let template_result = generate_template_check_with_spans(&doc.fragment);
+        if !template_result.code.is_empty() {
+            // Use the structured template code which properly handles component props,
+            // object literals, and control flow structures
+            output.push_str(&template_result.code);
 
-        // Emit template code with proper source mappings for expressions
-        emit_template_with_mappings(&mut builder, &template_result);
+            // Emit template code with proper source mappings for expressions
+            emit_template_with_mappings(&mut builder, &template_result);
+        }
     }
 
     // Generate component export

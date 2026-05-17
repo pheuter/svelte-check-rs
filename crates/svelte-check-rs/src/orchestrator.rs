@@ -798,7 +798,12 @@ async fn run_single_check(
             transformed_files.add(virtual_path, transformed_file);
         }
         if let Some(input) = result.compiler_input {
-            compiler_sources.insert(input.filename.clone(), input.source.clone());
+            // Only the JSON formatter (`format_compiler_diagnostics_json`) reads
+            // `compiler_sources` to attach source snippets. The human formatter
+            // does not, so skip the clone to keep peak memory low for large repos.
+            if output_json {
+                compiler_sources.insert(input.filename.clone(), input.source.clone());
+            }
             compiler_inputs.push(input);
         }
     }
@@ -823,12 +828,82 @@ async fn run_single_check(
         }
     }
 
+    let transformed_count = if args.skip_tsgo {
+        0
+    } else {
+        transformed_files.files.len()
+    };
+
+    struct CompilerRun {
+        elapsed: std::time::Duration,
+        result: Result<Vec<BunDiagnostic>, OrchestratorError>,
+    }
+
+    struct TsgoRun {
+        elapsed: std::time::Duration,
+        sync_elapsed: std::time::Duration,
+        sync_ran: bool,
+        result: Result<TsgoCheckOutput, OrchestratorError>,
+    }
+
+    let compiler_future = async {
+        if compiler_inputs.is_empty() {
+            return None;
+        }
+
+        let bun_start = Instant::now();
+        let result = run_bun_check(workspace, compiler_inputs).await;
+        Some(CompilerRun {
+            elapsed: bun_start.elapsed(),
+            result,
+        })
+    };
+
+    let tsgo_future = async {
+        if args.skip_tsgo || transformed_files.files.is_empty() {
+            return None;
+        }
+
+        if let Err(err) = TsgoRunner::ensure_dependency_cache(workspace) {
+            eprintln!("Warning: {}", err);
+        }
+
+        let tsgo_start = Instant::now();
+        let sync_start = Instant::now();
+        let sync_ran = match TsgoRunner::ensure_sveltekit_sync(workspace).await {
+            Ok(ran) => ran,
+            Err(e) => {
+                eprintln!("Warning: {}", e);
+                false
+            }
+        };
+        let sync_elapsed = sync_start.elapsed();
+
+        let result = run_tsgo_check(
+            workspace,
+            &transformed_files,
+            args,
+            args.tsgo_diagnostics,
+            extra_paths,
+        )
+        .await;
+
+        Some(TsgoRun {
+            elapsed: tsgo_start.elapsed(),
+            sync_elapsed,
+            sync_ran,
+            result,
+        })
+    };
+
+    let (compiler_run, tsgo_run) = tokio::join!(compiler_future, tsgo_future);
+
     let mut compiler_total_time = None;
 
-    // Run Svelte compiler diagnostics (bun) if enabled
-    if !compiler_inputs.is_empty() {
-        let bun_start = Instant::now();
-        match run_bun_check(workspace, compiler_inputs).await {
+    // Print Svelte compiler diagnostics first to preserve output ordering.
+    if let Some(run) = compiler_run {
+        compiler_total_time = Some(run.elapsed);
+        match run.result {
             Ok(mut diagnostics) => {
                 apply_compiler_warning_settings(&mut diagnostics, &compiler_warning_settings);
                 diagnostics.retain(|diag| include_compiler_severity(diag.severity, args.threshold));
@@ -861,88 +936,58 @@ async fn run_single_check(
                 eprintln!("Svelte compiler checking failed: {}", e);
             }
         }
-        compiler_total_time = Some(bun_start.elapsed());
     }
 
-    let mut transformed_count = 0usize;
     let mut tsgo_stats: Option<TsgoCheckStats> = None;
     let mut tsgo_total_time = None;
     let mut sveltekit_sync_time = None;
     let mut sveltekit_sync_ran = None;
 
-    // Run TypeScript type-checking if JS diagnostics are enabled and not skipping tsgo
-    if !args.skip_tsgo {
-        let transformed = transformed_files;
-        transformed_count = transformed.files.len();
+    // Then print TypeScript diagnostics, matching the previous phase order.
+    if let Some(run) = tsgo_run {
+        sveltekit_sync_time = Some(run.sync_elapsed);
+        sveltekit_sync_ran = Some(run.sync_ran);
 
-        if !transformed.files.is_empty() {
-            if let Err(err) = TsgoRunner::ensure_dependency_cache(workspace) {
-                eprintln!("Warning: {}", err);
-            }
-            // Ensure SvelteKit types are generated before running tsgo
-            let tsgo_start = Instant::now();
-            let sync_start = Instant::now();
-            let sync_ran = match TsgoRunner::ensure_sveltekit_sync(workspace).await {
-                Ok(ran) => ran,
-                Err(e) => {
-                    eprintln!("Warning: {}", e);
-                    false
-                }
-            };
-            sveltekit_sync_time = Some(sync_start.elapsed());
-            sveltekit_sync_ran = Some(sync_ran);
+        match run.result {
+            Ok(output) => {
+                let mut ts_diagnostics = output.diagnostics;
+                ts_diagnostics.retain(|diag| include_ts_severity(diag.severity, args.threshold));
 
-            match run_tsgo_check(
-                workspace,
-                &transformed,
-                args,
-                args.tsgo_diagnostics,
-                extra_paths,
-            )
-            .await
-            {
-                Ok(output) => {
-                    let mut ts_diagnostics = output.diagnostics;
-                    ts_diagnostics
-                        .retain(|diag| include_ts_severity(diag.severity, args.threshold));
-
-                    // Count and print TypeScript diagnostics
-                    for diag in &ts_diagnostics {
-                        files_with_diagnostics.insert(diag.file.clone());
-                        match diag.severity {
-                            tsgo_runner::DiagnosticSeverity::Error => {
-                                error_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                            tsgo_runner::DiagnosticSeverity::Warning
-                            | tsgo_runner::DiagnosticSeverity::Suggestion => {
-                                warning_count.fetch_add(1, Ordering::Relaxed);
-                            }
+                // Count and print TypeScript diagnostics
+                for diag in &ts_diagnostics {
+                    files_with_diagnostics.insert(diag.file.clone());
+                    match diag.severity {
+                        tsgo_runner::DiagnosticSeverity::Error => {
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        tsgo_runner::DiagnosticSeverity::Warning
+                        | tsgo_runner::DiagnosticSeverity::Suggestion => {
+                            warning_count.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-
-                    // Format and print TypeScript diagnostics
-                    if output_json {
-                        json_output.extend(format_ts_diagnostics_json(&ts_diagnostics, workspace));
-                    } else {
-                        let ts_output =
-                            format_ts_diagnostics(&ts_diagnostics, workspace, args.output);
-                        print!("{}", ts_output);
-                    }
-
-                    tsgo_stats = Some(output.stats);
-                    tsgo_total_time = Some(tsgo_start.elapsed());
                 }
-                Err(e) => {
-                    eprintln!("TypeScript checking failed: {}", e);
+
+                // Format and print TypeScript diagnostics
+                if output_json {
+                    json_output.extend(format_ts_diagnostics_json(&ts_diagnostics, workspace));
+                } else {
+                    let ts_output = format_ts_diagnostics(&ts_diagnostics, workspace, args.output);
+                    print!("{}", ts_output);
                 }
+
+                tsgo_stats = Some(output.stats);
+                tsgo_total_time = Some(run.elapsed);
             }
+            Err(e) => {
+                eprintln!("TypeScript checking failed: {}", e);
+            }
+        }
 
-            if args.tsgo_diagnostics {
-                if let Some(stats) = &tsgo_stats {
-                    if let Some(diag) = &stats.diagnostics {
-                        eprintln!("=== tsgo diagnostics ===");
-                        eprintln!("{}", diag);
-                    }
+        if args.tsgo_diagnostics {
+            if let Some(stats) = &tsgo_stats {
+                if let Some(diag) = &stats.diagnostics {
+                    eprintln!("=== tsgo diagnostics ===");
+                    eprintln!("{}", diag);
                 }
             }
         }

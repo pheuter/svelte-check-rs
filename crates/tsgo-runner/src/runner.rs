@@ -1002,7 +1002,7 @@ impl TsgoRunner {
         let allow_js = snapshot
             .allow_js
             .unwrap_or(snapshot.check_js.unwrap_or(false));
-        let extra_files: Vec<&Utf8PathBuf> = if allow_js {
+        let mut extra_files: Vec<&Utf8PathBuf> = if allow_js {
             options.extra_files.iter().collect()
         } else {
             options
@@ -1011,6 +1011,8 @@ impl TsgoRunner {
                 .filter(|path| !is_js_like_file(path))
                 .collect()
         };
+        extra_files.sort();
+        extra_files.dedup();
         if !extra_files.is_empty() {
             root.insert(
                 "files".to_string(),
