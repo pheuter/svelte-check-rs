@@ -191,6 +191,7 @@ async function __svelte_render() {
       return __svelte_snippet_return;
     },
   }); }
+  open;
   { const __component_1 = __svelte_ensure_component(Dialog.Trigger); __component_1(__svelte_any(), {
     children: () => {
       return __svelte_snippet_return;
@@ -241,4 +242,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 15 ===
+=== Source Map Mappings: 16 ===

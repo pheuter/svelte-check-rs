@@ -166,6 +166,7 @@ async function __svelte_render() {
   __svelte_create_element("input", {}, {
     "bind:value": __svelte_any,
   });
+  value;
 return { props: null as any as __SvelteOptionalProps<{ value?: string }, "value">, exports: {}, slots: {}, events: {} };
 }
 
@@ -176,4 +177,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 6 ===
+=== Source Map Mappings: 7 ===

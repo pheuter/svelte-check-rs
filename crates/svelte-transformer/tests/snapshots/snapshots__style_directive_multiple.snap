@@ -171,6 +171,7 @@ async function __svelte_render() {
 
 
 // === TEMPLATE TYPE-CHECK ===
+  color;
   "12rem";
   darkMode ? 'black' : 'white';
   "blue";
@@ -185,4 +186,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 7 ===
+=== Source Map Mappings: 8 ===
