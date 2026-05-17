@@ -14,7 +14,7 @@ members = [
 version = "0.9.9"
 edition = "2021"
 license = "MIT"
-rust-version = "1.75"
+rust-version = "1.95"
 
 [workspace.dependencies]
 # Internal crates

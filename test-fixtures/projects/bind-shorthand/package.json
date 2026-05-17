@@ -1,0 +1,9 @@
+{
+  "name": "bind-shorthand",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260224.1",
+    "svelte": "^5.45.6"
+  }
+}

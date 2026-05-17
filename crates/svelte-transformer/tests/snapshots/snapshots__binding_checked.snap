@@ -167,6 +167,7 @@ async function __svelte_render() {
     type: "checkbox",
     "bind:checked": __svelte_any,
   });
+  checked;
 return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, events: {} };
 }
 
@@ -177,4 +178,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 5 ===
+=== Source Map Mappings: 6 ===

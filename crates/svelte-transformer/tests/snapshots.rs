@@ -488,6 +488,59 @@ fn test_binding_checked() {
     );
 }
 
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/128 — the
+// shorthand `bind:foo` / `class:foo` / `style:foo` forms must emit a reference
+// to `foo` so TypeScript doesn't flag it as unused under `noUnusedLocals`
+// (TS6133).
+#[test]
+fn test_bind_shorthand_component() {
+    transform_snapshot(
+        "bind_shorthand_component",
+        r#"<script lang="ts">
+    import ChildTable from './ChildTable.svelte';
+    let { selectedIds = $bindable() }: { selectedIds: string[] } = $props();
+</script>
+
+<ChildTable bind:selectedIds />"#,
+    );
+}
+
+#[test]
+fn test_bind_shorthand_element() {
+    transform_snapshot(
+        "bind_shorthand_element",
+        r#"<script lang="ts">
+    let value = $state('');
+</script>
+
+<input bind:value />"#,
+    );
+}
+
+#[test]
+fn test_class_shorthand_element() {
+    transform_snapshot(
+        "class_shorthand_element",
+        r#"<script lang="ts">
+    let active = $state(false);
+</script>
+
+<div class:active>Toggle</div>"#,
+    );
+}
+
+#[test]
+fn test_style_shorthand_element() {
+    transform_snapshot(
+        "style_shorthand_element",
+        r#"<script lang="ts">
+    let color = $state('red');
+</script>
+
+<div style:color>Tinted</div>"#,
+    );
+}
+
 // ============================================================================
 // COMPLEX COMPONENT TESTS
 // ============================================================================
