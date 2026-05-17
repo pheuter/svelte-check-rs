@@ -2,7 +2,7 @@
 
 Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 
-**Rust**: Edition 2021, MSRV 1.75
+**Rust**: Edition 2021, MSRV 1.95
 
 ## Project Structure
 
