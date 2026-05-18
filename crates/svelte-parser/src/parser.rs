@@ -49,6 +49,19 @@ fn is_escapable_raw_text(name: &str) -> bool {
     matches!(name.to_ascii_lowercase().as_str(), "textarea" | "title")
 }
 
+/// Maps a short source slice back to the punctuation `TokenKind` it would
+/// have produced if lexed on its own. Used by `Parser::split_token_at`.
+fn kind_for_slice(slice: &str) -> Option<TokenKind> {
+    Some(match slice {
+        "/" => TokenKind::Slash,
+        ">" => TokenKind::RAngle,
+        "<" => TokenKind::LAngle,
+        "/>" => TokenKind::SlashRAngle,
+        "</" => TokenKind::LAngleSlash,
+        _ => return None,
+    })
+}
+
 /// The Svelte parser.
 pub struct Parser<'src> {
     /// The source being parsed.
@@ -2006,12 +2019,53 @@ impl<'src> Parser<'src> {
         let span = Span::new(start, end);
         let value = self.source[start_offset..end_offset].to_string();
 
+        // If the value ended inside a multi-char close token (e.g. `<a href=/>`
+        // where the lexer produced SlashRAngle for `/>` but only `/` is part
+        // of the value), split that token so the tag close is read correctly.
+        self.split_token_at(end);
+
         // Advance past tokens covered by the unquoted value.
         while !self.check(TokenKind::Eof) && self.current().span.end <= end {
             self.advance();
         }
 
         AttributeValue::Text(TextValue { span, value })
+    }
+
+    /// If the current token straddles `boundary` (i.e. starts strictly before
+    /// `boundary` and ends strictly after), split it into two tokens at
+    /// `boundary`. Used to recover from cases where the lexer eagerly joined
+    /// characters that the parser later wants to treat separately (e.g. the
+    /// `/` of `<a href=/>` is part of the unquoted attribute value, while the
+    /// `>` is the tag close).
+    fn split_token_at(&mut self, boundary: TextSize) {
+        if self.check(TokenKind::Eof) {
+            return;
+        }
+        let tok_start = self.current().span.start;
+        let tok_end = self.current().span.end;
+        if !(tok_start < boundary && boundary < tok_end) {
+            return;
+        }
+        let left_offset = u32::from(tok_start) as usize;
+        let right_offset = u32::from(boundary) as usize;
+        let left_slice = &self.source[left_offset..right_offset];
+        let right_slice = &self.source[right_offset..u32::from(tok_end) as usize];
+        let Some(left_kind) = kind_for_slice(left_slice) else {
+            return;
+        };
+        let Some(right_kind) = kind_for_slice(right_slice) else {
+            return;
+        };
+        let left = Token {
+            kind: left_kind,
+            span: Span::new(tok_start, boundary),
+        };
+        let right = Token {
+            kind: right_kind,
+            span: Span::new(boundary, tok_end),
+        };
+        self.tokens.splice(self.pos..=self.pos, [left, right]);
     }
 
     /// Parses a quoted attribute value that may contain expressions.
