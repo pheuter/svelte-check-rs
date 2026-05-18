@@ -136,8 +136,8 @@ git clone https://github.com/sveltejs/svelte.git /tmp/svelte
 SVELTE_REPO=/tmp/svelte cargo test -p svelte-parser test_upstream_svelte_parser_samples -- --ignored
 ```
 
-By default, `loose-*` samples are skipped because `svelte-parser` does not expose loose mode.
-Set `SVELTE_INCLUDE_LOOSE=1` to include them.
+The harness runs every sample under `parser-modern` and `parser-legacy`, enabling loose mode
+for samples whose directory name starts with `loose-` (mirroring upstream's runner).
 
 ## License
 

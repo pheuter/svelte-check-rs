@@ -1,13 +1,15 @@
 //! Optional parity test against upstream Svelte parser suites.
 //!
 //! This test is intentionally `ignored` because it requires a local checkout
-//! of the Svelte repository and currently serves as a parity-gap detector.
+//! of the Svelte repository. It runs every sample under `parser-modern` and
+//! `parser-legacy` through `svelte-parser`, enabling loose mode for samples
+//! whose directory name starts with `loose-` (mirroring upstream's runner).
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use svelte_parser::parse;
+use svelte_parser::{parse_with_options, ParseOptions};
 
 const SUITES: &[&str] = &["parser-modern", "parser-legacy"];
 
@@ -84,7 +86,6 @@ fn test_upstream_svelte_parser_samples() {
         panic!("SVELTE_REPO does not exist: {}", svelte_repo.display());
     }
 
-    let include_loose = env::var("SVELTE_INCLUDE_LOOSE").is_ok_and(|v| v == "1");
     let samples = collect_samples(&svelte_repo);
     assert!(
         !samples.is_empty(),
@@ -94,33 +95,36 @@ fn test_upstream_svelte_parser_samples() {
 
     let mut failures = Vec::new();
     let mut checked = 0usize;
-    let mut skipped_loose = 0usize;
+    let mut loose_checked = 0usize;
 
     for sample in samples {
-        if sample.loose && !include_loose {
-            skipped_loose += 1;
-            continue;
-        }
-
         let source = fs::read_to_string(&sample.input_path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {e}", sample.input_path.display()));
-        let result = parse(&normalize_input(source));
+        let options = ParseOptions {
+            loose: sample.loose,
+            ..ParseOptions::default()
+        };
+        let result = parse_with_options(&normalize_input(source), options);
         checked += 1;
+        if sample.loose {
+            loose_checked += 1;
+        }
 
         if !result.errors.is_empty() {
             failures.push(format!(
-                "{}:{} ({} errors)",
+                "{}:{} ({} errors{})",
                 sample.suite,
                 sample.name,
-                result.errors.len()
+                result.errors.len(),
+                if sample.loose { ", loose" } else { "" },
             ));
         }
     }
 
     eprintln!(
-        "Upstream parser corpus: checked {}, skipped_loose {}, failures {}",
+        "Upstream parser corpus: checked {}, loose {}, failures {}",
         checked,
-        skipped_loose,
+        loose_checked,
         failures.len()
     );
 
