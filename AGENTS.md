@@ -86,6 +86,7 @@ cargo run -p svelte-check-rs -- --workspace ./path/to/project [--emit-ts]
 | Corpus | `cargo test --test corpus_test` | All fixtures parse without panics |
 | Integration | `cargo test --test integration_*` | Full CLI workflow with project fixtures |
 | Unit | `cargo test -p <crate>` | In-source `mod tests` blocks |
+| Upstream parity | `SVELTE_REPO=/path/to/sveltejs/svelte cargo test -p svelte-parser test_upstream_svelte_parser_samples -- --ignored` | Parses every `parser-modern` + `parser-legacy` sample from a local Svelte checkout (loose mode enabled for `loose-*`); `#[ignore]`d so CI stays self-contained |
 
 **Snapshots** (uses `insta`): Located in `crates/*/tests/snapshots/`.
 
