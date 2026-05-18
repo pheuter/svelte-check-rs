@@ -1,0 +1,92 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+expression: output
+---
+Source:
+<div
+    // a line comment
+    class="a"
+    /* a block comment */
+    id="b"
+>x</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 86,
+                    },
+                    name: "div",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 31,
+                                    end: 40,
+                                },
+                                name: "class",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 38,
+                                            end: 39,
+                                        },
+                                        value: "a",
+                                    },
+                                ),
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 71,
+                                    end: 77,
+                                },
+                                name: "id",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 75,
+                                            end: 76,
+                                        },
+                                        value: "b",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 79,
+                                    end: 80,
+                                },
+                                data: "x",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 86,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 86,
+    },
+}

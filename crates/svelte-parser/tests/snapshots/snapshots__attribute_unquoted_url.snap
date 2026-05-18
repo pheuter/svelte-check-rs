@@ -1,0 +1,112 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+expression: output
+---
+Source:
+<a href=https://example.com/foo>link</a>
+<a href=/>home</a>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 40,
+                    },
+                    name: "a",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 3,
+                                    end: 31,
+                                },
+                                name: "href",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 8,
+                                            end: 31,
+                                        },
+                                        value: "https://example.com/foo",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 32,
+                                    end: 36,
+                                },
+                                data: "link",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+            Element(
+                Element {
+                    span: Span {
+                        start: 41,
+                        end: 59,
+                    },
+                    name: "a",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 44,
+                                    end: 50,
+                                },
+                                name: "href",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 49,
+                                            end: 50,
+                                        },
+                                        value: "/",
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 51,
+                                    end: 55,
+                                },
+                                data: "home",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 59,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 59,
+    },
+}

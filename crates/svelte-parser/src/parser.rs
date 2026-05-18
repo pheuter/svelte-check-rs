@@ -20,6 +20,48 @@ fn is_void_element(name: &str) -> bool {
     HTML_VOID_ELEMENTS.contains(&name.to_lowercase().as_str())
 }
 
+/// Returns true if `parent` should be implicitly closed when an opening tag
+/// `<child>` is encountered. Mirrors HTML5 optional-end-tag rules.
+fn implicit_close_on_open(parent: &str, child: &str) -> bool {
+    matches!((parent, child), ("li", "li"))
+}
+
+/// Returns true if `parent` should be implicitly closed when a closing tag
+/// `</closing>` is encountered.
+fn implicit_close_on_close(parent: &str, closing: &str) -> bool {
+    matches!(
+        (parent, closing),
+        ("li", "ul") | ("li", "ol") | ("li", "menu")
+    )
+}
+
+/// Returns true if the element's end tag may be omitted per the HTML spec.
+/// Currently only covers `<li>` (the tags exercised by the upstream parity
+/// suite); extend as additional cases surface.
+fn has_optional_end_tag(name: &str) -> bool {
+    matches!(name, "li")
+}
+
+/// Returns true if the element's children are parsed as raw text (with
+/// mustache expressions still recognized). HTML "escapable raw text"
+/// elements: `<textarea>` and `<title>`.
+fn is_escapable_raw_text(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "textarea" | "title")
+}
+
+/// Maps a short source slice back to the punctuation `TokenKind` it would
+/// have produced if lexed on its own. Used by `Parser::split_token_at`.
+fn kind_for_slice(slice: &str) -> Option<TokenKind> {
+    Some(match slice {
+        "/" => TokenKind::Slash,
+        ">" => TokenKind::RAngle,
+        "<" => TokenKind::LAngle,
+        "/>" => TokenKind::SlashRAngle,
+        "</" => TokenKind::LAngleSlash,
+        _ => return None,
+    })
+}
+
 /// The Svelte parser.
 pub struct Parser<'src> {
     /// The source being parsed.
@@ -31,7 +73,6 @@ pub struct Parser<'src> {
     /// Parse errors collected during parsing.
     errors: Vec<ParseError>,
     /// Parser options.
-    #[allow(dead_code)]
     options: ParseOptions,
     /// EOF token for when we're past the end
     eof_token: Token,
@@ -132,7 +173,16 @@ impl<'src> Parser<'src> {
 
     /// Reports an error at the current position.
     fn error(&mut self, kind: ParseErrorKind) {
-        self.errors.push(ParseError::new(kind, self.current().span));
+        let span = self.current().span;
+        self.error_at(kind, span);
+    }
+
+    /// Reports an error at a specific span. Suppressed in loose mode.
+    fn error_at(&mut self, kind: ParseErrorKind, span: Span) {
+        if self.options.loose {
+            return;
+        }
+        self.errors.push(ParseError::new(kind, span));
     }
 
     /// Skips whitespace and newlines.
@@ -1394,6 +1444,8 @@ impl<'src> Parser<'src> {
         // Parse children if not self-closing
         let children = if self_closing {
             Vec::new()
+        } else if is_escapable_raw_text(&name) {
+            self.parse_raw_text_children(&name)
         } else {
             self.parse_children(&name)
         };
@@ -1455,6 +1507,7 @@ impl<'src> Parser<'src> {
 
         loop {
             self.skip_whitespace();
+            self.skip_tag_comments();
 
             if self.check(TokenKind::RAngle)
                 || self.check(TokenKind::SlashRAngle)
@@ -1471,6 +1524,46 @@ impl<'src> Parser<'src> {
         }
 
         attributes
+    }
+
+    /// Skips `// line` and `/* block */` comments that may appear between
+    /// attributes inside an element opening tag.
+    fn skip_tag_comments(&mut self) {
+        loop {
+            let offset = u32::from(self.current().span.start) as usize;
+            let bytes = self.source.as_bytes();
+            if offset + 1 >= bytes.len() || bytes[offset] != b'/' {
+                return;
+            }
+            let end_offset = match bytes[offset + 1] {
+                b'/' => {
+                    // Line comment: consume to next newline (exclusive).
+                    let mut e = offset + 2;
+                    while e < bytes.len() && bytes[e] != b'\n' {
+                        e += 1;
+                    }
+                    e
+                }
+                b'*' => {
+                    // Block comment: consume to closing `*/`.
+                    let mut e = offset + 2;
+                    while e + 1 < bytes.len() && !(bytes[e] == b'*' && bytes[e + 1] == b'/') {
+                        e += 1;
+                    }
+                    if e + 1 < bytes.len() {
+                        e + 2
+                    } else {
+                        bytes.len()
+                    }
+                }
+                _ => return,
+            };
+            let end = TextSize::from(end_offset as u32);
+            while !self.check(TokenKind::Eof) && self.current().span.end <= end {
+                self.advance();
+            }
+            self.skip_whitespace();
+        }
     }
 
     /// Parses a single attribute.
@@ -1730,12 +1823,13 @@ impl<'src> Parser<'src> {
 
             // Error if directive name is empty (e.g., style:, on:, bind:)
             if remaining.is_empty() {
-                self.errors.push(ParseError::new(
+                let span = Span::new(start, self.current().span.end);
+                self.error_at(
                     ParseErrorKind::InvalidDirective {
                         message: format!("`{}:` name cannot be empty", directive_name),
                     },
-                    Span::new(start, self.current().span.end),
-                ));
+                    span,
+                );
             }
 
             // Parse value - directives can have expression or quoted string values
@@ -1751,6 +1845,29 @@ impl<'src> Parser<'src> {
                         .unwrap_or(start);
                     Some(ExpressionValue {
                         span: Span::new(start, end),
+                        expression_span: expr_span,
+                        expression: expr,
+                        is_quoted: false,
+                    })
+                } else if self.check(TokenKind::LBraceSlash) {
+                    // Lexer collapsed `{//` (line comment) or `{/*` (block
+                    // comment) into LBraceSlash. Read the whole `{...}` from
+                    // source.
+                    let lbrace_start = self.current().span.start;
+                    let start_offset = u32::from(lbrace_start) as usize;
+                    let (expr, expr_span) = self.read_expression_from_offset(start_offset + 1, '}');
+                    let expr_end = expr_span.end;
+                    while !self.check(TokenKind::Eof) && self.current().span.end <= expr_end {
+                        self.advance();
+                    }
+                    self.eat(TokenKind::RBrace);
+                    let end = self
+                        .tokens
+                        .get(self.pos.saturating_sub(1))
+                        .map(|t| t.span.end)
+                        .unwrap_or(lbrace_start);
+                    Some(ExpressionValue {
+                        span: Span::new(lbrace_start, end),
                         expression_span: expr_span,
                         expression: expr,
                         is_quoted: false,
@@ -1874,8 +1991,81 @@ impl<'src> Parser<'src> {
                 is_quoted: false,
             })
         } else {
-            AttributeValue::True
+            self.parse_unquoted_attribute_value()
         }
+    }
+
+    /// Parses an unquoted attribute value, e.g. `class=foo`, `href=https://x.y/z`.
+    ///
+    /// Per the HTML spec, unquoted values are terminated by whitespace, `>`,
+    /// `=`, `<`, `"`, `'`, or `` ` ``. `/` is permitted inside the value, so
+    /// `<a href=/>` has value "/" (the element is not self-closing).
+    fn parse_unquoted_attribute_value(&mut self) -> AttributeValue {
+        let start = self.current().span.start;
+        let start_offset = u32::from(start) as usize;
+        let bytes = self.source.as_bytes();
+        let mut end_offset = start_offset;
+        while end_offset < bytes.len() {
+            let b = bytes[end_offset];
+            if b.is_ascii_whitespace() || matches!(b, b'>' | b'<' | b'=' | b'"' | b'\'' | b'`') {
+                break;
+            }
+            end_offset += 1;
+        }
+        if end_offset == start_offset {
+            return AttributeValue::True;
+        }
+        let end = TextSize::from(end_offset as u32);
+        let span = Span::new(start, end);
+        let value = self.source[start_offset..end_offset].to_string();
+
+        // If the value ended inside a multi-char close token (e.g. `<a href=/>`
+        // where the lexer produced SlashRAngle for `/>` but only `/` is part
+        // of the value), split that token so the tag close is read correctly.
+        self.split_token_at(end);
+
+        // Advance past tokens covered by the unquoted value.
+        while !self.check(TokenKind::Eof) && self.current().span.end <= end {
+            self.advance();
+        }
+
+        AttributeValue::Text(TextValue { span, value })
+    }
+
+    /// If the current token straddles `boundary` (i.e. starts strictly before
+    /// `boundary` and ends strictly after), split it into two tokens at
+    /// `boundary`. Used to recover from cases where the lexer eagerly joined
+    /// characters that the parser later wants to treat separately (e.g. the
+    /// `/` of `<a href=/>` is part of the unquoted attribute value, while the
+    /// `>` is the tag close).
+    fn split_token_at(&mut self, boundary: TextSize) {
+        if self.check(TokenKind::Eof) {
+            return;
+        }
+        let tok_start = self.current().span.start;
+        let tok_end = self.current().span.end;
+        if !(tok_start < boundary && boundary < tok_end) {
+            return;
+        }
+        let left_offset = u32::from(tok_start) as usize;
+        let right_offset = u32::from(boundary) as usize;
+        let left_slice = &self.source[left_offset..right_offset];
+        let right_slice = &self.source[right_offset..u32::from(tok_end) as usize];
+        let Some(left_kind) = kind_for_slice(left_slice) else {
+            return;
+        };
+        let Some(right_kind) = kind_for_slice(right_slice) else {
+            return;
+        };
+        let left = Token {
+            kind: left_kind,
+            span: Span::new(tok_start, boundary),
+        };
+        let right = Token {
+            kind: right_kind,
+            span: Span::new(boundary, tok_end),
+        };
+        self.tokens.splice(self.pos..=self.pos, [left, right]);
     }
 
     /// Parses a quoted attribute value that may contain expressions.
@@ -2058,9 +2248,98 @@ impl<'src> Parser<'src> {
     }
 
     /// Parses children until a closing tag.
+    /// Parses children of an HTML escapable raw-text element (`<textarea>`,
+    /// `<title>`). Content is treated as raw text — nested HTML markup is
+    /// not interpreted — except that `{...}` mustache expressions remain
+    /// active. The element terminates at `</tagname` followed by whitespace,
+    /// `/`, `>`, or EOF (case-insensitive).
+    fn parse_raw_text_children(&mut self, parent_tag: &str) -> Vec<TemplateNode> {
+        let mut children = Vec::new();
+        let parent_lc = parent_tag.to_ascii_lowercase();
+        let bytes = self.source.as_bytes();
+
+        while !self.check(TokenKind::Eof) {
+            let cur_offset = u32::from(self.current().span.start) as usize;
+
+            if self.is_real_close_tag_at(cur_offset, &parent_lc) {
+                break;
+            }
+
+            if bytes.get(cur_offset) == Some(&b'{')
+                && !matches!(
+                    bytes.get(cur_offset + 1),
+                    Some(b'@') | Some(b'#') | Some(b':')
+                )
+            {
+                if let Some(node) = self.parse_expression_tag() {
+                    children.push(node);
+                    continue;
+                }
+            }
+
+            // Read raw text up to the next `{` or real closing tag.
+            let text_start_offset = cur_offset;
+            let mut end_offset = cur_offset;
+            while end_offset < bytes.len() {
+                if bytes[end_offset] == b'{' {
+                    break;
+                }
+                if bytes[end_offset] == b'<'
+                    && end_offset + 1 < bytes.len()
+                    && bytes[end_offset + 1] == b'/'
+                    && self.is_real_close_tag_at(end_offset, &parent_lc)
+                {
+                    break;
+                }
+                end_offset += 1;
+            }
+            if end_offset == text_start_offset {
+                // No progress: avoid infinite loop.
+                self.advance();
+                continue;
+            }
+            let text = self.source[text_start_offset..end_offset].to_string();
+            let is_whitespace = text.chars().all(|c| c.is_whitespace());
+            let span = Span::new(self.current().span.start, TextSize::from(end_offset as u32));
+            while !self.check(TokenKind::Eof) && self.current().span.end <= span.end {
+                self.advance();
+            }
+            children.push(TemplateNode::Text(Text {
+                span,
+                data: text,
+                is_whitespace,
+            }));
+        }
+
+        children
+    }
+
+    /// Returns true if the source at `offset` is a "real" `</tagname` closing
+    /// tag for `expected_lc` — i.e. `</tagname` followed by whitespace, `/`,
+    /// `>`, or EOF.
+    fn is_real_close_tag_at(&self, offset: usize, expected_lc: &str) -> bool {
+        let bytes = self.source.as_bytes();
+        if offset + 2 + expected_lc.len() > bytes.len() {
+            return false;
+        }
+        if bytes[offset] != b'<' || bytes[offset + 1] != b'/' {
+            return false;
+        }
+        let name_start = offset + 2;
+        let name_end = name_start + expected_lc.len();
+        if !self.source[name_start..name_end].eq_ignore_ascii_case(expected_lc) {
+            return false;
+        }
+        match bytes.get(name_end) {
+            None => true,
+            Some(&b) => b.is_ascii_whitespace() || matches!(b, b'/' | b'>'),
+        }
+    }
+
     fn parse_children(&mut self, parent_tag: &str) -> Vec<TemplateNode> {
         let mut children = Vec::new();
         let close_tag = format!("</{}", parent_tag);
+        let parent_lc = parent_tag.to_ascii_lowercase();
 
         while !self.check(TokenKind::Eof) {
             // Check for closing tag
@@ -2074,9 +2353,20 @@ impl<'src> Parser<'src> {
                 break;
             }
 
+            // Implicit close: a new opening tag that closes the parent (e.g. <li> in <li>).
+            if let Some(next_tag) = self.peek_opening_tag_name() {
+                if implicit_close_on_open(&parent_lc, &next_tag) {
+                    break;
+                }
+            }
+
             if let Some(node) = self.parse_template_node() {
                 children.push(node);
-            } else if !self.check(TokenKind::Eof) && !self.check(TokenKind::LAngleSlash) {
+            } else if !self.check(TokenKind::Eof)
+                && !self.check(TokenKind::LAngleSlash)
+                && !self.check(TokenKind::LBraceSlash)
+                && !self.check(TokenKind::LBraceColon)
+            {
                 self.advance();
             } else {
                 break;
@@ -2088,10 +2378,34 @@ impl<'src> Parser<'src> {
 
     /// Parses a closing tag.
     fn parse_closing_tag(&mut self, expected_name: &str) {
+        let expected_lc = expected_name.to_ascii_lowercase();
+
+        // Implicit close (sibling opening): the upcoming opening tag closes
+        // the parent (e.g. <li> while still inside <li>). Don't emit an error
+        // and don't consume anything; the sibling will be handled by the
+        // grandparent.
+        if let Some(opening) = self.peek_opening_tag_name() {
+            if implicit_close_on_open(&expected_lc, &opening) {
+                return;
+            }
+        }
+
+        // Implicit close (ancestor closing): the upcoming closing tag is for
+        // an ancestor (e.g. </ul> while inside <li>). Don't consume it.
+        if let Some(closing) = self.peek_closing_tag_name() {
+            if closing != expected_lc && implicit_close_on_close(&expected_lc, &closing) {
+                return;
+            }
+        }
+
         if !self.eat(TokenKind::LAngleSlash) {
-            self.error(ParseErrorKind::UnclosedTag {
-                tag_name: expected_name.to_string(),
-            });
+            // Elements with optional end tags (per HTML spec) silently close
+            // when no `</tag>` is present.
+            if !has_optional_end_tag(&expected_lc) {
+                self.error(ParseErrorKind::UnclosedTag {
+                    tag_name: expected_name.to_string(),
+                });
+            }
             return;
         }
 
@@ -2140,6 +2454,8 @@ impl<'src> Parser<'src> {
             });
         }
 
+        // Tolerate whitespace between the tag name and `>` (e.g. `</textarea\n>`).
+        self.skip_whitespace();
         self.eat(TokenKind::RAngle);
     }
 
@@ -2627,6 +2943,50 @@ impl<'src> Parser<'src> {
         self.source[offset..].starts_with(s)
     }
 
+    /// If the current position starts an opening tag (`<name`), returns the
+    /// lowercased tag name. Does not advance.
+    fn peek_opening_tag_name(&self) -> Option<String> {
+        if !self.check(TokenKind::LAngle) {
+            return None;
+        }
+        let lt_end = u32::from(self.current().span.end) as usize;
+        let bytes = self.source.as_bytes();
+        if lt_end >= bytes.len() {
+            return None;
+        }
+        let first = bytes[lt_end];
+        if !first.is_ascii_alphabetic() {
+            return None;
+        }
+        let mut end = lt_end;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'-' | b'_' | b':'))
+        {
+            end += 1;
+        }
+        Some(self.source[lt_end..end].to_ascii_lowercase())
+    }
+
+    /// If the current position starts a closing tag (`</name`), returns the
+    /// lowercased tag name. Does not advance.
+    fn peek_closing_tag_name(&self) -> Option<String> {
+        if !self.check(TokenKind::LAngleSlash) {
+            return None;
+        }
+        let slash_end = u32::from(self.current().span.end) as usize;
+        let bytes = self.source.as_bytes();
+        let mut end = slash_end;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'-' | b'_' | b':'))
+        {
+            end += 1;
+        }
+        if end == slash_end {
+            return None;
+        }
+        Some(self.source[slash_end..end].to_ascii_lowercase())
+    }
+
     /// Handles an invalid block continuation tag like {:els} (typo for {:else}).
     /// Emits an appropriate error and skips past the invalid tag.
     fn parse_invalid_block_continuation(&mut self) -> Option<TemplateNode> {
@@ -2664,10 +3024,10 @@ impl<'src> Parser<'src> {
             )
         };
 
-        self.errors.push(ParseError::new(
+        self.error_at(
             ParseErrorKind::InvalidBlockSyntax { message },
             Span::new(start, end),
-        ));
+        );
 
         None
     }

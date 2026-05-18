@@ -126,6 +126,19 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
+### Upstream parser parity sweep
+
+To compare this parser against Svelte's full parser suites (`parser-modern` + `parser-legacy`),
+run the optional ignored test with a local checkout of `sveltejs/svelte`:
+
+```bash
+git clone https://github.com/sveltejs/svelte.git /tmp/svelte
+SVELTE_REPO=/tmp/svelte cargo test -p svelte-parser test_upstream_svelte_parser_samples -- --ignored
+```
+
+The harness runs every sample under `parser-modern` and `parser-legacy`, enabling loose mode
+for samples whose directory name starts with `loose-` (mirroring upstream's runner).
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

@@ -42,6 +42,11 @@ pub use source_map::Span;
 pub struct ParseOptions {
     /// Whether to enable tracing for debugging.
     pub trace: bool,
+    /// Loose mode: best-effort recovery without surfacing parse errors.
+    /// Mirrors the behavior of upstream Svelte's loose parser, used for
+    /// editor / language-server scenarios where the source is expected to
+    /// be in-progress and incomplete.
+    pub loose: bool,
 }
 
 /// The result of parsing a Svelte file.

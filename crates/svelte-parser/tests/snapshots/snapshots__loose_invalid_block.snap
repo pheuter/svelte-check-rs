@@ -1,0 +1,152 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+expression: output
+---
+Source:
+{#if }
+{:else if }
+{:else }
+{/if}
+
+{#each }
+{/each}
+
+{#snippet }
+{/snippet}
+
+{#snippet foo}
+{/snippet}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            IfBlock(
+                IfBlock {
+                    span: Span {
+                        start: 0,
+                        end: 19,
+                    },
+                    condition_span: Span {
+                        start: 5,
+                        end: 5,
+                    },
+                    condition: "",
+                    consequent: Fragment {
+                        nodes: [],
+                        span: Span {
+                            start: 6,
+                            end: 6,
+                        },
+                    },
+                    alternate: Some(
+                        ElseIf(
+                            IfBlock {
+                                span: Span {
+                                    start: 17,
+                                    end: 19,
+                                },
+                                condition_span: Span {
+                                    start: 17,
+                                    end: 17,
+                                },
+                                condition: "",
+                                consequent: Fragment {
+                                    nodes: [],
+                                    span: Span {
+                                        start: 18,
+                                        end: 18,
+                                    },
+                                },
+                                alternate: None,
+                            },
+                        ),
+                    ),
+                },
+            ),
+            EachBlock(
+                EachBlock {
+                    span: Span {
+                        start: 35,
+                        end: 51,
+                    },
+                    expression_span: Span {
+                        start: 42,
+                        end: 42,
+                    },
+                    expression: "",
+                    context: "",
+                    context_span: Span {
+                        start: 42,
+                        end: 42,
+                    },
+                    index: None,
+                    key: None,
+                    body: Fragment {
+                        nodes: [],
+                        span: Span {
+                            start: 43,
+                            end: 43,
+                        },
+                    },
+                    fallback: None,
+                },
+            ),
+            SnippetBlock(
+                SnippetBlock {
+                    span: Span {
+                        start: 53,
+                        end: 75,
+                    },
+                    name: "",
+                    parameters_span: Span {
+                        start: 63,
+                        end: 63,
+                    },
+                    parameters: "",
+                    body: Fragment {
+                        nodes: [],
+                        span: Span {
+                            start: 64,
+                            end: 64,
+                        },
+                    },
+                },
+            ),
+            SnippetBlock(
+                SnippetBlock {
+                    span: Span {
+                        start: 77,
+                        end: 102,
+                    },
+                    name: "foo",
+                    parameters_span: Span {
+                        start: 87,
+                        end: 87,
+                    },
+                    parameters: "",
+                    body: Fragment {
+                        nodes: [],
+                        span: Span {
+                            start: 91,
+                            end: 91,
+                        },
+                    },
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 102,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 102,
+    },
+}

@@ -1,0 +1,54 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+expression: output
+---
+Source:
+<div>
+    <Comp>
+</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 23,
+                    },
+                    name: "div",
+                    attributes: [],
+                    children: [
+                        Component(
+                            Component {
+                                span: Span {
+                                    start: 10,
+                                    end: 23,
+                                },
+                                name: "Comp",
+                                attributes: [],
+                                children: [],
+                                self_closing: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 23,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 23,
+    },
+}
