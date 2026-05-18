@@ -1,0 +1,78 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+expression: output
+---
+Source:
+<div>
+    <Comp foo={bar}
+</div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 32,
+                    },
+                    name: "div",
+                    attributes: [],
+                    children: [
+                        Component(
+                            Component {
+                                span: Span {
+                                    start: 10,
+                                    end: 32,
+                                },
+                                name: "Comp",
+                                attributes: [
+                                    Normal(
+                                        NormalAttribute {
+                                            span: Span {
+                                                start: 16,
+                                                end: 25,
+                                            },
+                                            name: "foo",
+                                            value: Expression(
+                                                ExpressionValue {
+                                                    span: Span {
+                                                        start: 20,
+                                                        end: 25,
+                                                    },
+                                                    expression_span: Span {
+                                                        start: 21,
+                                                        end: 24,
+                                                    },
+                                                    expression: "bar",
+                                                    is_quoted: false,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ],
+                                children: [],
+                                self_closing: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 32,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 32,
+    },
+}

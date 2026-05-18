@@ -1,7 +1,22 @@
-use svelte_parser::parse;
+use svelte_parser::{parse, parse_with_options, ParseOptions};
 
 fn parse_snapshot(name: &str, source: &str) {
     let result = parse(source);
+    let output = format!(
+        "Source:\n{}\n\nErrors: {:?}\n\nAST:\n{:#?}",
+        source, result.errors, result.document
+    );
+    insta::assert_snapshot!(name, output);
+}
+
+fn parse_loose_snapshot(name: &str, source: &str) {
+    let result = parse_with_options(
+        source,
+        ParseOptions {
+            loose: true,
+            ..ParseOptions::default()
+        },
+    );
     let output = format!(
         "Source:\n{}\n\nErrors: {:?}\n\nAST:\n{:#?}",
         source, result.errors, result.document
@@ -615,5 +630,131 @@ fn test_snapshot_component_void_names_self_closing() {
         r#"<Input bind:value={name} />
 <Img src="photo.jpg" />
 <Link href="/about" />"#,
+    );
+}
+
+// === Upstream parser parity coverage ===
+// These tests mirror cases from the upstream Svelte parser test corpus
+// (`parser-modern` and `parser-legacy`). The full suite is wired through
+// `tests/upstream_parser_corpus.rs` (gated on `SVELTE_REPO`); these
+// snapshots guard the cases inside the workspace so they're enforced in CI.
+
+#[test]
+fn test_snapshot_attribute_unquoted() {
+    // parser-legacy/attribute-unquoted: bare `class=foo`, no quotes.
+    parse_snapshot(
+        "attribute_unquoted",
+        r#"<div class=container>content</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_attribute_unquoted_url() {
+    // parser-legacy/attribute-containing-solidus: unquoted value containing `/`,
+    // and `<a href=/>home</a>` where `/` is *value*, not self-close.
+    parse_snapshot(
+        "attribute_unquoted_url",
+        r#"<a href=https://example.com/foo>link</a>
+<a href=/>home</a>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_javascript_comments_in_tag() {
+    // parser-legacy/javascript-comments + parser-modern/comment-in-tag:
+    // `// line` and `/* block */` comments allowed between attributes.
+    parse_snapshot(
+        "javascript_comments_in_tag",
+        r#"<div
+    // a line comment
+    class="a"
+    /* a block comment */
+    id="b"
+>x</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_implicitly_closed_li() {
+    // parser-legacy/implicitly-closed-li: <li> auto-closes on sibling <li>
+    // or on ancestor </ul>.
+    parse_snapshot(
+        "implicitly_closed_li",
+        r#"<ul>
+    <li>one
+    <li>two
+    <li>three
+</ul>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_implicitly_closed_li_block() {
+    // parser-legacy/implicitly-closed-li-block: implicit close interacts
+    // with surrounding `{#each}` blocks.
+    parse_snapshot(
+        "implicitly_closed_li_block",
+        r#"<ul>
+    {#each items as item}
+        <li>{item}
+    {/each}
+</ul>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_textarea_raw_text() {
+    // parser-legacy/textarea-end-tag: <textarea> body is raw text — nested
+    // `<div>` markup is text, mustaches `{...}` remain active, and a
+    // trailing newline before `</textarea>` is tolerated.
+    parse_snapshot(
+        "textarea_raw_text",
+        "<textarea>before <div>not an element</div> {value} after\n</textarea>",
+    );
+}
+
+#[test]
+fn test_snapshot_loose_unclosed_tag() {
+    // parser-modern/loose-unclosed-tag (excerpt): tolerates an unterminated
+    // element when `loose: true`.
+    parse_loose_snapshot(
+        "loose_unclosed_tag",
+        r#"<div>
+    <Comp>
+</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_loose_unclosed_open_tag() {
+    // parser-modern/loose-unclosed-open-tag (excerpt): tolerates an unfinished
+    // opening tag when `loose: true`.
+    parse_loose_snapshot(
+        "loose_unclosed_open_tag",
+        r#"<div>
+    <Comp foo={bar}
+</div>"#,
+    );
+}
+
+#[test]
+fn test_snapshot_loose_invalid_block() {
+    // parser-modern/loose-invalid-block: invalid `{#if }` / `{#each }` /
+    // `{#snippet }` blocks must not surface errors under `loose: true`.
+    parse_loose_snapshot(
+        "loose_invalid_block",
+        r#"{#if }
+{:else if }
+{:else }
+{/if}
+
+{#each }
+{/each}
+
+{#snippet }
+{/snippet}
+
+{#snippet foo}
+{/snippet}"#,
     );
 }

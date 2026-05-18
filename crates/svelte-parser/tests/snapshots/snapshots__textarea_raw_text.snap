@@ -1,0 +1,74 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+expression: output
+---
+Source:
+<textarea>before <div>not an element</div> {value} after
+</textarea>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 68,
+                    },
+                    name: "textarea",
+                    attributes: [],
+                    children: [
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 10,
+                                    end: 43,
+                                },
+                                data: "before <div>not an element</div> ",
+                                is_whitespace: false,
+                            },
+                        ),
+                        Expression(
+                            ExpressionTag {
+                                span: Span {
+                                    start: 43,
+                                    end: 50,
+                                },
+                                expression_span: Span {
+                                    start: 44,
+                                    end: 49,
+                                },
+                                expression: "value",
+                            },
+                        ),
+                        Text(
+                            Text {
+                                span: Span {
+                                    start: 51,
+                                    end: 57,
+                                },
+                                data: "after\n",
+                                is_whitespace: false,
+                            },
+                        ),
+                    ],
+                    self_closing: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 68,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 68,
+    },
+}
