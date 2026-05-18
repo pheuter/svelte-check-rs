@@ -1742,3 +1742,54 @@ fn test_issue_121_experimental_async_respected_by_compiler() {
 
     assert_no_diagnostics_in_file(&diagnostics, "issue-121-experimental-async/+page.svelte");
 }
+
+// ============================================================================
+// ISSUE #132: <script> with single-quoted attribute values
+// ============================================================================
+//
+// Before the fix, `<script lang='ts'>` (single-quoted attr) caused
+// `parse_script` to bail silently, letting the script body leak into the
+// template parser. Symptoms:
+//   - `$bindable()` inside `$props()` destructure → false-positive
+//     `invalid-rune-usage` diagnostic.
+//   - TS generics like `ZodInfer<typeof schema>` → false-positive
+//     `mismatched closing tag: expected </typeof>, found </script>` parse error.
+//
+// Fixture: src/routes/issue-132-single-quote-script/{Modal.svelte,+page.svelte}
+#[test]
+fn test_issue_132_single_quoted_script_attr_modal_no_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+
+    // Guard against the parse-error / invalid-rune-usage regression specifically.
+    let svelte_diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
+    assert_no_diagnostics_in_file(
+        &svelte_diagnostics,
+        "issue-132-single-quote-script/Modal.svelte",
+    );
+
+    // Belt-and-suspenders: no TS-side fallout from the body being misparsed.
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "issue-132-single-quote-script/Modal.svelte",
+    );
+}
+
+#[test]
+fn test_issue_132_single_quoted_script_attr_ts_generics_no_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+
+    let svelte_diagnostics = filter_diagnostics_by_source(&diagnostics, "svelte");
+    assert_no_diagnostics_in_file(
+        &svelte_diagnostics,
+        "issue-132-single-quote-script/+page.svelte",
+    );
+
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "issue-132-single-quote-script/+page.svelte",
+    );
+}
