@@ -960,6 +960,32 @@ impl<'src> Parser<'src> {
         ""
     }
 
+    /// Parses an attribute value inside a `<script>` or `<style>` opening tag.
+    /// Accepts double-quoted, single-quoted, and unquoted values; expression
+    /// values (`{...}`) are not supported on these section tags.
+    fn parse_section_tag_attribute_value(&mut self) -> AttributeValue {
+        if self.eat(TokenKind::DoubleQuote) {
+            let (text, span) = self.read_until(&["\""]);
+            self.eat(TokenKind::DoubleQuote);
+            AttributeValue::Text(TextValue { span, value: text })
+        } else if self.eat(TokenKind::SingleQuote) {
+            let (text, span) = self.read_until(&["'"]);
+            self.eat(TokenKind::SingleQuote);
+            AttributeValue::Text(TextValue { span, value: text })
+        } else if self.check(TokenKind::Ident)
+            || self.check(TokenKind::Script)
+            || self.check(TokenKind::Style)
+            || self.check(TokenKind::Number)
+        {
+            let span = self.current().span;
+            let text = self.current_text().to_string();
+            self.advance();
+            AttributeValue::Text(TextValue { span, value: text })
+        } else {
+            AttributeValue::True
+        }
+    }
+
     /// Parses a script block.
     fn parse_script(&mut self) -> Option<Script> {
         let start = self.current().span.start;
@@ -983,7 +1009,10 @@ impl<'src> Parser<'src> {
         loop {
             self.skip_whitespace();
 
-            if self.check(TokenKind::RAngle) || self.check(TokenKind::SlashRAngle) {
+            if self.check(TokenKind::RAngle)
+                || self.check(TokenKind::SlashRAngle)
+                || self.check(TokenKind::Eof)
+            {
                 break;
             }
 
@@ -993,13 +1022,7 @@ impl<'src> Parser<'src> {
                 self.advance();
 
                 let value = if self.eat(TokenKind::Eq) {
-                    if self.eat(TokenKind::DoubleQuote) {
-                        let (text, span) = self.read_until(&["\""]);
-                        self.eat(TokenKind::DoubleQuote);
-                        AttributeValue::Text(TextValue { span, value: text })
-                    } else {
-                        AttributeValue::True
-                    }
+                    self.parse_section_tag_attribute_value()
                 } else {
                     AttributeValue::True
                 };
@@ -1037,14 +1060,21 @@ impl<'src> Parser<'src> {
                     value,
                 }));
             } else {
-                break;
+                // Unknown token inside the opening tag — skip it so we don't bail
+                // and silently leak the script body into the template parser.
+                self.advance();
             }
         }
 
-        // Expect `>`
-        if !self.eat(TokenKind::RAngle) {
-            return None;
+        // Skip forward to `>` (or EOF) so a malformed opening tag doesn't cause
+        // the script body to be parsed as template content.
+        while !self.check(TokenKind::RAngle)
+            && !self.check(TokenKind::SlashRAngle)
+            && !self.check(TokenKind::Eof)
+        {
+            self.advance();
         }
+        let _ = self.eat(TokenKind::RAngle) || self.eat(TokenKind::SlashRAngle);
 
         // Read content until </script>
         let content_start = self.current().span.start;
@@ -1098,7 +1128,10 @@ impl<'src> Parser<'src> {
         loop {
             self.skip_whitespace();
 
-            if self.check(TokenKind::RAngle) || self.check(TokenKind::SlashRAngle) {
+            if self.check(TokenKind::RAngle)
+                || self.check(TokenKind::SlashRAngle)
+                || self.check(TokenKind::Eof)
+            {
                 break;
             }
 
@@ -1108,13 +1141,7 @@ impl<'src> Parser<'src> {
                 self.advance();
 
                 let value = if self.eat(TokenKind::Eq) {
-                    if self.eat(TokenKind::DoubleQuote) {
-                        let (text, span) = self.read_until(&["\""]);
-                        self.eat(TokenKind::DoubleQuote);
-                        AttributeValue::Text(TextValue { span, value: text })
-                    } else {
-                        AttributeValue::True
-                    }
+                    self.parse_section_tag_attribute_value()
                 } else {
                     AttributeValue::True
                 };
@@ -1135,14 +1162,21 @@ impl<'src> Parser<'src> {
                     value,
                 }));
             } else {
-                break;
+                // Unknown token inside the opening tag — skip it so we don't bail
+                // and silently leak the style body into the template parser.
+                self.advance();
             }
         }
 
-        // Expect `>`
-        if !self.eat(TokenKind::RAngle) {
-            return None;
+        // Skip forward to `>` (or EOF) so a malformed opening tag doesn't cause
+        // the style body to be parsed as template content.
+        while !self.check(TokenKind::RAngle)
+            && !self.check(TokenKind::SlashRAngle)
+            && !self.check(TokenKind::Eof)
+        {
+            self.advance();
         }
+        let _ = self.eat(TokenKind::RAngle) || self.eat(TokenKind::SlashRAngle);
 
         // Read content until </style>
         let content_start = self.current().span.start;
@@ -2892,6 +2926,78 @@ mod tests {
 
         let script = result.document.instance_script.unwrap();
         assert!(script.content.contains("let x = 1"));
+    }
+
+    /// Issue #132: `<script lang='ts'>` (single-quoted attr) used to fail
+    /// silently — `parse_script` returned `None`, the body leaked into the
+    /// template parser, and runes like `$bindable()` got flagged as invalid
+    /// template expressions.
+    #[test]
+    fn test_parse_script_single_quoted_lang() {
+        let source = "<script lang='ts'>let x = 1;</script>";
+        let result = Parser::new(source, ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let script = result
+            .document
+            .instance_script
+            .expect("instance script should be recognized with single-quoted lang attr");
+        assert!(matches!(script.lang, ScriptLang::TypeScript));
+        assert!(script.content.contains("let x = 1"));
+        assert_eq!(script.attributes.len(), 1);
+        match &script.attributes[0] {
+            Attribute::Normal(attr) => {
+                assert_eq!(attr.name, "lang");
+                match &attr.value {
+                    AttributeValue::Text(t) => assert_eq!(t.value, "ts"),
+                    other => panic!("expected Text attr value, got {:?}", other),
+                }
+            }
+            other => panic!("expected normal attribute, got {:?}", other),
+        }
+    }
+
+    /// Issue #132: TS generics like `ZodInfer<typeof schema>` inside a script
+    /// with single-quoted attrs used to surface as `mismatched closing tag:
+    /// expected </typeof>` because the body was being parsed as template.
+    #[test]
+    fn test_parse_script_single_quoted_lang_with_ts_generics() {
+        let source = "<script lang='ts'>\
+            type Form = ZodInfer<typeof schema>;\
+            </script>";
+        let result = Parser::new(source, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "TS generics in script body should not produce parse errors: {:?}",
+            result.errors
+        );
+        let script = result.document.instance_script.expect("script recognized");
+        assert!(script.content.contains("ZodInfer<typeof schema>"));
+    }
+
+    #[test]
+    fn test_parse_script_unquoted_lang() {
+        let source = "<script lang=ts>let x = 1;</script>";
+        let result = Parser::new(source, ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let script = result.document.instance_script.expect("script recognized");
+        assert!(matches!(script.lang, ScriptLang::TypeScript));
+        assert!(script.content.contains("let x = 1"));
+    }
+
+    #[test]
+    fn test_parse_style_single_quoted_attr() {
+        let source = "<style lang='scss'>.a { color: red; }</style>";
+        let result = Parser::new(source, ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let style = result
+            .document
+            .style
+            .expect("style should be recognized with single-quoted lang attr");
+        assert!(style.content.contains(".a"));
+        assert_eq!(style.attributes.len(), 1);
     }
 
     #[test]
