@@ -1133,6 +1133,9 @@ impl<'a> RuneScanner<'a> {
         let mut paren_depth = 0;
         let mut bracket_depth = 0;
         let mut in_string: Option<char> = None;
+        // Track brace-depth-zero returns: first is the destructuring `{ ... }`,
+        // second means we crossed a block statement boundary (e.g. function body).
+        let mut brace_zero_returns = 0u32;
 
         // Iterate backwards through characters
         let chars: Vec<(usize, char)> = before_equals.char_indices().collect();
@@ -1213,8 +1216,19 @@ impl<'a> RuneScanner<'a> {
             }
 
             match ch {
+                ';' if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                    break;
+                }
                 '}' => brace_depth += 1,
-                '{' if brace_depth > 0 => brace_depth -= 1,
+                '{' if brace_depth > 0 => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        brace_zero_returns += 1;
+                        if brace_zero_returns > 1 {
+                            break;
+                        }
+                    }
+                }
                 ')' => paren_depth += 1,
                 '(' if paren_depth > 0 => paren_depth -= 1,
                 ']' => bracket_depth += 1,
