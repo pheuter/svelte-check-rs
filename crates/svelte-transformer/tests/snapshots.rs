@@ -266,6 +266,35 @@ fn test_props_with_rest_loosened_annotation() {
     );
 }
 
+#[test]
+fn test_props_with_prior_typed_const() {
+    transform_snapshot(
+        "props_prior_typed_const",
+        r#"<script lang="ts">
+    const items: string[] = ["a", "b"];
+    let { label = "default" } = $props();
+</script>
+
+<p>{label}</p>"#,
+    );
+}
+
+#[test]
+fn test_props_with_prior_function_return_type() {
+    transform_snapshot(
+        "props_prior_function_return_type",
+        r#"<script lang="ts">
+    function isAdmin(role: string): role is "admin" {
+        return role === "admin";
+    }
+
+    let { role = "user" } = $props();
+</script>
+
+<p>{isAdmin(role) ? "Admin" : "User"}</p>"#,
+    );
+}
+
 // ============================================================================
 // TEMPLATE EXPRESSION TESTS
 // ============================================================================

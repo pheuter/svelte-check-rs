@@ -1133,6 +1133,9 @@ impl<'a> RuneScanner<'a> {
         let mut paren_depth = 0;
         let mut bracket_depth = 0;
         let mut in_string: Option<char> = None;
+        // Track brace-depth-zero returns: first is the destructuring `{ ... }`,
+        // second means we crossed a block statement boundary (e.g. function body).
+        let mut brace_zero_returns = 0u32;
 
         // Iterate backwards through characters
         let chars: Vec<(usize, char)> = before_equals.char_indices().collect();
@@ -1213,8 +1216,19 @@ impl<'a> RuneScanner<'a> {
             }
 
             match ch {
+                ';' if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                    break;
+                }
                 '}' => brace_depth += 1,
-                '{' if brace_depth > 0 => brace_depth -= 1,
+                '{' if brace_depth > 0 => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        brace_zero_returns += 1;
+                        if brace_zero_returns > 1 {
+                            break;
+                        }
+                    }
+                }
                 ')' => paren_depth += 1,
                 '(' if paren_depth > 0 => paren_depth -= 1,
                 ']' => bracket_depth += 1,
@@ -1538,6 +1552,42 @@ mod tests {
             result.output,
             "let { a, b } = ({} as __SvelteLoosen<Record<string, unknown>>);"
         );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_prior_typed_const_no_lhs_annotation() {
+        let result = transform_runes(
+            r#"const items: string[] = ["a", "b"];
+let { label = "default" } = $props();"#,
+            0,
+        );
+        assert_eq!(
+            result.output,
+            r#"const items: string[] = ["a", "b"];
+let { label = "default" } = ({} as __SvelteLoosen<Record<string, unknown>>);"#
+        );
+        assert_eq!(result.runes.len(), 1);
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_prior_function_return_type_no_lhs_annotation() {
+        let result = transform_runes(
+            r#"function isAdmin(role: string): role is "admin" {
+    return role === "admin";
+}
+let { role = "user" } = $props();"#,
+            0,
+        );
+        assert_eq!(
+            result.output,
+            r#"function isAdmin(role: string): role is "admin" {
+    return role === "admin";
+}
+let { role = "user" } = ({} as __SvelteLoosen<Record<string, unknown>>);"#
+        );
+        assert_eq!(result.runes.len(), 1);
         assert_eq!(result.runes[0].kind, RuneKind::Props);
     }
 

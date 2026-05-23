@@ -1793,3 +1793,146 @@ fn test_issue_132_single_quoted_script_attr_ts_generics_no_errors() {
         "issue-132-single-quote-script/+page.svelte",
     );
 }
+
+// ============================================================================
+// ISSUE #136: $props() LHS TYPE EXTRACTION CROSSING STATEMENT BOUNDARIES
+// ============================================================================
+// When $props() has no generic and no LHS type annotation, extract_type_from_lhs
+// scans backward for `: Type =`. Without statement-boundary guards it crosses
+// into prior declarations (typed const, function return types) and emits invalid
+// TypeScript that breaks tsgo.
+//
+// Fixtures:
+// - test-fixtures/projects/sveltekit-bundler/src/lib/issue-136-props-prior-typed-const.svelte
+// - test-fixtures/projects/sveltekit-bundler/src/lib/issue-136-props-prior-function-return.svelte
+
+fn find_transformed_cache_content(fixture_path: &Path, relative_path: &str) -> Option<String> {
+    let base = cache_root(fixture_path);
+    if !base.exists() {
+        return None;
+    }
+
+    let relative = Path::new(relative_path);
+    let flat = base.join(relative);
+    if flat.exists() {
+        return fs::read_to_string(flat).ok();
+    }
+
+    for entry in fs::read_dir(&base).ok()? {
+        let entry = entry.ok()?;
+        if !entry.file_type().ok()?.is_dir() {
+            continue;
+        }
+        let candidate = entry.path().join(relative);
+        if candidate.exists() {
+            return fs::read_to_string(candidate).ok();
+        }
+    }
+
+    None
+}
+
+fn assert_props_lhs_transform_is_valid(content: &str, fixture_name: &str) {
+    assert!(
+        !content.contains("__SvelteLoosen<string[]"),
+        "Issue #136: garbled props transform in {} (grabbed prior const type):\n{}",
+        fixture_name,
+        content
+    );
+    assert!(
+        !content.contains("__SvelteLoosen<role is"),
+        "Issue #136: garbled props transform in {} (grabbed prior function return type):\n{}",
+        fixture_name,
+        content
+    );
+    assert!(
+        content.contains("__SvelteLoosen<Record<string, unknown>>"),
+        "Issue #136: expected fallback props type in {}:\n{}",
+        fixture_name,
+        content
+    );
+}
+
+/// Prior typed const + untyped $props() destructure must not produce TS parse errors.
+#[test]
+fn test_issue_136_props_prior_typed_const_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let parse_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.contains("issue-136-props-prior-typed-const.svelte")
+                && (d.code.contains("TS1005")
+                    || d.code.contains("TS1003")
+                    || d.code.contains("TS1002")
+                    || d.code.contains("TS1109")
+                    || d.message.contains("expected")
+                    || d.message.contains("Expression expected"))
+        })
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #136: typed const before $props() produced parse errors:\n{:#?}",
+        parse_errors
+    );
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "lib/issue-136-props-prior-typed-const.svelte",
+    );
+}
+
+/// Prior function return type + untyped $props() destructure must not produce TS parse errors.
+#[test]
+fn test_issue_136_props_prior_function_return_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let parse_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.contains("issue-136-props-prior-function-return.svelte")
+                && (d.code.contains("TS1005")
+                    || d.code.contains("TS1003")
+                    || d.code.contains("TS1002")
+                    || d.code.contains("TS1109")
+                    || d.message.contains("expected")
+                    || d.message.contains("Expression expected"))
+        })
+        .collect();
+
+    assert!(
+        parse_errors.is_empty(),
+        "Issue #136: function return type before $props() produced parse errors:\n{:#?}",
+        parse_errors
+    );
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "lib/issue-136-props-prior-function-return.svelte",
+    );
+}
+
+/// Cached transformed output must use the fallback props type, not garbled prior-statement text.
+#[test]
+fn test_issue_136_transformed_output_not_garbled() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    for (relative_path, name) in [
+        (
+            "src/lib/issue-136-props-prior-typed-const.svelte.ts",
+            "issue-136-props-prior-typed-const",
+        ),
+        (
+            "src/lib/issue-136-props-prior-function-return.svelte.ts",
+            "issue-136-props-prior-function-return",
+        ),
+    ] {
+        let content = find_transformed_cache_content(&fixture_path, relative_path)
+            .unwrap_or_else(|| panic!("missing transformed cache for {}", name));
+        assert_props_lhs_transform_is_valid(&content, name);
+    }
+}
