@@ -1090,6 +1090,14 @@ impl<'a> RuneScanner<'a> {
     /// Examples:
     /// - `let { a, b }: Props = ` -> Some("Props")
     /// - `let { a }: { a: string; b: number } = ` -> Some("{ a: string; b: number }")
+    /// - `let { a }: { x } | { y } = ` -> Some("{ x } | { y }") (union/intersection
+    ///   of multiple object types is allowed as long as a type-continuation operator
+    ///   like `|`/`&`/`,` sits between successive top-level brace groups)
+    ///
+    /// Returns `None` (caller falls back to `Record<string, unknown>`) when the
+    /// scan crosses a statement boundary — a top-level `;`, a top-level `=`
+    /// belonging to a prior assignment (ASI case), or a second top-level `{...}`
+    /// group with no type operator between (e.g. a prior function body).
     fn extract_type_from_lhs(&self) -> Option<String> {
         // Look back in the output for `: Type = ` pattern
         // The output currently ends with everything up to $props()
@@ -1133,9 +1141,13 @@ impl<'a> RuneScanner<'a> {
         let mut paren_depth = 0;
         let mut bracket_depth = 0;
         let mut in_string: Option<char> = None;
-        // Track brace-depth-zero returns: first is the destructuring `{ ... }`,
-        // second means we crossed a block statement boundary (e.g. function body).
+        // Count top-level `{...}` groups we've fully traversed going backwards.
+        // First exit is the destructure or the single-object type annotation.
+        // Subsequent exits are only legal if separated by a type-continuation
+        // operator (`|`/`&`/`,`/etc.) — otherwise we've crossed into a prior
+        // statement (e.g. a function body).
         let mut brace_zero_returns = 0u32;
+        let mut saw_type_operator = false;
 
         // Iterate backwards through characters
         let chars: Vec<(usize, char)> = before_equals.char_indices().collect();
@@ -1215,25 +1227,45 @@ impl<'a> RuneScanner<'a> {
                 }
             }
 
+            let at_top_level = brace_depth == 0 && paren_depth == 0 && bracket_depth == 0;
+
             match ch {
-                ';' if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                ';' if at_top_level => {
+                    break;
+                }
+                // After we've already consumed one top-level brace group, a
+                // bare `=` at top level belongs to a prior assignment (ASI
+                // case like `const x = 1\nlet { y } = $props()`). Bail so we
+                // don't grab the prior statement's type as our annotation.
+                '=' if at_top_level && brace_zero_returns >= 1 => {
                     break;
                 }
                 '}' => brace_depth += 1,
                 '{' if brace_depth > 0 => {
                     brace_depth -= 1;
-                    if brace_depth == 0 {
-                        brace_zero_returns += 1;
-                        if brace_zero_returns > 1 {
+                    // Only count brace exits that are truly at top level —
+                    // braces nested inside `[...]` or `(...)` (e.g. tuple
+                    // `[{a},{b}]` or parenthesized `({a}|{b})` annotations)
+                    // must not trigger the statement-boundary heuristic.
+                    if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 {
+                        if brace_zero_returns >= 1 && !saw_type_operator {
                             break;
                         }
+                        brace_zero_returns += 1;
+                        saw_type_operator = false;
                     }
+                }
+                // Type-continuation operators between top-level brace groups
+                // (union `|`, intersection `&`, tuple/generic separator `,`,
+                // generic angle brackets, conditional `?`).
+                '|' | '&' | ',' | '<' | '>' | '?' if at_top_level && brace_zero_returns >= 1 => {
+                    saw_type_operator = true;
                 }
                 ')' => paren_depth += 1,
                 '(' if paren_depth > 0 => paren_depth -= 1,
                 ']' => bracket_depth += 1,
                 '[' if bracket_depth > 0 => bracket_depth -= 1,
-                ':' if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                ':' if at_top_level => {
                     let mut j = idx;
                     while j > 0 {
                         let prev_idx = j - 1;
@@ -1588,6 +1620,74 @@ let { role = "user" } = $props();"#,
 let { role = "user" } = ({} as __SvelteLoosen<Record<string, unknown>>);"#
         );
         assert_eq!(result.runes.len(), 1);
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_top_level_union_of_object_types() {
+        // Regression guard: union of two top-level braced object types must
+        // preserve the full annotation, not fall back to Record.
+        let result = transform_runes("let { a }: { x: number } | { y: string } = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { a }: { x: number } | { y: string } = ({} as __SvelteLoosen<{ x: number } | { y: string }>);"
+        );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_top_level_intersection_of_object_types() {
+        let result = transform_runes("let { a }: { x: number } & { y: string } = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { a }: { x: number } & { y: string } = ({} as __SvelteLoosen<{ x: number } & { y: string }>);"
+        );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_tuple_of_object_types() {
+        let result = transform_runes("let { a }: [{ x: number }, { y: string }] = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { a }: [{ x: number }, { y: string }] = ({} as __SvelteLoosen<[{ x: number }, { y: string }]>);"
+        );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_parenthesized_union_of_object_types() {
+        let result = transform_runes("let { a }: ({ x: number } | { y: string }) = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { a }: ({ x: number } | { y: string }) = ({} as __SvelteLoosen<({ x: number } | { y: string })>);"
+        );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_generic_multi_object_args() {
+        let result = transform_runes("let { x }: Foo<{ a: 1 }, { b: 2 }> = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { x }: Foo<{ a: 1 }, { b: 2 }> = ({} as __SvelteLoosen<Foo<{ a: 1 }, { b: 2 }>>);"
+        );
+        assert_eq!(result.runes[0].kind, RuneKind::Props);
+    }
+
+    #[test]
+    fn test_props_with_prior_typed_const_no_semicolon_asi() {
+        // ASI variant of issue #136 — prior typed declaration with no trailing
+        // semicolon must still fall back instead of grabbing `string[] = [...]`
+        // as the type and emitting invalid TypeScript.
+        let result = transform_runes(
+            "const items: string[] = [\"a\", \"b\"]\nlet { label = \"default\" } = $props();",
+            0,
+        );
+        assert_eq!(
+            result.output,
+            "const items: string[] = [\"a\", \"b\"]\nlet { label = \"default\" } = ({} as __SvelteLoosen<Record<string, unknown>>);"
+        );
         assert_eq!(result.runes[0].kind, RuneKind::Props);
     }
 

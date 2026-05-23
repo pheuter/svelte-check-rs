@@ -1819,8 +1819,11 @@ fn find_transformed_cache_content(fixture_path: &Path, relative_path: &str) -> O
     }
 
     for entry in fs::read_dir(&base).ok()? {
-        let entry = entry.ok()?;
-        if !entry.file_type().ok()?.is_dir() {
+        let Ok(entry) = entry else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
             continue;
         }
         let candidate = entry.path().join(relative);
@@ -1863,7 +1866,8 @@ fn test_issue_136_props_prior_typed_const_no_ts_errors() {
     let parse_errors: Vec<_> = ts_diagnostics
         .iter()
         .filter(|d| {
-            d.filename.contains("issue-136-props-prior-typed-const.svelte")
+            d.filename
+                .contains("issue-136-props-prior-typed-const.svelte")
                 && (d.code.contains("TS1005")
                     || d.code.contains("TS1003")
                     || d.code.contains("TS1002")
@@ -1894,7 +1898,8 @@ fn test_issue_136_props_prior_function_return_no_ts_errors() {
     let parse_errors: Vec<_> = ts_diagnostics
         .iter()
         .filter(|d| {
-            d.filename.contains("issue-136-props-prior-function-return.svelte")
+            d.filename
+                .contains("issue-136-props-prior-function-return.svelte")
                 && (d.code.contains("TS1005")
                     || d.code.contains("TS1003")
                     || d.code.contains("TS1002")
