@@ -116,6 +116,19 @@ fn to_forward_slash(path: &Utf8Path) -> String {
 }
 
 fn relative_import_path(from_file: &Utf8Path, to: &Utf8Path) -> String {
+    // Both inputs must be workspace-relative — the function drops `Prefix`
+    // and `RootDir` components, so an accidentally absolute input would
+    // silently produce the wrong number of `..` hops and emit a broken
+    // module specifier.  Catch the violation in debug builds.
+    debug_assert!(
+        !from_file.is_absolute(),
+        "relative_import_path: `from_file` must be workspace-relative, got {from_file}"
+    );
+    debug_assert!(
+        !to.is_absolute(),
+        "relative_import_path: `to` must be workspace-relative, got {to}"
+    );
+
     let from_dir = from_file.parent().unwrap_or(Utf8Path::new(""));
     let from_components: Vec<&str> = from_dir
         .components()
@@ -1827,6 +1840,29 @@ mod tests {
     fn test_to_forward_slash_idempotent_on_unix_shape() {
         let p = Utf8PathBuf::from("src/lib/foo.ts");
         assert_eq!(to_forward_slash(&p), "src/lib/foo.ts");
+    }
+
+    #[test]
+    #[should_panic(expected = "`from_file` must be workspace-relative")]
+    fn test_relative_import_path_rejects_absolute_from() {
+        let abs = if cfg!(windows) {
+            Utf8PathBuf::from("C:\\workspace\\src\\Foo.svelte.ts")
+        } else {
+            Utf8PathBuf::from("/workspace/src/Foo.svelte.ts")
+        };
+        let _ = relative_import_path(&abs, Utf8Path::new(SHARED_HELPERS_MODULE));
+    }
+
+    #[test]
+    #[should_panic(expected = "`to` must be workspace-relative")]
+    fn test_relative_import_path_rejects_absolute_to() {
+        let rel = Utf8PathBuf::from("src/Foo.svelte.ts");
+        let abs = if cfg!(windows) {
+            Utf8PathBuf::from("C:\\workspace\\helpers")
+        } else {
+            Utf8PathBuf::from("/workspace/helpers")
+        };
+        let _ = relative_import_path(&rel, &abs);
     }
 
     #[test]
