@@ -547,6 +547,44 @@ fn test_bind_shorthand_element() {
 }
 
 #[test]
+fn test_bind_value_component_emits_expression_for_type_checking() {
+    // Regression: `bind:value={...}` on a component used to emit
+    // `value: undefined as any`, which silently dropped the user's
+    // expression type — so a mismatch like `string | null` vs the
+    // component's `string | undefined` was never flagged.  Now the
+    // bound expression flows into the prop slot so TypeScript checks
+    // assignability at the call site.
+    transform_snapshot(
+        "bind_value_component_expression",
+        r#"<script lang="ts">
+    import Combobox from './Combobox.svelte';
+    let value = $state<string | null>(null);
+</script>
+
+<Combobox bind:value={value as string | null} />"#,
+    );
+}
+
+#[test]
+fn test_bind_with_getter_setter_pair_unchanged() {
+    // The comma-form `bind:value={getter, setter}` is intentionally
+    // routed through the second-pass getter/setter handler — make sure
+    // the prop-slot emit falls back to `undefined as any` for it so
+    // the two code paths don't conflict.
+    transform_snapshot(
+        "bind_with_getter_setter_pair",
+        r#"<script lang="ts">
+    import Combobox from './Combobox.svelte';
+    let internal = $state('');
+    function getter() { return internal; }
+    function setter(v: string) { internal = v; }
+</script>
+
+<Combobox bind:value={getter(), setter} />"#,
+    );
+}
+
+#[test]
 fn test_class_shorthand_element() {
     transform_snapshot(
         "class_shorthand_element",

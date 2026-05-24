@@ -1532,19 +1532,66 @@ impl TemplateContext {
                     self.output.push_str(",\n");
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::Bind && d.name != "this" => {
-                    // For bind:name, the name starts after "bind:" (5 chars)
-                    let name_offset = match d.kind {
-                        DirectiveKind::Bind => 5, // "bind:"
-                        _ => 0,
-                    };
+                    // For bind:name, the name starts after "bind:" (5 chars).
+                    let name_offset = 5u32;
                     let name_span = Span::new(
                         d.span.start + ByteOffset::from(name_offset),
                         d.span.start + ByteOffset::from(name_offset + d.name.len() as u32),
                     );
+                    // Emit the bound expression as the prop value (instead of
+                    // `undefined as any`) so TypeScript type-checks assignability
+                    // against the component's declared prop type.  This catches
+                    // write-direction mismatches like
+                    //   `<Combobox bind:value={x as string | null} />`
+                    // when the prop expects `string | undefined`.  The second
+                    // pass below still emits the expression separately for
+                    // bind-context source mapping, but type-checking now flows
+                    // through the prop site here.
+                    //
+                    // Bind-with-comma (`bind:value={getter, setter}`) and
+                    // `bind:this` are handled in `generate_directive` and
+                    // remain as `undefined as any` here so we don't conflict
+                    // with those code paths.
+                    let bind_value = match &d.expression {
+                        Some(expr)
+                            if split_top_level_comma(&expr.expression, expr.expression_span)
+                                .is_none() =>
+                        {
+                            Some(self.track_inline_expression(
+                                &expr.expression,
+                                expr.expression_span,
+                                ExpressionContext::Binding,
+                            ))
+                        }
+                        None => {
+                            // Shorthand `bind:foo` — the value is the variable
+                            // whose name matches the prop.
+                            let value_span = name_span;
+                            Some(self.track_inline_expression(
+                                &d.name,
+                                value_span,
+                                ExpressionContext::Binding,
+                            ))
+                        }
+                        _ => None,
+                    };
                     let indent_str = self.indent_str();
                     self.output.push_str(&indent_str);
                     self.emit_prop_name_with_mapping(&d.name, name_span);
-                    self.output.push_str("undefined as any,\n");
+                    match bind_value {
+                        Some(value) => {
+                            let value_span = match &d.expression {
+                                Some(expr) => expr.expression_span,
+                                None => name_span,
+                            };
+                            self.record_mapping_at_current_pos(&value, value_span);
+                            self.output.push_str(&value);
+                            self.output.push_str(",\n");
+                        }
+                        None => {
+                            self.output.push_str("undefined as any,\n");
+                        }
+                    }
                 }
                 Attribute::Directive(_) => {
                     // Directives handled in second pass

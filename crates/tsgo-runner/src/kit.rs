@@ -293,13 +293,23 @@ fn apply_route_transforms(
                                 );
                             }
                         } else if http_methods.contains(&name.as_str()) {
-                            if let Some(func_like) = function_like_from_expr(&decl.init) {
-                                add_param_type_if_missing_fnlike(
-                                    func_like,
-                                    source,
-                                    &format!("import('./$types.js').{request_event}"),
-                                    insertions,
-                                );
+                            // If the user already annotated the outer variable
+                            // (e.g. `export const GET: RequestHandler = ...`),
+                            // leave the destructured parameter alone — adding an
+                            // inner `: RequestEvent` annotation would silently
+                            // override their explicit `RequestHandler` typing and
+                            // mask real `params.X is string | undefined` errors
+                            // that the broader `@sveltejs/kit` `RequestHandler`
+                            // intentionally surfaces.
+                            if !pat_has_type_ann(&decl.name) {
+                                if let Some(func_like) = function_like_from_expr(&decl.init) {
+                                    add_param_type_if_missing_fnlike(
+                                        func_like,
+                                        source,
+                                        &format!("import('./$types.js').{request_event}"),
+                                        insertions,
+                                    );
+                                }
                             }
                         }
                     }
@@ -401,31 +411,57 @@ fn apply_hooks_transforms(
 }
 
 fn apply_params_transforms(module: &Module, source: &str, insertions: &mut Vec<Insertion>) {
+    let mut found_match = false;
     for item in &module.body {
         if let Some(exports) = export_decl(item) {
             for export in exports {
                 match export {
                     ExportDeclKind::Fn(name, func) => {
                         if name == "match" {
-                            add_param_and_return_if_missing(
-                                func, source, "string", "boolean", insertions,
-                            );
+                            // Only constrain the `param` argument's type. Leaving the
+                            // return type untouched preserves TypeScript 5.5+ inferred
+                            // type predicates (e.g. `(p: string) => p === 'a' || p === 'b'`
+                            // is treated as `(p: string) => p is 'a' | 'b'`), which
+                            // SvelteKit's generated `MatcherParam<typeof match>` relies
+                            // on to narrow route params.  The `ParamMatcher` constraint
+                            // is enforced separately via a trailing `satisfies` check
+                            // appended below.
+                            add_param_type_if_missing(func, source, "string", insertions);
+                            found_match = true;
                         }
                     }
                     ExportDeclKind::Var(name, decl) => {
                         if name == "match" {
                             if let Some(func_like) = function_like_from_expr(&decl.init) {
-                                add_param_and_return_if_missing_fnlike(
-                                    func_like, source, "string", "boolean", insertions,
+                                add_param_type_if_missing_fnlike(
+                                    func_like, source, "string", insertions,
                                 );
                             }
+                            found_match = true;
                         }
                     }
                 }
             }
         }
     }
+
+    if found_match {
+        push_insertion(
+            insertions,
+            source.len(),
+            PARAM_MATCHER_SATISFIES.to_string(),
+        );
+    }
 }
+
+/// Appended to params files that export a `match` to enforce the
+/// `ParamMatcher` contract.  The `satisfies` operator type-checks the
+/// function shape (`(param: string) => boolean`) without widening the
+/// inferred type — so type predicates inferred from boolean expressions
+/// (TS 5.5+) survive and SvelteKit's `MatcherParam<typeof match>` can
+/// extract the narrowed param union.
+const PARAM_MATCHER_SATISFIES: &str =
+    "\n;void (match satisfies import('@sveltejs/kit').ParamMatcher);\n";
 
 enum ExportDeclKind<'a> {
     Fn(String, &'a Function),
@@ -1119,5 +1155,188 @@ mod tests {
         let mut checker = SpanChecker(source, false);
         module.visit_with(&mut checker);
         assert!(checker.1, "should have visited array literal");
+    }
+
+    // -----------------------------------------------------------------
+    // Params transform: regression coverage for inferred-type-predicate
+    // preservation.  TypeScript 5.5+ infers `(p: string) => p is "a" | "b"`
+    // from `(p: string) => p === "a" || p === "b"`.  Earlier versions of
+    // this transform forced `: boolean` onto the matcher's return type,
+    // which killed predicate inference and broke SvelteKit's
+    // `MatcherParam<typeof match>` route-param narrowing.  These tests pin
+    // the new behavior so it doesn't regress.
+    // -----------------------------------------------------------------
+
+    fn root() -> &'static Utf8Path {
+        Utf8Path::new("/project")
+    }
+
+    fn params_path() -> &'static Utf8Path {
+        Utf8Path::new("/project/src/params/slug.ts")
+    }
+
+    fn transform_params(source: &str) -> String {
+        let path = params_path();
+        let kind = kit_file_kind(path, root()).expect("kit_file_kind for params/");
+        transform_kit_source(kind, path, source)
+            .expect("transform_kit_source should return Some for params/")
+    }
+
+    #[test]
+    fn test_params_matcher_arrow_no_forced_boolean_return() {
+        let source = "export const match = (param: string) => param === 'a' || param === 'b';";
+        let out = transform_params(source);
+        assert!(
+            !out.contains(": boolean"),
+            "transform must not inject `: boolean` return type \
+             (it would defeat TS 5.5+ inferred type predicates).\n{out}"
+        );
+        // Param annotation is already present, so the user's source survives.
+        assert!(out.contains("(param: string)"), "unexpected output:\n{out}");
+    }
+
+    #[test]
+    fn test_params_matcher_arrow_param_annotated_when_missing() {
+        // Bare arrow with no param annotation — transform should add `: string`
+        // (which doesn't interfere with predicate inference) but still not the
+        // boolean return.
+        let source = "export const match = (param) => param === 'a';";
+        let out = transform_params(source);
+        assert!(
+            out.contains("(param: string)"),
+            "should inject `: string`:\n{out}"
+        );
+        assert!(
+            !out.contains(": boolean"),
+            "must not inject `: boolean`:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_params_matcher_function_decl_no_forced_boolean_return() {
+        let source = "export function match(param: string) { return param === 'a'; }";
+        let out = transform_params(source);
+        assert!(
+            !out.contains(": boolean"),
+            "function-declaration form must also skip `: boolean`:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_params_matcher_appends_satisfies_check() {
+        let source = "export const match = (param: string) => param === 'a';";
+        let out = transform_params(source);
+        // The constraint check must reference the user's `match` symbol and
+        // SvelteKit's `ParamMatcher` — that's how a wrong return type
+        // (e.g. `(p) => p` returning string) still surfaces as a TS1360.
+        assert!(
+            out.contains("match satisfies import('@sveltejs/kit').ParamMatcher"),
+            "should append ParamMatcher constraint:\n{out}"
+        );
+        // Use `void (...)` to avoid TS6133 / TS2304 on noUnusedExpressions.
+        assert!(
+            out.contains("void (match satisfies"),
+            "should wrap satisfies in `void` to suppress unused-expression diagnostics:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_params_matcher_satisfies_appended_after_function_body() {
+        // The satisfies check must come AFTER the function definition so
+        // `match` is in scope.  Earlier position would be a TS2448
+        // (block-scoped variable used before its declaration).
+        let source = "export const match = (param: string) => param === 'a';";
+        let out = transform_params(source);
+        let match_pos = out
+            .find("export const match")
+            .expect("export const match must be present");
+        let satisfies_pos = out
+            .find("match satisfies import('@sveltejs/kit').ParamMatcher")
+            .expect("satisfies check must be present");
+        assert!(
+            satisfies_pos > match_pos,
+            "satisfies check at byte {satisfies_pos} must come after match decl at byte {match_pos}:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_params_no_match_export_skips_transform() {
+        // Params file without a `match` export — nothing to constrain.
+        let source = "export const other = 1;";
+        let path = params_path();
+        let kind = kit_file_kind(path, root()).unwrap();
+        let result = transform_kit_source(kind, path, source);
+        // No insertions → returns None.
+        assert!(
+            result.is_none(),
+            "should be a no-op when there's no `match` export"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Route transform: respect explicit type annotations on HTTP method
+    // exports so the user's choice of `RequestHandler` (broad vs route-
+    // specific) is preserved.  Adding an inner `params: RequestEvent`
+    // annotation when the outer already says `RequestHandler` from
+    // `@sveltejs/kit` silently overrides the loose typing and masks
+    // legitimate `params.X is string | undefined` errors.
+    // -----------------------------------------------------------------
+
+    fn server_path() -> &'static Utf8Path {
+        Utf8Path::new("/project/src/routes/foo/+server.ts")
+    }
+
+    fn transform_server(source: &str) -> Option<String> {
+        let path = server_path();
+        let kind = kit_file_kind(path, root()).expect("kit_file_kind for +server.ts");
+        transform_kit_source(kind, path, source)
+    }
+
+    #[test]
+    fn test_http_method_skips_param_annotation_when_outer_typed() {
+        // `RequestHandler` is the broad `@sveltejs/kit` shape; the user
+        // chose it deliberately.  We must NOT inject an inner annotation
+        // that overrides it — when nothing else needs transforming the
+        // transformer returns None, which the orchestrator treats as
+        // "use the original source unchanged".
+        let source = "\
+import type { RequestHandler } from '@sveltejs/kit';
+export const GET: RequestHandler = async ({ params }) => new Response(params.foo);
+";
+        let out = transform_server(source).unwrap_or_else(|| source.to_string());
+        assert!(
+            !out.contains("import('./$types.js').RequestEvent"),
+            "must not inject RequestEvent annotation when outer is typed:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_http_method_adds_param_annotation_when_outer_untyped() {
+        // Without an outer annotation, the user gets the loose
+        // `({locals, params}: any)` shape — exactly the case where the
+        // RequestEvent annotation is legitimately useful.
+        let source = "\
+export const GET = async ({ params }) => new Response(params.foo);
+";
+        let out = transform_server(source).expect("should transform untyped GET");
+        assert!(
+            out.contains("import('./$types.js').RequestEvent"),
+            "should inject RequestEvent annotation when outer is untyped:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_http_method_fn_decl_still_annotates() {
+        // The guard is for `export const NAME = fn`.  Function declarations
+        // can't carry an outer type annotation, so the function-form code
+        // path stays unchanged.
+        let source = "\
+export async function GET({ params }) { return new Response(params.foo); }
+";
+        let out = transform_server(source).expect("should transform function decl");
+        assert!(
+            out.contains("import('./$types.js').RequestEvent"),
+            "function declaration should still get RequestEvent annotation:\n{out}"
+        );
     }
 }

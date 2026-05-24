@@ -167,7 +167,7 @@ async function __svelte_render() {
 
 // === TEMPLATE TYPE-CHECK ===
   { const __component_0 = __svelte_ensure_component(ChildTable); __component_0(__svelte_any(), {
-    selectedIds: undefined as any,
+    selectedIds: selectedIds,
   }); }
   selectedIds;
 return { props: null as any as __SvelteOptionalProps<{ selectedIds: string[] }, "selectedIds">, exports: {}, slots: {}, events: {} };
@@ -180,4 +180,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 9 ===
+=== Source Map Mappings: 10 ===
