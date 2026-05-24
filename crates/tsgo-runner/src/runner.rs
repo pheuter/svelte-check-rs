@@ -531,8 +531,8 @@ impl TsgoRunner {
         // fallback (`@sveltejs/kit/svelte-kit.js`) carries a `#!/usr/bin/env node`
         // shebang that Unix kernels honor but Windows `CreateProcess` does not
         // (rejects with "%1 is not a valid Win32 application", os error 193).
-        // Spawn JS files through `node` so the fallback works everywhere.
-        let mut command = if svelte_kit_bin.extension() == Some("js") {
+        // Spawn any JS-runtime entry (`.js`/`.mjs`/`.cjs`) through `node`.
+        let mut command = if matches!(svelte_kit_bin.extension(), Some("js" | "mjs" | "cjs")) {
             let mut c = Command::new("node");
             c.arg(svelte_kit_bin.as_std_path());
             c
@@ -614,7 +614,7 @@ impl TsgoRunner {
                     if !file_name.starts_with("hooks.") {
                         continue;
                     }
-                    if !matches!(path.extension(), Some("ts" | "js")) {
+                    if !path.extension().is_some_and(kit::is_kit_script_ext) {
                         continue;
                     }
                     files.push(path);
@@ -643,7 +643,7 @@ impl TsgoRunner {
                 if file_name.contains(".test") || file_name.contains(".spec") {
                     continue;
                 }
-                if !matches!(path.extension(), Some("ts" | "js")) {
+                if !path.extension().is_some_and(kit::is_kit_script_ext) {
                     continue;
                 }
                 files.push(path.to_owned());
@@ -1923,7 +1923,7 @@ fn route_signature_kind(path: &Utf8Path) -> Option<RouteSignatureKind> {
             "+page" | "+layout" | "+error" => Some(RouteSignatureKind::Svelte),
             _ => None,
         },
-        "ts" | "js" => match base {
+        ext if kit::is_kit_script_ext(ext) => match base {
             "+page" | "+layout" | "+page.server" | "+layout.server" | "+server" => {
                 Some(RouteSignatureKind::Script)
             }
@@ -2193,6 +2193,34 @@ mod tests {
             pattern.ends_with("src/**/*.ts"),
             "pattern lost '/' separators: got {pattern}"
         );
+    }
+
+    #[test]
+    fn test_compute_sveltekit_sync_manifest_picks_up_mjs_and_cjs_hooks() {
+        // Edits to `.mjs`/`.cjs`/`.mts`/`.cts` hooks files must dirty the
+        // manifest so `svelte-kit sync` is re-invoked.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let project_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let src = project_root.join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+
+        let variants = ["hooks.server.mjs", "hooks.server.cjs", "hooks.mts"];
+        for name in variants {
+            std::fs::write(src.join(name), b"export const handle = () => {};\n").expect("hook");
+        }
+
+        let manifest =
+            TsgoRunner::compute_sveltekit_sync_manifest(&project_root).expect("manifest");
+
+        for name in variants {
+            let key = format!("src/{name}");
+            assert!(
+                manifest.files.contains_key(&key),
+                "expected manifest to track {key}, got keys: {:?}",
+                manifest.files.keys().collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
