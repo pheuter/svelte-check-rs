@@ -92,10 +92,26 @@ fn ensure_relative_path(path: &Utf8Path) -> Utf8PathBuf {
 fn virtual_path_for(file_path: &Utf8Path, workspace: &Utf8Path, suffix_ts: bool) -> Utf8PathBuf {
     let relative = file_path.strip_prefix(workspace).unwrap_or(file_path);
     let relative = ensure_relative_path(relative);
+    // Use '/' so HashMap keys are stable across platforms — the lookup side
+    // (`strip_cache_prefix` in tsgo-runner) always normalizes to forward
+    // slashes, so a `\`-keyed map would always miss on Windows.
+    let mut key = to_forward_slash(&relative);
     if suffix_ts {
-        Utf8PathBuf::from(format!("{}.ts", relative))
+        key.push_str(".ts");
+    }
+    Utf8PathBuf::from(key)
+}
+
+fn to_forward_slash(path: &Utf8Path) -> String {
+    // Normalize unconditionally — the same logic runs on Unix and Windows so
+    // unit tests behave identically across platforms.  In practice, the only
+    // inputs come from `WalkDir`/`strip_prefix` results, so a legitimate `\`
+    // in a Unix filename never reaches this code path.
+    let s = path.as_str();
+    if s.contains('\\') {
+        s.replace('\\', "/")
     } else {
-        relative
+        s.to_string()
     }
 }
 
@@ -194,12 +210,16 @@ fn normalize_tsconfig_pattern(pattern: &str) -> String {
 }
 
 fn is_ignored_dir(ignore_set: &globset::GlobSet, relative: &Utf8Path) -> bool {
-    let rel = relative.as_str();
-    if ignore_set.is_match(rel) {
+    // globset patterns use '/' as the segment separator regardless of OS.
+    // `relative` comes from `WalkDir` and carries native separators on
+    // Windows, so a pattern like `src/excluded/**` (normalized from the
+    // user's tsconfig) would fail to match `src\excluded\foo` without this.
+    let rel = to_forward_slash(relative);
+    if ignore_set.is_match(&rel) {
         return true;
     }
     let mut rel_slash = String::with_capacity(rel.len() + 1);
-    rel_slash.push_str(rel);
+    rel_slash.push_str(&rel);
     rel_slash.push('/');
     ignore_set.is_match(&rel_slash)
 }
@@ -383,7 +403,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         })
         .filter(|p| {
             let relative = p.strip_prefix(&workspace).unwrap_or(p);
-            !ignore_set.is_match(relative.as_str())
+            !ignore_set.is_match(to_forward_slash(relative).as_str())
         })
         .collect();
     let file_scan_time = if timings_enabled {
@@ -1759,6 +1779,54 @@ mod tests {
         let virtual_path = Utf8PathBuf::from("src/ui/useFoo.svelte.ts");
         let path = helpers_import_path_for(&virtual_path, true);
         assert_eq!(path, "../../__svelte_check_rs_helpers.js");
+    }
+
+    #[test]
+    fn test_virtual_path_for_uses_forward_slashes() {
+        // The parser-side back-mapping (`strip_cache_prefix` in tsgo-runner)
+        // always normalizes to '/'; the insertion key must match or the
+        // HashMap fast-path always misses on Windows.
+        let workspace = Utf8PathBuf::from("/workspace");
+        let file = workspace.join("src/lib/Component.svelte");
+        let key = virtual_path_for(&file, &workspace, true);
+        assert_eq!(key.as_str(), "src/lib/Component.svelte.ts");
+        assert!(!key.as_str().contains('\\'));
+    }
+
+    #[test]
+    fn test_virtual_path_for_module_no_ts_suffix() {
+        let workspace = Utf8PathBuf::from("/workspace");
+        let file = workspace.join("src/lib/Foo.svelte.ts");
+        let key = virtual_path_for(&file, &workspace, false);
+        assert_eq!(key.as_str(), "src/lib/Foo.svelte.ts");
+    }
+
+    #[test]
+    fn test_is_ignored_dir_matches_native_separator_input() {
+        // Simulate the Windows case: globset patterns use '/' but WalkDir
+        // hands native-separator paths.  Build a pattern set that should
+        // match `src/excluded/...` and pass a backslash-bearing relative
+        // path through is_ignored_dir.
+        let mut builder = globset::GlobSetBuilder::new();
+        builder.add(globset::Glob::new("src/excluded/**").expect("glob"));
+        let set = builder.build().expect("globset");
+
+        // Forward-slash input always matched; the new code must also match
+        // the backslash form that WalkDir produces on Windows.
+        let backslash_path = Utf8PathBuf::from("src\\excluded\\nested");
+        assert!(
+            is_ignored_dir(&set, &backslash_path),
+            "globset must match backslash-bearing input after normalization"
+        );
+
+        let forward_path = Utf8PathBuf::from("src/excluded/nested");
+        assert!(is_ignored_dir(&set, &forward_path));
+    }
+
+    #[test]
+    fn test_to_forward_slash_idempotent_on_unix_shape() {
+        let p = Utf8PathBuf::from("src/lib/foo.ts");
+        assert_eq!(to_forward_slash(&p), "src/lib/foo.ts");
     }
 
     #[test]

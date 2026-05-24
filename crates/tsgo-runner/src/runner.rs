@@ -571,7 +571,10 @@ impl TsgoRunner {
         let mut files = BTreeMap::new();
 
         for path in Self::collect_sveltekit_sync_files(project_root) {
-            let rel = path.strip_prefix(project_root).unwrap_or(&path).to_string();
+            // Force '/' so a workspace shared across OSes (Docker volume,
+            // network share, dual-boot) produces stable keys and the
+            // manifest-skip optimization actually fires.
+            let rel = to_forward_slash(path.strip_prefix(project_root).unwrap_or(&path));
             let stamp = file_hash(&path)?;
             files.insert(rel, stamp);
         }
@@ -890,8 +893,8 @@ impl TsgoRunner {
                     .map(|dir| resolve_path_value(base, dir)),
             );
         }
-        let project_root = clean_path(&self.project_root).to_string();
-        let temp_root = clean_path(options.temp_root).to_string();
+        let project_root = to_forward_slash(&clean_path(&self.project_root));
+        let temp_root = to_forward_slash(&clean_path(options.temp_root));
         root_dirs.retain(|dir| dir != &project_root && dir != &temp_root);
         let mut ordered_root_dirs = Vec::new();
         // Prefer cached files over project sources when both exist.
@@ -902,7 +905,7 @@ impl TsgoRunner {
         if let Some(kit_path) = options.kit_include {
             let types_dir = kit_path.join("types");
             if types_dir.exists() {
-                root_dirs.push(types_dir.to_string());
+                root_dirs.push(to_forward_slash(&types_dir));
             }
         }
 
@@ -912,7 +915,7 @@ impl TsgoRunner {
             .map(|path| clean_path(path) != project_kit_root)
             .unwrap_or(false);
         if use_cached_kit {
-            let project_types = project_kit_root.join("types").to_string();
+            let project_types = to_forward_slash(&project_kit_root.join("types"));
             root_dirs.retain(|dir| dir != &project_types);
         }
         let mut seen = HashSet::new();
@@ -949,7 +952,8 @@ impl TsgoRunner {
                     let resolved = resolve_path_value(fallback_base, &value);
                     if let Ok(relative) = Utf8Path::new(&resolved).strip_prefix(&self.project_root)
                     {
-                        let cached = clean_path(&options.temp_root.join(relative)).to_string();
+                        let cached =
+                            to_forward_slash(&clean_path(&options.temp_root.join(relative)));
                         if seen.insert(cached.clone()) {
                             resolved_values.push(Value::String(cached));
                         }
@@ -964,7 +968,10 @@ impl TsgoRunner {
         }
 
         if let Some(resolved) = resolved_base {
-            compiler_options.insert("baseUrl".to_string(), Value::String(resolved.to_string()));
+            compiler_options.insert(
+                "baseUrl".to_string(),
+                Value::String(to_forward_slash(&resolved)),
+            );
         }
 
         let mut includes: Vec<String> = Vec::new();
@@ -995,17 +1002,18 @@ impl TsgoRunner {
             }
         }
 
-        includes.push(format!("{}/src/**/*.ts", options.temp_root));
-        includes.push(format!("{}/src/**/*.d.ts", options.temp_root));
+        let temp_root_slashed = to_forward_slash(options.temp_root);
+        includes.push(format!("{}/src/**/*.ts", temp_root_slashed));
+        includes.push(format!("{}/src/**/*.d.ts", temp_root_slashed));
 
         if let Some(kit_path) = options.kit_include {
-            includes.push(kit_path.join("ambient.d.ts").to_string());
-            includes.push(kit_path.join("non-ambient.d.ts").to_string());
-            includes.push(kit_path.join("types/**/$types.d.ts").to_string());
+            includes.push(to_forward_slash(&kit_path.join("ambient.d.ts")));
+            includes.push(to_forward_slash(&kit_path.join("non-ambient.d.ts")));
+            includes.push(to_forward_slash(&kit_path.join("types/**/$types.d.ts")));
         }
 
         if use_cached_kit {
-            let kit_prefix = project_kit_root.to_string();
+            let kit_prefix = to_forward_slash(&project_kit_root);
             includes.retain(|path| !path.starts_with(&kit_prefix));
         }
 
@@ -1022,21 +1030,21 @@ impl TsgoRunner {
             .unwrap_or_default();
 
         if use_cached_kit {
-            let kit_prefix = project_kit_root.to_string();
+            let kit_prefix = to_forward_slash(&project_kit_root);
             excludes.retain(|path| !path.starts_with(&kit_prefix));
         }
 
-        let clean_project_root = clean_path(&self.project_root);
+        let clean_project_root = to_forward_slash(&clean_path(&self.project_root));
         excludes.push(format!("{}/**/*.svelte.ts", clean_project_root));
         excludes.push(format!("{}/**/*.svelte.js", clean_project_root));
         for source in options.patched_sources {
-            excludes.push(clean_path(source).to_string());
+            excludes.push(to_forward_slash(&clean_path(source)));
         }
 
         let mut root = Map::new();
         root.insert(
             "extends".to_string(),
-            Value::String(options.tsconfig_path.to_string()),
+            Value::String(to_forward_slash(options.tsconfig_path)),
         );
         root.insert(
             "compilerOptions".to_string(),
@@ -1062,7 +1070,7 @@ impl TsgoRunner {
                 Value::Array(
                     extra_files
                         .into_iter()
-                        .map(|path| Value::String(path.to_string()))
+                        .map(|path| Value::String(to_forward_slash(path)))
                         .collect(),
                 ),
             );
@@ -1258,7 +1266,7 @@ impl TsgoRunner {
         let tsbuildinfo_path = cache_root.join("tsgo.tsbuildinfo");
         tsconfig_overrides.insert(
             "tsBuildInfoFile".to_string(),
-            Value::String(tsbuildinfo_path.to_string()),
+            Value::String(to_forward_slash(&tsbuildinfo_path)),
         );
 
         // Verify tsgo exists
@@ -1473,6 +1481,21 @@ fn read_tsconfig_value(path: &Utf8Path) -> Option<Value> {
     serde_json::from_str(&contents).ok()
 }
 
+/// Returns the path's string form with `\` rewritten to `/`.
+///
+/// tsconfig globs (`include`/`exclude`/`files`/`extends`/`rootDirs`) and any
+/// pattern emitted into JSON must use `/` regardless of host OS — TypeScript's
+/// minimatch-style matcher treats `\` as an escape character, so a Windows
+/// path like `C:\proj/**/*.svelte.ts` won't match anything.
+fn to_forward_slash(path: &Utf8Path) -> String {
+    let s = path.as_str();
+    if s.contains('\\') {
+        s.replace('\\', "/")
+    } else {
+        s.to_string()
+    }
+}
+
 fn clean_path(path: &Utf8Path) -> Utf8PathBuf {
     let mut prefix: Option<String> = None;
     let mut root: Option<String> = None;
@@ -1520,11 +1543,12 @@ fn clean_path(path: &Utf8Path) -> Utf8PathBuf {
 fn absolutize_pattern(base_dir: &Utf8Path, pattern: &str) -> String {
     let pattern = pattern.trim();
     let path = Utf8Path::new(pattern);
-    if path.is_absolute() {
-        clean_path(path).to_string()
+    let cleaned = if path.is_absolute() {
+        clean_path(path)
     } else {
-        clean_path(&base_dir.join(path)).to_string()
-    }
+        clean_path(&base_dir.join(path))
+    };
+    to_forward_slash(&cleaned)
 }
 
 fn resolve_base_url(base_dir: &Utf8Path, base_url: &str) -> Utf8PathBuf {
@@ -1538,11 +1562,12 @@ fn resolve_base_url(base_dir: &Utf8Path, base_url: &str) -> Utf8PathBuf {
 
 fn resolve_path_value(base_dir: &Utf8Path, value: &str) -> String {
     let path = Utf8Path::new(value);
-    if path.is_absolute() {
-        clean_path(path).to_string()
+    let cleaned = if path.is_absolute() {
+        clean_path(path)
     } else {
-        clean_path(&base_dir.join(path)).to_string()
-    }
+        clean_path(&base_dir.join(path))
+    };
+    to_forward_slash(&cleaned)
 }
 
 fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<bool, TsgoError> {
@@ -2146,6 +2171,57 @@ mod tests {
         let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
         assert_eq!(resolved, js_path);
         assert_eq!(resolved.extension(), Some("js"));
+    }
+
+    #[test]
+    fn test_to_forward_slash_is_no_op_for_forward_slash_input() {
+        let p = Utf8Path::new("src/lib/foo.ts");
+        assert_eq!(to_forward_slash(p), "src/lib/foo.ts");
+    }
+
+    #[test]
+    fn test_absolutize_pattern_uses_forward_slashes() {
+        // tsconfig glob matchers treat '\' as escape characters, so emitted
+        // patterns must use '/' regardless of host OS.
+        let base = Utf8Path::new("/projects/site");
+        let pattern = absolutize_pattern(base, "src/**/*.ts");
+        assert!(
+            !pattern.contains('\\'),
+            "absolutize_pattern must not emit '\\': got {pattern}"
+        );
+        assert!(
+            pattern.ends_with("src/**/*.ts"),
+            "pattern lost '/' separators: got {pattern}"
+        );
+    }
+
+    #[test]
+    fn test_compute_sveltekit_sync_manifest_keys_are_forward_slash() {
+        // Manifest keys must be platform-stable so a workspace shared across
+        // OSes (Docker volume, dual boot, multi-runner CI) hits the
+        // sync-skip optimization.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let project_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        let svelte_config = project_root.join("svelte.config.js");
+        std::fs::write(&svelte_config, b"export default {};\n").expect("svelte config");
+
+        let hooks = project_root.join("src/hooks.server.ts");
+        std::fs::create_dir_all(hooks.parent().unwrap()).expect("hooks dir");
+        std::fs::write(&hooks, b"export const handle = () => {};\n").expect("hooks file");
+
+        let manifest =
+            TsgoRunner::compute_sveltekit_sync_manifest(&project_root).expect("manifest");
+
+        for key in manifest.files.keys() {
+            assert!(
+                !key.contains('\\'),
+                "manifest key must use '/' separators only: {key}"
+            );
+        }
+        assert!(manifest.files.contains_key("src/hooks.server.ts"));
+        assert!(manifest.files.contains_key("svelte.config.js"));
     }
 
     #[test]
