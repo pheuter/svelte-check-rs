@@ -387,7 +387,18 @@ impl TsgoRunner {
     }
 
     /// Resolves tsgo from node_modules/.bin by walking up from the workspace root.
+    ///
+    /// On Windows, `Command::new` cannot execute the extensionless Unix shell
+    /// shim that npm/pnpm/yarn install alongside `.cmd`/`.exe`; CreateProcess
+    /// rejects it with `%1 is not a valid Win32 application` (os error 193).
+    /// Probe only platform-executable extensions on Windows.
     pub fn resolve_tsgo(workspace_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        const SHIM_CANDIDATES: &[&str] = if cfg!(windows) {
+            &["tsgo.exe", "tsgo.cmd", "tsgo.bat"]
+        } else {
+            &["tsgo"]
+        };
+
         let mut current = Some(workspace_root);
         let mut saw_node_modules = false;
 
@@ -396,9 +407,9 @@ impl TsgoRunner {
             if node_modules.is_dir() {
                 saw_node_modules = true;
                 let bin_dir = node_modules.join(".bin");
-                for name in ["tsgo", "tsgo.cmd", "tsgo.exe"] {
+                for name in SHIM_CANDIDATES {
                     let tsgo_path = bin_dir.join(name);
-                    if tsgo_path.exists() {
+                    if tsgo_path.is_file() {
                         return Ok(tsgo_path);
                     }
                 }
@@ -516,8 +527,20 @@ impl TsgoRunner {
         // Find svelte-kit binary in node_modules
         let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
 
-        // Run svelte-kit sync
-        let output = Command::new(&svelte_kit_bin)
+        // The `.bin/` shim is directly executable on every platform. The package
+        // fallback (`@sveltejs/kit/svelte-kit.js`) carries a `#!/usr/bin/env node`
+        // shebang that Unix kernels honor but Windows `CreateProcess` does not
+        // (rejects with "%1 is not a valid Win32 application", os error 193).
+        // Spawn any JS-runtime entry (`.js`/`.mjs`/`.cjs`) through `node`.
+        let mut command = if matches!(svelte_kit_bin.extension(), Some("js" | "mjs" | "cjs")) {
+            let mut c = Command::new("node");
+            c.arg(svelte_kit_bin.as_std_path());
+            c
+        } else {
+            Command::new(svelte_kit_bin.as_std_path())
+        };
+
+        let output = command
             .arg("sync")
             .current_dir(project_root)
             .stdout(Stdio::piped())
@@ -548,7 +571,10 @@ impl TsgoRunner {
         let mut files = BTreeMap::new();
 
         for path in Self::collect_sveltekit_sync_files(project_root) {
-            let rel = path.strip_prefix(project_root).unwrap_or(&path).to_string();
+            // Force '/' so a workspace shared across OSes (Docker volume,
+            // network share, dual-boot) produces stable keys and the
+            // manifest-skip optimization actually fires.
+            let rel = to_forward_slash(path.strip_prefix(project_root).unwrap_or(&path));
             let stamp = file_hash(&path)?;
             files.insert(rel, stamp);
         }
@@ -588,7 +614,7 @@ impl TsgoRunner {
                     if !file_name.starts_with("hooks.") {
                         continue;
                     }
-                    if !matches!(path.extension(), Some("ts" | "js")) {
+                    if !path.extension().is_some_and(kit::is_kit_script_ext) {
                         continue;
                     }
                     files.push(path);
@@ -617,7 +643,7 @@ impl TsgoRunner {
                 if file_name.contains(".test") || file_name.contains(".spec") {
                     continue;
                 }
-                if !matches!(path.extension(), Some("ts" | "js")) {
+                if !path.extension().is_some_and(kit::is_kit_script_ext) {
                     continue;
                 }
                 files.push(path.to_owned());
@@ -667,19 +693,39 @@ impl TsgoRunner {
 
     /// Finds the svelte-kit binary by searching node_modules/.bin up the directory tree.
     /// This handles monorepo setups where dependencies may be hoisted to a parent directory.
+    ///
+    /// On Windows, package managers create `.cmd`/`.exe` shims (e.g. Bun emits
+    /// `svelte-kit.exe`); the bare `svelte-kit` shim only exists on Unix. Probe
+    /// each candidate name in turn so we pick the shim the current platform can
+    /// actually execute before falling back to the package's `.js` entry point.
     pub fn find_sveltekit_binary(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        // Windows lists extension-bearing shims only. The extensionless
+        // `svelte-kit` script that npm/pnpm/yarn co-install is a Unix shell
+        // script — picking it would reproduce the same os-error-193 the
+        // platform-specific probes are meant to avoid. If no shim is
+        // executable on this platform, fall through to the package's `.js`
+        // entry point and spawn it via `node`.
+        const SHIM_CANDIDATES: &[&str] = if cfg!(windows) {
+            &["svelte-kit.exe", "svelte-kit.cmd", "svelte-kit.bat"]
+        } else {
+            &["svelte-kit"]
+        };
+
         let mut current = Some(project_root);
 
         while let Some(dir) = current {
-            // Try node_modules/.bin/svelte-kit
-            let bin_path = dir.join("node_modules/.bin/svelte-kit");
-            if bin_path.exists() {
-                return Ok(bin_path);
+            // Try node_modules/.bin/svelte-kit (platform-appropriate shim)
+            let bin_dir = dir.join("node_modules/.bin");
+            for name in SHIM_CANDIDATES {
+                let bin_path = bin_dir.join(name);
+                if bin_path.is_file() {
+                    return Ok(bin_path);
+                }
             }
 
             // Try the package's bin directly
             let pkg_bin = dir.join("node_modules/@sveltejs/kit/svelte-kit.js");
-            if pkg_bin.exists() {
+            if pkg_bin.is_file() {
                 return Ok(pkg_bin);
             }
 
@@ -847,8 +893,8 @@ impl TsgoRunner {
                     .map(|dir| resolve_path_value(base, dir)),
             );
         }
-        let project_root = clean_path(&self.project_root).to_string();
-        let temp_root = clean_path(options.temp_root).to_string();
+        let project_root = to_forward_slash(&clean_path(&self.project_root));
+        let temp_root = to_forward_slash(&clean_path(options.temp_root));
         root_dirs.retain(|dir| dir != &project_root && dir != &temp_root);
         let mut ordered_root_dirs = Vec::new();
         // Prefer cached files over project sources when both exist.
@@ -859,7 +905,7 @@ impl TsgoRunner {
         if let Some(kit_path) = options.kit_include {
             let types_dir = kit_path.join("types");
             if types_dir.exists() {
-                root_dirs.push(types_dir.to_string());
+                root_dirs.push(to_forward_slash(&types_dir));
             }
         }
 
@@ -869,7 +915,7 @@ impl TsgoRunner {
             .map(|path| clean_path(path) != project_kit_root)
             .unwrap_or(false);
         if use_cached_kit {
-            let project_types = project_kit_root.join("types").to_string();
+            let project_types = to_forward_slash(&project_kit_root.join("types"));
             root_dirs.retain(|dir| dir != &project_types);
         }
         let mut seen = HashSet::new();
@@ -906,7 +952,8 @@ impl TsgoRunner {
                     let resolved = resolve_path_value(fallback_base, &value);
                     if let Ok(relative) = Utf8Path::new(&resolved).strip_prefix(&self.project_root)
                     {
-                        let cached = clean_path(&options.temp_root.join(relative)).to_string();
+                        let cached =
+                            to_forward_slash(&clean_path(&options.temp_root.join(relative)));
                         if seen.insert(cached.clone()) {
                             resolved_values.push(Value::String(cached));
                         }
@@ -921,7 +968,10 @@ impl TsgoRunner {
         }
 
         if let Some(resolved) = resolved_base {
-            compiler_options.insert("baseUrl".to_string(), Value::String(resolved.to_string()));
+            compiler_options.insert(
+                "baseUrl".to_string(),
+                Value::String(to_forward_slash(&resolved)),
+            );
         }
 
         let mut includes: Vec<String> = Vec::new();
@@ -952,17 +1002,18 @@ impl TsgoRunner {
             }
         }
 
-        includes.push(format!("{}/src/**/*.ts", options.temp_root));
-        includes.push(format!("{}/src/**/*.d.ts", options.temp_root));
+        let temp_root_slashed = to_forward_slash(options.temp_root);
+        includes.push(format!("{}/src/**/*.ts", temp_root_slashed));
+        includes.push(format!("{}/src/**/*.d.ts", temp_root_slashed));
 
         if let Some(kit_path) = options.kit_include {
-            includes.push(kit_path.join("ambient.d.ts").to_string());
-            includes.push(kit_path.join("non-ambient.d.ts").to_string());
-            includes.push(kit_path.join("types/**/$types.d.ts").to_string());
+            includes.push(to_forward_slash(&kit_path.join("ambient.d.ts")));
+            includes.push(to_forward_slash(&kit_path.join("non-ambient.d.ts")));
+            includes.push(to_forward_slash(&kit_path.join("types/**/$types.d.ts")));
         }
 
         if use_cached_kit {
-            let kit_prefix = project_kit_root.to_string();
+            let kit_prefix = to_forward_slash(&project_kit_root);
             includes.retain(|path| !path.starts_with(&kit_prefix));
         }
 
@@ -979,21 +1030,21 @@ impl TsgoRunner {
             .unwrap_or_default();
 
         if use_cached_kit {
-            let kit_prefix = project_kit_root.to_string();
+            let kit_prefix = to_forward_slash(&project_kit_root);
             excludes.retain(|path| !path.starts_with(&kit_prefix));
         }
 
-        let clean_project_root = clean_path(&self.project_root);
+        let clean_project_root = to_forward_slash(&clean_path(&self.project_root));
         excludes.push(format!("{}/**/*.svelte.ts", clean_project_root));
         excludes.push(format!("{}/**/*.svelte.js", clean_project_root));
         for source in options.patched_sources {
-            excludes.push(clean_path(source).to_string());
+            excludes.push(to_forward_slash(&clean_path(source)));
         }
 
         let mut root = Map::new();
         root.insert(
             "extends".to_string(),
-            Value::String(options.tsconfig_path.to_string()),
+            Value::String(to_forward_slash(options.tsconfig_path)),
         );
         root.insert(
             "compilerOptions".to_string(),
@@ -1019,7 +1070,7 @@ impl TsgoRunner {
                 Value::Array(
                     extra_files
                         .into_iter()
-                        .map(|path| Value::String(path.to_string()))
+                        .map(|path| Value::String(to_forward_slash(path)))
                         .collect(),
                 ),
             );
@@ -1215,7 +1266,7 @@ impl TsgoRunner {
         let tsbuildinfo_path = cache_root.join("tsgo.tsbuildinfo");
         tsconfig_overrides.insert(
             "tsBuildInfoFile".to_string(),
-            Value::String(tsbuildinfo_path.to_string()),
+            Value::String(to_forward_slash(&tsbuildinfo_path)),
         );
 
         // Verify tsgo exists
@@ -1430,6 +1481,21 @@ fn read_tsconfig_value(path: &Utf8Path) -> Option<Value> {
     serde_json::from_str(&contents).ok()
 }
 
+/// Returns the path's string form with `\` rewritten to `/`.
+///
+/// tsconfig globs (`include`/`exclude`/`files`/`extends`/`rootDirs`) and any
+/// pattern emitted into JSON must use `/` regardless of host OS — TypeScript's
+/// minimatch-style matcher treats `\` as an escape character, so a Windows
+/// path like `C:\proj/**/*.svelte.ts` won't match anything.
+fn to_forward_slash(path: &Utf8Path) -> String {
+    let s = path.as_str();
+    if s.contains('\\') {
+        s.replace('\\', "/")
+    } else {
+        s.to_string()
+    }
+}
+
 fn clean_path(path: &Utf8Path) -> Utf8PathBuf {
     let mut prefix: Option<String> = None;
     let mut root: Option<String> = None;
@@ -1477,11 +1543,12 @@ fn clean_path(path: &Utf8Path) -> Utf8PathBuf {
 fn absolutize_pattern(base_dir: &Utf8Path, pattern: &str) -> String {
     let pattern = pattern.trim();
     let path = Utf8Path::new(pattern);
-    if path.is_absolute() {
-        clean_path(path).to_string()
+    let cleaned = if path.is_absolute() {
+        clean_path(path)
     } else {
-        clean_path(&base_dir.join(path)).to_string()
-    }
+        clean_path(&base_dir.join(path))
+    };
+    to_forward_slash(&cleaned)
 }
 
 fn resolve_base_url(base_dir: &Utf8Path, base_url: &str) -> Utf8PathBuf {
@@ -1495,11 +1562,12 @@ fn resolve_base_url(base_dir: &Utf8Path, base_url: &str) -> Utf8PathBuf {
 
 fn resolve_path_value(base_dir: &Utf8Path, value: &str) -> String {
     let path = Utf8Path::new(value);
-    if path.is_absolute() {
-        clean_path(path).to_string()
+    let cleaned = if path.is_absolute() {
+        clean_path(path)
     } else {
-        clean_path(&base_dir.join(path)).to_string()
-    }
+        clean_path(&base_dir.join(path))
+    };
+    to_forward_slash(&cleaned)
 }
 
 fn write_if_changed(path: &Utf8Path, contents: &[u8], context: &str) -> Result<bool, TsgoError> {
@@ -1855,7 +1923,7 @@ fn route_signature_kind(path: &Utf8Path) -> Option<RouteSignatureKind> {
             "+page" | "+layout" | "+error" => Some(RouteSignatureKind::Svelte),
             _ => None,
         },
-        "ts" | "js" => match base {
+        ext if kit::is_kit_script_ext(ext) => match base {
             "+page" | "+layout" | "+page.server" | "+layout.server" | "+server" => {
                 Some(RouteSignatureKind::Script)
             }
@@ -1956,6 +2024,232 @@ mod tests {
         assert!(files
             .find_by_original(Utf8Path::new("src/App.svelte"))
             .is_some());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_find_sveltekit_binary_prefers_windows_shim() {
+        // On Windows, package managers emit `.exe`/`.cmd`/`.bat` shims
+        // alongside the extensionless Unix shell script `svelte-kit`. The
+        // extensionless one can't be spawned by CreateProcess (rejects with
+        // "%1 is not a valid Win32 application", os error 193), so it must
+        // not be selected even though it `.exists()`.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+
+        // Lay down both the bare shim and the .exe — the .exe must win.
+        std::fs::write(bin_dir.join("svelte-kit"), b"#!/bin/sh\n").expect("write bare");
+        let exe_shim = bin_dir.join("svelte-kit.exe");
+        std::fs::write(&exe_shim, b"\0").expect("write exe");
+
+        // Also place the .js fallback so we can confirm a real shim wins.
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        std::fs::write(pkg_dir.join("svelte-kit.js"), b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, exe_shim);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_find_sveltekit_binary_skips_bare_unix_shim_falls_back_to_js() {
+        // When only the extensionless Unix shim exists on Windows, fall through
+        // to the package's `.js` entry rather than returning an unrunnable path.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        std::fs::write(bin_dir.join("svelte-kit"), b"#!/bin/sh\n").expect("write bare");
+
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        let js_path = pkg_dir.join("svelte-kit.js");
+        std::fs::write(&js_path, b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, js_path);
+    }
+
+    #[test]
+    fn test_find_sveltekit_binary_ignores_directories_with_shim_names() {
+        // Discovery must use `is_file()`, not `exists()`. A directory that
+        // happens to match a candidate name (test fixture, stray mkdir,
+        // tarball-extraction artifact) should not be returned as a binary.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        // Create a directory at every candidate name to fool a naive .exists() probe.
+        for name in [
+            "svelte-kit",
+            "svelte-kit.exe",
+            "svelte-kit.cmd",
+            "svelte-kit.bat",
+        ] {
+            std::fs::create_dir_all(bin_dir.join(name)).expect("decoy dir");
+        }
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        let js_path = pkg_dir.join("svelte-kit.js");
+        std::fs::write(&js_path, b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, js_path);
+    }
+
+    #[test]
+    fn test_resolve_tsgo_finds_platform_shim() {
+        // Cross-platform smoke test: the platform-appropriate shim must be
+        // discovered when present in `node_modules/.bin/`.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+
+        let shim_name = if cfg!(windows) { "tsgo.exe" } else { "tsgo" };
+        let shim = bin_dir.join(shim_name);
+        std::fs::write(&shim, b"\0").expect("write shim");
+
+        let resolved = TsgoRunner::resolve_tsgo(&temp_root).expect("resolve tsgo");
+        assert_eq!(resolved, shim);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_resolve_tsgo_skips_bare_unix_shim() {
+        // On Windows the extensionless `tsgo` shell script must not be picked
+        // even though npm/pnpm/yarn co-install it; CreateProcess can't spawn
+        // it and the user sees os error 193.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        std::fs::write(bin_dir.join("tsgo"), b"#!/bin/sh\n").expect("write bare");
+        let cmd = bin_dir.join("tsgo.cmd");
+        std::fs::write(&cmd, b"@echo off\n").expect("write cmd");
+
+        let resolved = TsgoRunner::resolve_tsgo(&temp_root).expect("resolve tsgo");
+        assert_eq!(resolved, cmd);
+    }
+
+    #[test]
+    fn test_resolve_tsgo_ignores_directory_with_shim_name() {
+        // Directories named like shims must not be returned (is_file vs exists).
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        let shim_name = if cfg!(windows) { "tsgo.exe" } else { "tsgo" };
+        std::fs::create_dir_all(bin_dir.join(shim_name)).expect("decoy dir");
+
+        let err = TsgoRunner::resolve_tsgo(&temp_root).expect_err("should not resolve a directory");
+        assert!(
+            matches!(err, TsgoError::TsgoNotInstalled(_)),
+            "expected TsgoNotInstalled, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_sveltekit_binary_falls_back_to_package_js() {
+        // When no shim exists in `.bin/`, we still want to discover the
+        // package's `.js` entry so the caller can invoke it via `node`.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        let js_path = pkg_dir.join("svelte-kit.js");
+        std::fs::write(&js_path, b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, js_path);
+        assert_eq!(resolved.extension(), Some("js"));
+    }
+
+    #[test]
+    fn test_to_forward_slash_is_no_op_for_forward_slash_input() {
+        let p = Utf8Path::new("src/lib/foo.ts");
+        assert_eq!(to_forward_slash(p), "src/lib/foo.ts");
+    }
+
+    #[test]
+    fn test_absolutize_pattern_uses_forward_slashes() {
+        // tsconfig glob matchers treat '\' as escape characters, so emitted
+        // patterns must use '/' regardless of host OS.
+        let base = Utf8Path::new("/projects/site");
+        let pattern = absolutize_pattern(base, "src/**/*.ts");
+        assert!(
+            !pattern.contains('\\'),
+            "absolutize_pattern must not emit '\\': got {pattern}"
+        );
+        assert!(
+            pattern.ends_with("src/**/*.ts"),
+            "pattern lost '/' separators: got {pattern}"
+        );
+    }
+
+    #[test]
+    fn test_compute_sveltekit_sync_manifest_picks_up_mjs_and_cjs_hooks() {
+        // Edits to `.mjs`/`.cjs`/`.mts`/`.cts` hooks files must dirty the
+        // manifest so `svelte-kit sync` is re-invoked.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let project_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let src = project_root.join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+
+        let variants = ["hooks.server.mjs", "hooks.server.cjs", "hooks.mts"];
+        for name in variants {
+            std::fs::write(src.join(name), b"export const handle = () => {};\n").expect("hook");
+        }
+
+        let manifest =
+            TsgoRunner::compute_sveltekit_sync_manifest(&project_root).expect("manifest");
+
+        for name in variants {
+            let key = format!("src/{name}");
+            assert!(
+                manifest.files.contains_key(&key),
+                "expected manifest to track {key}, got keys: {:?}",
+                manifest.files.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn test_compute_sveltekit_sync_manifest_keys_are_forward_slash() {
+        // Manifest keys must be platform-stable so a workspace shared across
+        // OSes (Docker volume, dual boot, multi-runner CI) hits the
+        // sync-skip optimization.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let project_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        let svelte_config = project_root.join("svelte.config.js");
+        std::fs::write(&svelte_config, b"export default {};\n").expect("svelte config");
+
+        let hooks = project_root.join("src/hooks.server.ts");
+        std::fs::create_dir_all(hooks.parent().unwrap()).expect("hooks dir");
+        std::fs::write(&hooks, b"export const handle = () => {};\n").expect("hooks file");
+
+        let manifest =
+            TsgoRunner::compute_sveltekit_sync_manifest(&project_root).expect("manifest");
+
+        for key in manifest.files.keys() {
+            assert!(
+                !key.contains('\\'),
+                "manifest key must use '/' separators only: {key}"
+            );
+        }
+        assert!(manifest.files.contains_key("src/hooks.server.ts"));
+        assert!(manifest.files.contains_key("svelte.config.js"));
     }
 
     #[test]

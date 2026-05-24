@@ -24,9 +24,25 @@ pub(crate) struct KitRouteKind {
     pub is_endpoint: bool,
 }
 
+/// Accepts every JavaScript/TypeScript extension SvelteKit recognizes for
+/// hooks, params, and route scripts.  Node's `--experimental-loader=ts-node`
+/// and packages with `"type": "module"` mean `.mts`/`.cts`/`.mjs`/`.cjs` are
+/// not theoretical — projects ship them.
+pub(crate) fn is_kit_script_ext(ext: &str) -> bool {
+    matches!(ext, "ts" | "js" | "mts" | "cts" | "mjs" | "cjs")
+}
+
+const KIT_SCRIPT_EXTS: &[&str] = &["ts", "js", "mts", "cts", "mjs", "cjs"];
+
+fn matches_kit_script_suffix(rel_str: &str, base: &str) -> bool {
+    KIT_SCRIPT_EXTS
+        .iter()
+        .any(|ext| rel_str.ends_with(&format!("{base}.{ext}")))
+}
+
 pub(crate) fn kit_file_kind(path: &Utf8Path, project_root: &Utf8Path) -> Option<KitFileKind> {
     let ext = path.extension()?;
-    if ext != "ts" && ext != "js" {
+    if !is_kit_script_ext(ext) {
         return None;
     }
 
@@ -36,19 +52,26 @@ pub(crate) fn kit_file_kind(path: &Utf8Path, project_root: &Utf8Path) -> Option<
     }
 
     let rel = path.strip_prefix(project_root).ok().unwrap_or(path);
-    let rel_str = rel.as_str().trim_start_matches('/');
+    // Normalize to forward slashes so the substring checks below work on
+    // Windows, where `Utf8Path::as_str()` returns backslash-separated paths.
+    let rel_str = rel.as_str().replace('\\', "/");
+    let rel_str = rel_str.trim_start_matches('/');
 
-    if rel_str.ends_with("src/hooks.server.ts") || rel_str.ends_with("src/hooks.server.js") {
+    if matches_kit_script_suffix(rel_str, "src/hooks.server") {
         return Some(KitFileKind::ServerHooks);
     }
-    if rel_str.ends_with("src/hooks.client.ts") || rel_str.ends_with("src/hooks.client.js") {
+    if matches_kit_script_suffix(rel_str, "src/hooks.client") {
         return Some(KitFileKind::ClientHooks);
     }
-    if rel_str.ends_with("src/hooks.ts") || rel_str.ends_with("src/hooks.js") {
+    if matches_kit_script_suffix(rel_str, "src/hooks") {
         return Some(KitFileKind::UniversalHooks);
     }
 
-    if rel_str.contains("src/params/")
+    // SvelteKit's `params/` directory lives directly under the project root's
+    // `src/`. Use `starts_with` so a vendored library at
+    // `src/lib/vendored/pkg/src/params/match.ts` isn't misclassified and
+    // injected with `ParamMatcher` augmentations it doesn't expect.
+    if rel_str.starts_with("src/params/")
         && !file_name.contains(".test")
         && !file_name.contains(".spec")
     {
@@ -63,7 +86,9 @@ pub(crate) fn transform_kit_source(
     path: &Utf8Path,
     source: &str,
 ) -> Option<String> {
-    let is_ts = path.extension() == Some("ts");
+    // TS-flavoured extensions need the TS parser even when the suffix is
+    // `.mts`/`.cts`; JS-flavoured extensions parse with the ES parser.
+    let is_ts = matches!(path.extension(), Some("ts" | "tsx" | "mts" | "cts"));
     let module = parse_module(path, source, is_ts)?;
     let mut insertions: Vec<Insertion> = Vec::new();
 
@@ -932,6 +957,126 @@ fn apply_insertions(source: &str, mut insertions: Vec<Insertion>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn test_kit_file_kind_recognizes_hooks_with_backslash_separators() {
+        // On Windows, `WalkDir` yields paths with `\` separators and
+        // `Utf8Path::as_str()` preserves them.  Gated to Windows because on
+        // Unix `Utf8Path::new("C:\\project\\...")` is a single-component
+        // path that fools the assertions for the wrong reason.
+        let root = Utf8Path::new("C:\\project");
+        let cases = [
+            (
+                "C:\\project\\src\\hooks.server.ts",
+                KitFileKind::ServerHooks,
+            ),
+            (
+                "C:\\project\\src\\hooks.client.ts",
+                KitFileKind::ClientHooks,
+            ),
+            ("C:\\project\\src\\hooks.ts", KitFileKind::UniversalHooks),
+            ("C:\\project\\src\\params\\slug.ts", KitFileKind::Params),
+        ];
+        for (raw, expected) in cases {
+            let path = Utf8Path::new(raw);
+            let kind = kit_file_kind(path, root)
+                .unwrap_or_else(|| panic!("expected kit_file_kind to recognize {raw}, got None"));
+            assert!(
+                std::mem::discriminant(&kind) == std::mem::discriminant(&expected),
+                "expected {expected:?} for {raw}, got {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_kit_file_kind_params_rejects_nested_src_params() {
+        // A vendored library at `src/lib/vendored/pkg/src/params/match.ts`
+        // is not a SvelteKit param matcher and must not get the kit
+        // `ParamMatcher` type augmentation injected.
+        let root = Utf8Path::new("/project");
+        let path = Utf8Path::new("/project/src/lib/vendored/pkg/src/params/match.ts");
+        assert!(
+            kit_file_kind(path, root).is_none(),
+            "nested src/params/ must not be classified as KitFileKind::Params"
+        );
+    }
+
+    #[test]
+    fn test_kit_file_kind_params_accepts_root_src_params() {
+        // The real SvelteKit params dir lives directly under the project's
+        // `src/`, so the anchored check still accepts the legitimate case.
+        let root = Utf8Path::new("/project");
+        let path = Utf8Path::new("/project/src/params/slug.ts");
+        assert!(matches!(
+            kit_file_kind(path, root),
+            Some(KitFileKind::Params)
+        ));
+    }
+
+    #[test]
+    fn test_kit_file_kind_recognizes_hooks_with_forward_slashes() {
+        let root = Utf8Path::new("/project");
+        let path = Utf8Path::new("/project/src/hooks.server.ts");
+        assert!(matches!(
+            kit_file_kind(path, root),
+            Some(KitFileKind::ServerHooks)
+        ));
+    }
+
+    #[test]
+    fn test_kit_file_kind_recognizes_mjs_cjs_mts_cts_hooks() {
+        // ESM-flagged hooks (`.mts`/`.mjs`) and CommonJS-flagged hooks
+        // (`.cts`/`.cjs`) are valid in modern Node packages and SvelteKit
+        // projects with `"type": "module"`.
+        let root = Utf8Path::new("/project");
+        for ext in ["mts", "cts", "mjs", "cjs"] {
+            let path_buf = camino::Utf8PathBuf::from(format!("/project/src/hooks.server.{ext}"));
+            assert!(
+                matches!(
+                    kit_file_kind(&path_buf, root),
+                    Some(KitFileKind::ServerHooks)
+                ),
+                "expected ServerHooks for .{ext}"
+            );
+            let path_buf = camino::Utf8PathBuf::from(format!("/project/src/hooks.client.{ext}"));
+            assert!(
+                matches!(
+                    kit_file_kind(&path_buf, root),
+                    Some(KitFileKind::ClientHooks)
+                ),
+                "expected ClientHooks for .{ext}"
+            );
+            let path_buf = camino::Utf8PathBuf::from(format!("/project/src/hooks.{ext}"));
+            assert!(
+                matches!(
+                    kit_file_kind(&path_buf, root),
+                    Some(KitFileKind::UniversalHooks)
+                ),
+                "expected UniversalHooks for .{ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_kit_file_kind_recognizes_mts_params() {
+        let root = Utf8Path::new("/project");
+        let path = Utf8Path::new("/project/src/params/slug.mts");
+        assert!(matches!(
+            kit_file_kind(path, root),
+            Some(KitFileKind::Params)
+        ));
+    }
+
+    #[test]
+    fn test_is_kit_script_ext_covers_modern_extensions() {
+        for ext in ["ts", "js", "mts", "cts", "mjs", "cjs"] {
+            assert!(is_kit_script_ext(ext), "expected {ext} to be recognized");
+        }
+        for ext in ["svelte", "json", "css", "txt", "tsx", "jsx"] {
+            assert!(!is_kit_script_ext(ext), "expected {ext} to be rejected");
+        }
+    }
 
     #[test]
     fn test_promise_all_empty_array_transform() {
