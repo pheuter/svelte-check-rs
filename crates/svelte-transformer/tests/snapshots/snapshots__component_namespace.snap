@@ -186,7 +186,7 @@ async function __svelte_render() {
 
 // === TEMPLATE TYPE-CHECK ===
   { const __component_0 = __svelte_ensure_component(Dialog.Root); __component_0(__svelte_any(), {
-    open: undefined as any,
+    open: open,
     children: () => {
       return __svelte_snippet_return;
     },
@@ -242,4 +242,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 16 ===
+=== Source Map Mappings: 17 ===

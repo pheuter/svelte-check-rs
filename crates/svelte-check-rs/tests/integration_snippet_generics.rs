@@ -252,13 +252,26 @@ fn assert_diagnostic_present(diagnostics: &[JsonDiagnostic], expected: &Expected
 // ============================================================================
 
 /// Test that a generic snippet header type-checks without diagnostics.
+///
+/// `--single-file` scopes the *primary* file but tsgo still emits errors
+/// against any other project source it pulled into the type-checking graph
+/// (e.g. unrelated `+server.ts` files exercised by other parity fixtures).
+/// Scope the assertion to errors in the target file itself so this test
+/// stays a focused regression for issue #32 and doesn't flake when
+/// unrelated intentional-error fixtures are added.
 #[test]
 fn test_snippet_generic_header_no_errors() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let file_path = fixture_path.join("src/routes/issue-32-snippet-generic-ok/+page.svelte");
 
     let (_exit_code, diagnostics) = run_check_json_single(&fixture_path, &file_path);
-    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+    let diagnostics: Vec<_> = filter_diagnostics_by_source(&diagnostics, "ts")
+        .into_iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-32-snippet-generic-ok/+page.svelte")
+        })
+        .collect();
 
     assert!(
         diagnostics.is_empty(),

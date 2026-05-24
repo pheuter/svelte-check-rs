@@ -489,6 +489,34 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2769",
             message_contains: "No overload matches this call",
         },
+        // Parity fixture: param-matcher inferred type predicate must
+        // narrow `params.id` so the literal mismatch on this line is
+        // caught — see `crates/tsgo-runner/src/kit.rs` `apply_params_transforms`.
+        ExpectedError {
+            filename: "src/routes/issue-parity-matcher/[id=restricted]/+page.svelte",
+            line: 17,
+            code: "TS2322",
+            message_contains: "\"other\"",
+        },
+        // Parity fixture: explicit `RequestHandler` from `@sveltejs/kit`
+        // must not be silently overridden by an inner RequestEvent
+        // annotation, so `params.id` stays `string | undefined`.
+        ExpectedError {
+            filename: "src/routes/issue-parity-server/+server.ts",
+            line: 22,
+            code: "TS2345",
+            message_contains: "string | undefined",
+        },
+        // Parity fixture: `bind:value={...}` must thread the bound
+        // expression through to the component prop slot for write-
+        // direction type-checking — `string | null` is not assignable
+        // to `string | undefined`.
+        ExpectedError {
+            filename: "src/routes/issue-parity-bind/+page.svelte",
+            line: 13,
+            code: "TS2322",
+            message_contains: "null",
+        },
     ]
 }
 
@@ -986,8 +1014,9 @@ fn test_all_configs_have_expected_error_counts() {
         .filter(|d| d.diagnostic_type == "Error")
         .count();
 
-    // Bundler: 10 original + 3 use directive + 2 snippet generic + 1 issue-68 + 1 route-group + 1 issue-74 = 18
-    assert_eq!(bundler_errors, 18, "Bundler should have exactly 18 errors");
+    // Bundler: 10 original + 3 use directive + 2 snippet generic + 1 issue-68
+    // + 1 route-group + 1 issue-74 + 3 parity (matcher + +server.ts + bind) = 21
+    assert_eq!(bundler_errors, 21, "Bundler should have exactly 21 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"
