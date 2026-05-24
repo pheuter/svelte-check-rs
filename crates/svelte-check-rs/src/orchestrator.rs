@@ -124,15 +124,15 @@ fn relative_import_path(from_file: &Utf8Path, to: &Utf8Path) -> String {
         common += 1;
     }
 
-    let mut rel = Utf8PathBuf::new();
-    for _ in common..from_components.len() {
-        rel.push("..");
-    }
-    for comp in &to_components[common..] {
-        rel.push(comp);
-    }
+    // Build the module specifier directly with '/' separators. Routing through
+    // `Utf8PathBuf::push` would emit `\` on Windows, which TypeScript treats as
+    // an escape sequence in the import string and fails to resolve.
+    let parent_hops = from_components.len() - common;
+    let mut segments: Vec<&str> = Vec::with_capacity(parent_hops + to_components.len() - common);
+    segments.extend(std::iter::repeat_n("..", parent_hops));
+    segments.extend_from_slice(&to_components[common..]);
 
-    let mut rel_str = rel.as_str().to_string();
+    let mut rel_str = segments.join("/");
     if rel_str.is_empty() {
         rel_str.push('.');
     }
@@ -1715,6 +1715,50 @@ mod tests {
         // Test that relative paths are resolved correctly
         let workspace = Utf8PathBuf::from(".");
         assert!(workspace.is_relative());
+    }
+
+    #[test]
+    fn test_relative_import_path_uses_forward_slashes() {
+        // Module specifiers must always use '/' — even on Windows, where
+        // `Utf8PathBuf::push` would otherwise produce '\' that TypeScript
+        // treats as an escape sequence in the import string.
+        let from = Utf8PathBuf::from("src/ui/useFoo.svelte.ts");
+        let to = Utf8Path::new(SHARED_HELPERS_MODULE);
+        let result = relative_import_path(&from, to);
+        assert_eq!(result, "../../__svelte_check_rs_helpers");
+        assert!(!result.contains('\\'));
+    }
+
+    #[test]
+    fn test_relative_import_path_deep_nesting() {
+        let from = Utf8PathBuf::from("src/lib/components/accordion/accordion.svelte.ts");
+        let to = Utf8Path::new(SHARED_HELPERS_MODULE);
+        let result = relative_import_path(&from, to);
+        assert_eq!(result, "../../../../__svelte_check_rs_helpers");
+        assert!(!result.contains('\\'));
+    }
+
+    #[test]
+    fn test_relative_import_path_same_directory() {
+        let from = Utf8PathBuf::from("Foo.svelte.ts");
+        let to = Utf8Path::new(SHARED_HELPERS_MODULE);
+        let result = relative_import_path(&from, to);
+        assert_eq!(result, "./__svelte_check_rs_helpers");
+    }
+
+    #[test]
+    fn test_helpers_import_path_for_nested() {
+        let virtual_path = Utf8PathBuf::from("src/ui/useFoo.svelte.ts");
+        let path = helpers_import_path_for(&virtual_path, false);
+        assert_eq!(path, "../../__svelte_check_rs_helpers");
+        assert!(!path.contains('\\'));
+    }
+
+    #[test]
+    fn test_helpers_import_path_for_nodenext() {
+        let virtual_path = Utf8PathBuf::from("src/ui/useFoo.svelte.ts");
+        let path = helpers_import_path_for(&virtual_path, true);
+        assert_eq!(path, "../../__svelte_check_rs_helpers.js");
     }
 
     #[test]
