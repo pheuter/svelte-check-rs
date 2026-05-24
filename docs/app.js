@@ -1,25 +1,27 @@
-// Benchmark data
+// Benchmark data — measured with hyperfine on careswitch-web
+// (SvelteKit monorepo, 531 svelte / 1,573 ts files, ~415k LOC src).
+// Hardware: Apple M4 Max, 48 GB. svelte-check 4.4.8 vs svelte-check-rs 0.9.14.
 const BENCHMARKS = {
   cold: {
     label: "Cold start",
-    runs: 3,
-    svelte: 39.63,
-    rs: 17.53,
-    speedup: 2.26,
+    runs: 5,
+    svelte: 47.95,
+    rs: 7.07,
+    speedup: 6.8,
   },
   warm: {
     label: "Warm cache",
     runs: 5,
-    svelte: 39.44,
-    rs: 1.29,
-    speedup: 30.50,
+    svelte: 51.83,
+    rs: 0.84,
+    speedup: 61.9,
   },
   iterative: {
     label: "Iterative change",
-    runs: 3,
-    svelte: 39.80,
-    rs: 2.50,
-    speedup: 15.89,
+    runs: 5,
+    svelte: 56.24,
+    rs: 1.17,
+    speedup: 48.1,
   },
 };
 
@@ -32,7 +34,6 @@ const barSvelte = document.querySelector('[data-bar="svelte"]');
 const barRs = document.querySelector('[data-bar="rs"]');
 const timeSvelte = document.querySelector('[data-time="svelte"]');
 const timeRs = document.querySelector('[data-time="rs"]');
-const modal = document.getElementById("methodology-modal");
 const themeToggle = document.querySelector(".theme-toggle");
 
 // Formatters
@@ -217,19 +218,6 @@ function render(key, animate = true) {
   }
 }
 
-// Fill results table
-function fillTable() {
-  document.querySelectorAll("[data-bench]").forEach((el) => {
-    const [scenario, field] = el.dataset.bench.split(":");
-    const data = BENCHMARKS[scenario];
-    if (!data) return;
-
-    if (field === "svelte") el.textContent = formatSeconds(data.svelte);
-    if (field === "rs") el.textContent = formatSeconds(data.rs);
-    if (field === "speed") el.textContent = formatSpeed(data.speedup);
-  });
-}
-
 // ========================================
 // Copy to Clipboard
 // ========================================
@@ -259,50 +247,6 @@ function setupCopyButtons() {
         console.error("Failed to copy:", err);
       }
     });
-  });
-}
-
-// ========================================
-// Modal
-// ========================================
-
-function openModal() {
-  if (modal) {
-    modal.showModal();
-    document.body.style.overflow = "hidden";
-  }
-}
-
-function closeModal() {
-  if (modal) {
-    modal.close();
-    document.body.style.overflow = "";
-  }
-}
-
-function setupModal() {
-  // Open modal buttons
-  document.querySelectorAll("[data-open-modal]").forEach((btn) => {
-    btn.addEventListener("click", openModal);
-  });
-
-  // Close modal buttons
-  document.querySelectorAll("[data-close-modal]").forEach((btn) => {
-    btn.addEventListener("click", closeModal);
-  });
-
-  // Close on backdrop click
-  modal?.addEventListener("click", (e) => {
-    if (e.target === modal) {
-      closeModal();
-    }
-  });
-
-  // Close on Escape key
-  modal?.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      closeModal();
-    }
   });
 }
 
@@ -338,7 +282,7 @@ function setupInstallTabs() {
   if (!installTabs) return;
 
   const buttons = installTabs.querySelectorAll("[data-os]");
-  const commands = document.querySelectorAll(".install-cmd[data-os]");
+  const commands = document.querySelectorAll(".cmd[data-os]");
 
   buttons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -406,12 +350,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialize theme
   initTheme();
 
-  // Fill benchmark table
-  fillTable();
-
   // Setup interactions
   setupCopyButtons();
-  setupModal();
   setupInstallTabs();
 
   // Check if reduced motion is preferred
