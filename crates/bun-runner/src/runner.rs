@@ -640,15 +640,19 @@ fn project_cache_namespace(project_root: &Utf8Path) -> String {
 }
 
 fn find_bun_in_bin(bin: &Utf8Path) -> Option<Utf8PathBuf> {
+    // The extensionless `bun` shim co-installed on Windows by npm/pnpm/yarn
+    // is a Unix shell script. Picking it would have `CreateProcess` reject
+    // it with `%1 is not a valid Win32 application` (os error 193); probe
+    // only the executable shims on Windows.
     let candidates: &[&str] = if cfg!(windows) {
-        &["bun.exe", "bun.cmd", "bun"]
+        &["bun.exe", "bun.cmd", "bun.bat"]
     } else {
         &["bun"]
     };
 
     for candidate in candidates.iter() {
         let path = bin.join(candidate);
-        if path.exists() {
+        if path.is_file() {
             return Some(path);
         }
     }
@@ -920,5 +924,44 @@ mod tests {
             compiler_cache_key(&a, Some("5.0.0")).unwrap(),
             compiler_cache_key(&b, Some("5.0.0")).unwrap()
         );
+    }
+
+    #[test]
+    fn find_bun_in_bin_finds_platform_shim() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin = Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        let shim_name = if cfg!(windows) { "bun.exe" } else { "bun" };
+        let shim = bin.join(shim_name);
+        std::fs::write(&shim, b"\0").expect("write shim");
+
+        assert_eq!(find_bun_in_bin(&bin), Some(shim));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn find_bun_in_bin_skips_bare_unix_shim() {
+        // The extensionless `bun` shell script co-installed by npm/pnpm/yarn
+        // on Windows cannot be spawned by CreateProcess; the `.exe`/`.cmd`
+        // sibling must be preferred.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin = Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        std::fs::write(bin.join("bun"), b"#!/bin/sh\n").expect("write bare");
+        let cmd = bin.join("bun.cmd");
+        std::fs::write(&cmd, b"@echo off\n").expect("write cmd");
+
+        assert_eq!(find_bun_in_bin(&bin), Some(cmd));
+    }
+
+    #[test]
+    fn find_bun_in_bin_ignores_directory_with_shim_name() {
+        // is_file() guard: a directory whose name matches a candidate must
+        // not be returned in place of the binary.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin = Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let shim_name = if cfg!(windows) { "bun.exe" } else { "bun" };
+        std::fs::create_dir_all(bin.join(shim_name)).expect("decoy dir");
+
+        assert_eq!(find_bun_in_bin(&bin), None);
     }
 }

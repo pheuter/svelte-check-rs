@@ -16,3 +16,6 @@ thiserror.workspace = true
 which.workspace = true
 dirs.workspace = true
 blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -387,7 +387,18 @@ impl TsgoRunner {
     }
 
     /// Resolves tsgo from node_modules/.bin by walking up from the workspace root.
+    ///
+    /// On Windows, `Command::new` cannot execute the extensionless Unix shell
+    /// shim that npm/pnpm/yarn install alongside `.cmd`/`.exe`; CreateProcess
+    /// rejects it with `%1 is not a valid Win32 application` (os error 193).
+    /// Probe only platform-executable extensions on Windows.
     pub fn resolve_tsgo(workspace_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        const SHIM_CANDIDATES: &[&str] = if cfg!(windows) {
+            &["tsgo.exe", "tsgo.cmd", "tsgo.bat"]
+        } else {
+            &["tsgo"]
+        };
+
         let mut current = Some(workspace_root);
         let mut saw_node_modules = false;
 
@@ -396,9 +407,9 @@ impl TsgoRunner {
             if node_modules.is_dir() {
                 saw_node_modules = true;
                 let bin_dir = node_modules.join(".bin");
-                for name in ["tsgo", "tsgo.cmd", "tsgo.exe"] {
+                for name in SHIM_CANDIDATES {
                     let tsgo_path = bin_dir.join(name);
-                    if tsgo_path.exists() {
+                    if tsgo_path.is_file() {
                         return Ok(tsgo_path);
                     }
                 }
@@ -685,13 +696,14 @@ impl TsgoRunner {
     /// each candidate name in turn so we pick the shim the current platform can
     /// actually execute before falling back to the package's `.js` entry point.
     pub fn find_sveltekit_binary(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        // Windows lists extension-bearing shims only. The extensionless
+        // `svelte-kit` script that npm/pnpm/yarn co-install is a Unix shell
+        // script — picking it would reproduce the same os-error-193 the
+        // platform-specific probes are meant to avoid. If no shim is
+        // executable on this platform, fall through to the package's `.js`
+        // entry point and spawn it via `node`.
         const SHIM_CANDIDATES: &[&str] = if cfg!(windows) {
-            &[
-                "svelte-kit.exe",
-                "svelte-kit.cmd",
-                "svelte-kit.bat",
-                "svelte-kit",
-            ]
+            &["svelte-kit.exe", "svelte-kit.cmd", "svelte-kit.bat"]
         } else {
             &["svelte-kit"]
         };
@@ -703,14 +715,14 @@ impl TsgoRunner {
             let bin_dir = dir.join("node_modules/.bin");
             for name in SHIM_CANDIDATES {
                 let bin_path = bin_dir.join(name);
-                if bin_path.exists() {
+                if bin_path.is_file() {
                     return Ok(bin_path);
                 }
             }
 
             // Try the package's bin directly
             let pkg_bin = dir.join("node_modules/@sveltejs/kit/svelte-kit.js");
-            if pkg_bin.exists() {
+            if pkg_bin.is_file() {
                 return Ok(pkg_bin);
             }
 
@@ -1992,27 +2004,131 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_find_sveltekit_binary_prefers_windows_shim() {
-        // On Windows, Bun emits `svelte-kit.exe` (and other package managers
-        // emit `.cmd`/`.bat`) in `node_modules/.bin/` — the bare `svelte-kit`
-        // script never exists. Verify we discover the platform shim instead
-        // of falling through to the package's `.js` entry, which CreateProcess
-        // can't execute (TsgoError::SvelteKitSyncFailed "%1 is not a valid
-        // Win32 application", os error 193).
+        // On Windows, package managers emit `.exe`/`.cmd`/`.bat` shims
+        // alongside the extensionless Unix shell script `svelte-kit`. The
+        // extensionless one can't be spawned by CreateProcess (rejects with
+        // "%1 is not a valid Win32 application", os error 193), so it must
+        // not be selected even though it `.exists()`.
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let temp_root =
             Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
         let bin_dir = temp_root.join("node_modules/.bin");
         std::fs::create_dir_all(&bin_dir).expect("bin dir");
-        let exe_shim = bin_dir.join("svelte-kit.exe");
-        std::fs::write(&exe_shim, b"MZ").expect("write exe");
 
-        // Also place the .js fallback so we can confirm the shim is preferred.
+        // Lay down both the bare shim and the .exe — the .exe must win.
+        std::fs::write(bin_dir.join("svelte-kit"), b"#!/bin/sh\n").expect("write bare");
+        let exe_shim = bin_dir.join("svelte-kit.exe");
+        std::fs::write(&exe_shim, b"\0").expect("write exe");
+
+        // Also place the .js fallback so we can confirm a real shim wins.
         let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
         std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
         std::fs::write(pkg_dir.join("svelte-kit.js"), b"#!/usr/bin/env node\n").expect("write js");
 
         let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
         assert_eq!(resolved, exe_shim);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_find_sveltekit_binary_skips_bare_unix_shim_falls_back_to_js() {
+        // When only the extensionless Unix shim exists on Windows, fall through
+        // to the package's `.js` entry rather than returning an unrunnable path.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        std::fs::write(bin_dir.join("svelte-kit"), b"#!/bin/sh\n").expect("write bare");
+
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        let js_path = pkg_dir.join("svelte-kit.js");
+        std::fs::write(&js_path, b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, js_path);
+    }
+
+    #[test]
+    fn test_find_sveltekit_binary_ignores_directories_with_shim_names() {
+        // Discovery must use `is_file()`, not `exists()`. A directory that
+        // happens to match a candidate name (test fixture, stray mkdir,
+        // tarball-extraction artifact) should not be returned as a binary.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        // Create a directory at every candidate name to fool a naive .exists() probe.
+        for name in [
+            "svelte-kit",
+            "svelte-kit.exe",
+            "svelte-kit.cmd",
+            "svelte-kit.bat",
+        ] {
+            std::fs::create_dir_all(bin_dir.join(name)).expect("decoy dir");
+        }
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        let js_path = pkg_dir.join("svelte-kit.js");
+        std::fs::write(&js_path, b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, js_path);
+    }
+
+    #[test]
+    fn test_resolve_tsgo_finds_platform_shim() {
+        // Cross-platform smoke test: the platform-appropriate shim must be
+        // discovered when present in `node_modules/.bin/`.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+
+        let shim_name = if cfg!(windows) { "tsgo.exe" } else { "tsgo" };
+        let shim = bin_dir.join(shim_name);
+        std::fs::write(&shim, b"\0").expect("write shim");
+
+        let resolved = TsgoRunner::resolve_tsgo(&temp_root).expect("resolve tsgo");
+        assert_eq!(resolved, shim);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_resolve_tsgo_skips_bare_unix_shim() {
+        // On Windows the extensionless `tsgo` shell script must not be picked
+        // even though npm/pnpm/yarn co-install it; CreateProcess can't spawn
+        // it and the user sees os error 193.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        std::fs::write(bin_dir.join("tsgo"), b"#!/bin/sh\n").expect("write bare");
+        let cmd = bin_dir.join("tsgo.cmd");
+        std::fs::write(&cmd, b"@echo off\n").expect("write cmd");
+
+        let resolved = TsgoRunner::resolve_tsgo(&temp_root).expect("resolve tsgo");
+        assert_eq!(resolved, cmd);
+    }
+
+    #[test]
+    fn test_resolve_tsgo_ignores_directory_with_shim_name() {
+        // Directories named like shims must not be returned (is_file vs exists).
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        let shim_name = if cfg!(windows) { "tsgo.exe" } else { "tsgo" };
+        std::fs::create_dir_all(bin_dir.join(shim_name)).expect("decoy dir");
+
+        let err = TsgoRunner::resolve_tsgo(&temp_root).expect_err("should not resolve a directory");
+        assert!(
+            matches!(err, TsgoError::TsgoNotInstalled(_)),
+            "expected TsgoNotInstalled, got {err:?}"
+        );
     }
 
     #[test]
