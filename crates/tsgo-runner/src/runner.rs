@@ -516,8 +516,20 @@ impl TsgoRunner {
         // Find svelte-kit binary in node_modules
         let svelte_kit_bin = Self::find_sveltekit_binary(project_root)?;
 
-        // Run svelte-kit sync
-        let output = Command::new(&svelte_kit_bin)
+        // The `.bin/` shim is directly executable on every platform. The package
+        // fallback (`@sveltejs/kit/svelte-kit.js`) carries a `#!/usr/bin/env node`
+        // shebang that Unix kernels honor but Windows `CreateProcess` does not
+        // (rejects with "%1 is not a valid Win32 application", os error 193).
+        // Spawn JS files through `node` so the fallback works everywhere.
+        let mut command = if svelte_kit_bin.extension() == Some("js") {
+            let mut c = Command::new("node");
+            c.arg(svelte_kit_bin.as_std_path());
+            c
+        } else {
+            Command::new(svelte_kit_bin.as_std_path())
+        };
+
+        let output = command
             .arg("sync")
             .current_dir(project_root)
             .stdout(Stdio::piped())
@@ -667,14 +679,33 @@ impl TsgoRunner {
 
     /// Finds the svelte-kit binary by searching node_modules/.bin up the directory tree.
     /// This handles monorepo setups where dependencies may be hoisted to a parent directory.
+    ///
+    /// On Windows, package managers create `.cmd`/`.exe` shims (e.g. Bun emits
+    /// `svelte-kit.exe`); the bare `svelte-kit` shim only exists on Unix. Probe
+    /// each candidate name in turn so we pick the shim the current platform can
+    /// actually execute before falling back to the package's `.js` entry point.
     pub fn find_sveltekit_binary(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        const SHIM_CANDIDATES: &[&str] = if cfg!(windows) {
+            &[
+                "svelte-kit.exe",
+                "svelte-kit.cmd",
+                "svelte-kit.bat",
+                "svelte-kit",
+            ]
+        } else {
+            &["svelte-kit"]
+        };
+
         let mut current = Some(project_root);
 
         while let Some(dir) = current {
-            // Try node_modules/.bin/svelte-kit
-            let bin_path = dir.join("node_modules/.bin/svelte-kit");
-            if bin_path.exists() {
-                return Ok(bin_path);
+            // Try node_modules/.bin/svelte-kit (platform-appropriate shim)
+            let bin_dir = dir.join("node_modules/.bin");
+            for name in SHIM_CANDIDATES {
+                let bin_path = bin_dir.join(name);
+                if bin_path.exists() {
+                    return Ok(bin_path);
+                }
             }
 
             // Try the package's bin directly
@@ -1956,6 +1987,49 @@ mod tests {
         assert!(files
             .find_by_original(Utf8Path::new("src/App.svelte"))
             .is_some());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_find_sveltekit_binary_prefers_windows_shim() {
+        // On Windows, Bun emits `svelte-kit.exe` (and other package managers
+        // emit `.cmd`/`.bat`) in `node_modules/.bin/` — the bare `svelte-kit`
+        // script never exists. Verify we discover the platform shim instead
+        // of falling through to the package's `.js` entry, which CreateProcess
+        // can't execute (TsgoError::SvelteKitSyncFailed "%1 is not a valid
+        // Win32 application", os error 193).
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let bin_dir = temp_root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        let exe_shim = bin_dir.join("svelte-kit.exe");
+        std::fs::write(&exe_shim, b"MZ").expect("write exe");
+
+        // Also place the .js fallback so we can confirm the shim is preferred.
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        std::fs::write(pkg_dir.join("svelte-kit.js"), b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, exe_shim);
+    }
+
+    #[test]
+    fn test_find_sveltekit_binary_falls_back_to_package_js() {
+        // When no shim exists in `.bin/`, we still want to discover the
+        // package's `.js` entry so the caller can invoke it via `node`.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+        let pkg_dir = temp_root.join("node_modules/@sveltejs/kit");
+        std::fs::create_dir_all(&pkg_dir).expect("pkg dir");
+        let js_path = pkg_dir.join("svelte-kit.js");
+        std::fs::write(&js_path, b"#!/usr/bin/env node\n").expect("write js");
+
+        let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
+        assert_eq!(resolved, js_path);
+        assert_eq!(resolved.extension(), Some("js"));
     }
 
     #[test]
