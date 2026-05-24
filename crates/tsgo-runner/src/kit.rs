@@ -36,7 +36,10 @@ pub(crate) fn kit_file_kind(path: &Utf8Path, project_root: &Utf8Path) -> Option<
     }
 
     let rel = path.strip_prefix(project_root).ok().unwrap_or(path);
-    let rel_str = rel.as_str().trim_start_matches('/');
+    // Normalize to forward slashes so the substring checks below work on
+    // Windows, where `Utf8Path::as_str()` returns backslash-separated paths.
+    let rel_str = rel.as_str().replace('\\', "/");
+    let rel_str = rel_str.trim_start_matches('/');
 
     if rel_str.ends_with("src/hooks.server.ts") || rel_str.ends_with("src/hooks.server.js") {
         return Some(KitFileKind::ServerHooks);
@@ -932,6 +935,45 @@ fn apply_insertions(source: &str, mut insertions: Vec<Insertion>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_kit_file_kind_recognizes_hooks_with_backslash_separators() {
+        // On Windows, `WalkDir` yields paths with `\` separators and
+        // `Utf8Path::as_str()` preserves them. The substring checks in
+        // `kit_file_kind` must still match.
+        let root = Utf8Path::new("C:\\project");
+        let cases = [
+            (
+                "C:\\project\\src\\hooks.server.ts",
+                KitFileKind::ServerHooks,
+            ),
+            (
+                "C:\\project\\src\\hooks.client.ts",
+                KitFileKind::ClientHooks,
+            ),
+            ("C:\\project\\src\\hooks.ts", KitFileKind::UniversalHooks),
+            ("C:\\project\\src\\params\\slug.ts", KitFileKind::Params),
+        ];
+        for (raw, expected) in cases {
+            let path = Utf8Path::new(raw);
+            let kind = kit_file_kind(path, root)
+                .unwrap_or_else(|| panic!("expected kit_file_kind to recognize {raw}, got None"));
+            assert!(
+                std::mem::discriminant(&kind) == std::mem::discriminant(&expected),
+                "expected {expected:?} for {raw}, got {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_kit_file_kind_recognizes_hooks_with_forward_slashes() {
+        let root = Utf8Path::new("/project");
+        let path = Utf8Path::new("/project/src/hooks.server.ts");
+        assert!(matches!(
+            kit_file_kind(path, root),
+            Some(KitFileKind::ServerHooks)
+        ));
+    }
 
     #[test]
     fn test_promise_all_empty_array_transform() {
