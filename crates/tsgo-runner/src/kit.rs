@@ -67,7 +67,11 @@ pub(crate) fn kit_file_kind(path: &Utf8Path, project_root: &Utf8Path) -> Option<
         return Some(KitFileKind::UniversalHooks);
     }
 
-    if rel_str.contains("src/params/")
+    // SvelteKit's `params/` directory lives directly under the project root's
+    // `src/`. Use `starts_with` so a vendored library at
+    // `src/lib/vendored/pkg/src/params/match.ts` isn't misclassified and
+    // injected with `ParamMatcher` augmentations it doesn't expect.
+    if rel_str.starts_with("src/params/")
         && !file_name.contains(".test")
         && !file_name.contains(".spec")
     {
@@ -955,10 +959,12 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
     fn test_kit_file_kind_recognizes_hooks_with_backslash_separators() {
         // On Windows, `WalkDir` yields paths with `\` separators and
-        // `Utf8Path::as_str()` preserves them. The substring checks in
-        // `kit_file_kind` must still match.
+        // `Utf8Path::as_str()` preserves them.  Gated to Windows because on
+        // Unix `Utf8Path::new("C:\\project\\...")` is a single-component
+        // path that fools the assertions for the wrong reason.
         let root = Utf8Path::new("C:\\project");
         let cases = [
             (
@@ -981,6 +987,31 @@ mod tests {
                 "expected {expected:?} for {raw}, got {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_kit_file_kind_params_rejects_nested_src_params() {
+        // A vendored library at `src/lib/vendored/pkg/src/params/match.ts`
+        // is not a SvelteKit param matcher and must not get the kit
+        // `ParamMatcher` type augmentation injected.
+        let root = Utf8Path::new("/project");
+        let path = Utf8Path::new("/project/src/lib/vendored/pkg/src/params/match.ts");
+        assert!(
+            kit_file_kind(path, root).is_none(),
+            "nested src/params/ must not be classified as KitFileKind::Params"
+        );
+    }
+
+    #[test]
+    fn test_kit_file_kind_params_accepts_root_src_params() {
+        // The real SvelteKit params dir lives directly under the project's
+        // `src/`, so the anchored check still accepts the legitimate case.
+        let root = Utf8Path::new("/project");
+        let path = Utf8Path::new("/project/src/params/slug.ts");
+        assert!(matches!(
+            kit_file_kind(path, root),
+            Some(KitFileKind::Params)
+        ));
     }
 
     #[test]
