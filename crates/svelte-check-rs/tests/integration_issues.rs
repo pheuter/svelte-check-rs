@@ -2036,3 +2036,62 @@ fn test_issue_144_transformed_output_has_single_pageprops_import() {
         pageprops_import_count, content
     );
 }
+// ============================================================================
+// ISSUE #146: MODULE-LEVEL `type X = unknown` STRIPPED WHEN `generics=` PRESENT
+// ============================================================================
+// When a component has both a `<script lang="ts" module>` containing
+// `type T = unknown` declarations *and* a `<script generics="T extends ...">`
+// instance block that re-uses the same identifiers, the transformer stripped
+// the module-level aliases. Any other code that referenced them (e.g.
+// `interface Column<T = TValue>`) then failed with TS2304.
+//
+// Fixture: src/lib/issue-146-module-generic-unknown.svelte
+//   Module script lines 2-3: type TData = unknown; type TValue = unknown;
+//   Line 5:  interface Column<T = TValue>         <- TValue must still exist
+//   Line 11: interface DataTableProps<TPropData = TData, TPropValue = TValue>
+#[test]
+fn test_issue_146_module_unknown_aliases_not_stripped() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let cannot_find: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-146-module-generic-unknown.svelte")
+                && d.code == "TS2304"
+                && (d.message.contains("TData") || d.message.contains("TValue"))
+        })
+        .collect();
+    assert!(
+        cannot_find.is_empty(),
+        "Issue #146: module-level `type X = unknown` aliases were stripped:\n{:#?}",
+        cannot_find
+    );
+
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-146-module-generic-unknown.svelte");
+}
+
+/// Cached transformed output must still contain the module-level `type ... = unknown`
+/// declarations — they're load-bearing for the interfaces that reference them.
+#[test]
+fn test_issue_146_transformed_output_preserves_unknown_aliases() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/lib/issue-146-module-generic-unknown.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-146 component"));
+
+    assert!(
+        content.contains("type TData = unknown") || content.contains("type TData=unknown"),
+        "Issue #146: transformed output missing `type TData = unknown`:\n{}",
+        content
+    );
+    assert!(
+        content.contains("type TValue = unknown") || content.contains("type TValue=unknown"),
+        "Issue #146: transformed output missing `type TValue = unknown`:\n{}",
+        content
+    );
+}

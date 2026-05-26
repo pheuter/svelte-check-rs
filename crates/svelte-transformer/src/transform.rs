@@ -1398,23 +1398,14 @@ declare module "svelte" {
         let base_offset: u32 = module.content_span.start.into();
         let rune_result =
             transform_runes_with_options(&module.content, base_offset, default_props_type);
-        let mut script_output = rune_result.output;
-        let mut script_mappings = rune_result.mappings;
-        let mut edits = Vec::new();
-        if !placeholder_types.is_empty() {
-            edits.extend(placeholder_type_alias_edits(
-                &script_output,
-                &placeholder_types,
-            ));
-        }
-        if !edits.is_empty() {
-            (script_output, script_mappings) = apply_script_edits_with_mappings(
-                &script_output,
-                base_offset,
-                &script_mappings,
-                edits,
-            );
-        }
+        // Module-script `type X = unknown` placeholder aliases are kept on
+        // purpose. Module-scope declarations (interfaces, other aliases) may use
+        // them as default type arguments, e.g. `interface Column<T = TValue>`;
+        // stripping them produces `TS2304 Cannot find name` (issue #146). They
+        // are stripped from the *instance* script below, where they would
+        // otherwise clash with the render function's generic parameters.
+        let script_output = rune_result.output;
+        let script_mappings = rune_result.mappings;
 
         let indent = script_indent(&script_output);
         if rune_result.uses_props_accessor {
