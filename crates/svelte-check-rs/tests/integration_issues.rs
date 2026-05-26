@@ -2095,3 +2095,33 @@ fn test_issue_146_transformed_output_preserves_unknown_aliases() {
         content
     );
 }
+// ============================================================================
+// ISSUE #145: UNTYPED `children` PROP INFERRED AS `unknown` INSTEAD OF `Snippet`
+// ============================================================================
+// `let { children } = $props()` with no annotation should still let
+// `{@render children?.()}` type-check, because `svelte-check` contextually
+// infers `children` (and other slot/snippet names) as optional Snippets. Our
+// transformer was widening to `Record<string, unknown>`, so `children` came
+// back as `unknown`, and tsgo reported TS2349 "This expression is not callable".
+//
+// Fixture: src/lib/issue-145-untyped-children.svelte
+//   Line 2: let { children } = $props();
+//   Line 6: {@render children?.()}
+#[test]
+fn test_issue_145_untyped_children_is_callable() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let not_callable: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("issue-145-untyped-children.svelte") && d.code == "TS2349")
+        .collect();
+    assert!(
+        not_callable.is_empty(),
+        "Issue #145: untyped `children` prop was not inferred as a Snippet:\n{:#?}",
+        not_callable
+    );
+
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-145-untyped-children.svelte");
+}

@@ -1056,6 +1056,17 @@ impl<'a> RuneScanner<'a> {
                         self.push_str("({} as __SvelteLoosen<");
                         self.push_str(&type_str);
                         self.push_str(">)");
+                    } else if self.default_props_type.is_none()
+                        && self.lhs_destructure_binds_children()
+                    {
+                        // Untyped `let { children } = $props()` — type `children`
+                        // as an optional no-arg Snippet so `{@render children?.()}`
+                        // type-checks (issue #145). The `<[]>` matters: Svelte's
+                        // Snippet resolves its rest args to `never` for non-tuple
+                        // parameter lists, so the alias default (`any[]`) would
+                        // reject a zero-arg call. `__SvelteLoosen` keeps the
+                        // pattern open for any other destructured props.
+                        self.push_str("({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>)");
                     } else {
                         self.push_str("({} as __SvelteLoosen<");
                         self.push_str(fallback_type);
@@ -1315,6 +1326,169 @@ impl<'a> RuneScanner<'a> {
 
         Some(type_str.to_string())
     }
+
+    /// Returns true when the `$props()` LHS is an object-destructure (with no
+    /// type annotation) that binds `children`.
+    ///
+    /// Svelte's `children` prop is an optional `Snippet`. Without an annotation
+    /// our fallback props type is `Record<string, unknown>`, which makes
+    /// `children` `unknown` and breaks `{@render children?.()}` (TS2349). When
+    /// `children` is destructured we instead loosen `{ children?: Snippet }`
+    /// (issue #145). The output buffer at this point ends with the LHS, e.g.
+    /// `let { children } = `.
+    fn lhs_destructure_binds_children(&self) -> bool {
+        let output = &self.output;
+        let bytes = output.as_bytes();
+
+        // Find the `$props()` assignment `=` (mirrors `extract_type_from_lhs`).
+        let mut equals_pos = None;
+        for i in (0..bytes.len()).rev() {
+            if bytes[i] != b'=' {
+                continue;
+            }
+            let prev = if i > 0 { bytes[i - 1] } else { 0 };
+            let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+            if next == b'=' || next == b'>' {
+                continue;
+            }
+            if prev == b'=' || prev == b'!' || prev == b'<' || prev == b'>' {
+                continue;
+            }
+            equals_pos = Some(i);
+            break;
+        }
+        let Some(equals_pos) = equals_pos else {
+            return false;
+        };
+
+        // No type annotation: the LHS ends with the destructure `}`.
+        let before = output[..equals_pos].trim_end();
+        if !before.ends_with('}') {
+            return false;
+        }
+
+        // Walk forward to find the last top-level `{...}` group (the
+        // destructure), tracking string/template/comment context so braces in
+        // string defaults don't throw off the depth count.
+        let Some(pattern) = last_top_level_brace_group(before) else {
+            return false;
+        };
+        pattern_binds_children(&pattern)
+    }
+}
+
+/// Extracts the contents of the last top-level `{...}` group in `src`,
+/// skipping braces that appear inside strings, template literals, or comments.
+fn last_top_level_brace_group(src: &str) -> Option<String> {
+    let mask = build_comment_mask(src);
+    let chars: Vec<(usize, char)> = src.char_indices().collect();
+    let mut depth = 0i32;
+    let mut group_start: Option<usize> = None;
+    let mut in_string: Option<char> = None;
+    let mut last_group: Option<(usize, usize)> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let (idx, ch) = chars[i];
+        if mask.get(idx).copied().unwrap_or(false) {
+            i += 1;
+            continue;
+        }
+        if let Some(quote) = in_string {
+            if ch == quote && !is_escaped(&chars, i) {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+        match ch {
+            '\'' | '"' | '`' => in_string = Some(ch),
+            '{' => {
+                if depth == 0 {
+                    group_start = Some(idx + ch.len_utf8());
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start) = group_start.take() {
+                        last_group = Some((start, idx));
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    last_group.map(|(start, end)| src[start..end].to_string())
+}
+
+fn is_escaped(chars: &[(usize, char)], i: usize) -> bool {
+    let mut backslashes = 0;
+    let mut j = i;
+    while j > 0 && chars[j - 1].1 == '\\' {
+        backslashes += 1;
+        j -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+/// Returns true if an object-destructure pattern binds `children` at the top
+/// level (`{ children }`, `{ children = ... }`, `{ children: c }`, `{ a, children }`).
+fn pattern_binds_children(pattern: &str) -> bool {
+    split_top_level_commas(pattern).iter().any(|part| {
+        let part = part.trim();
+        // Strip a default (`children = ...`) and a rename target
+        // (`children: local`); the prop name is the leading identifier.
+        let key = part
+            .split(['=', ':'])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches("...");
+        key == "children"
+    })
+}
+
+/// Splits on commas that sit at brace/paren/bracket depth 0, ignoring commas
+/// inside nested groups or strings.
+fn split_top_level_commas(src: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    let mut in_string: Option<char> = None;
+    let mut prev_escape = false;
+    for ch in src.chars() {
+        if let Some(quote) = in_string {
+            current.push(ch);
+            if prev_escape {
+                prev_escape = false;
+            } else if ch == '\\' {
+                prev_escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' | '`' => {
+                in_string = Some(ch);
+                current.push(ch);
+            }
+            '{' | '(' | '[' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '}' | ')' | ']' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => parts.push(std::mem::take(&mut current)),
+            _ => current.push(ch),
+        }
+    }
+    parts.push(current);
+    parts
 }
 
 fn build_comment_mask(source: &str) -> Vec<bool> {
@@ -1933,7 +2107,7 @@ function updateEndTime() {
         let result = transform_runes(
             r#"import 'virtual:something';
 
-let { children } = $props();"#,
+let { data } = $props();"#,
             0,
         );
         // The output should NOT contain the import string as part of the type
@@ -1955,24 +2129,56 @@ let { children } = $props();"#,
     #[test]
     fn test_props_with_colon_in_block_comment() {
         let result = transform_runes(
-            "let { children } = /* note: comment before props */ $props();",
+            "let { data } = /* note: comment before props */ $props();",
             0,
         );
         assert_eq!(
             result.output,
-            "let { children } = /* note: comment before props */ ({} as __SvelteLoosen<Record<string, unknown>>);"
+            "let { data } = /* note: comment before props */ ({} as __SvelteLoosen<Record<string, unknown>>);"
         );
     }
 
     #[test]
     fn test_props_with_trailing_inline_comment() {
         let result = transform_runes(
-            "let { children } = $props(); // trailing: comment after props",
+            "let { data } = $props(); // trailing: comment after props",
             0,
         );
         assert_eq!(
             result.output,
-            "let { children } = ({} as __SvelteLoosen<Record<string, unknown>>); // trailing: comment after props"
+            "let { data } = ({} as __SvelteLoosen<Record<string, unknown>>); // trailing: comment after props"
+        );
+    }
+
+    #[test]
+    fn test_props_untyped_children_is_snippet() {
+        // Issue #145: untyped `children` should be an optional no-arg Snippet,
+        // not `unknown`, so `{@render children?.()}` type-checks.
+        let result = transform_runes("let { children } = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { children } = ({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>);"
+        );
+    }
+
+    #[test]
+    fn test_props_untyped_children_among_other_props() {
+        // The Snippet fallback also applies when `children` is one of several
+        // destructured props; `__SvelteLoosen` keeps the rest open.
+        let result = transform_runes("let { foo, children, bar } = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { foo, children, bar } = ({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>);"
+        );
+    }
+
+    #[test]
+    fn test_props_annotated_children_unchanged() {
+        // An explicit annotation always wins over the `children` fallback.
+        let result = transform_runes("let { children }: { children: MySnippet } = $props();", 0);
+        assert_eq!(
+            result.output,
+            "let { children }: { children: MySnippet } = ({} as __SvelteLoosen<{ children: MySnippet }>);"
         );
     }
 

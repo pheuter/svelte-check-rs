@@ -165,7 +165,7 @@ async function __svelte_render() {
     // See: issue-28 - comment before props
     const flag = true;
 
-    let { children } = ({} as __SvelteLoosen<Record<string, unknown>>);
+    let { children } = ({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>);
 
 
 // === TEMPLATE TYPE-CHECK ===
