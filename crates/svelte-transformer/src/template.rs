@@ -1827,14 +1827,23 @@ impl TemplateContext {
         self.output.push_str(";\n");
 
         // Determine the loop variable pattern
-        let item_pattern = &block.context;
+        let item_pattern = block.context.trim();
         let index_var = block.index.as_ref().map(|i| i.to_string());
 
         if let Some(ref idx) = index_var {
-            self.emit(&format!(
-                "for (const [{}, {}] of __svelte_each_indexed(__each_{})) {{",
-                idx, item_pattern, id
-            ));
+            if item_pattern.is_empty() {
+                // Item-less form `{#each EXPR, INDEX}` — bind only the index.
+                // Array destructuring lets us drop the (unused) value element.
+                self.emit(&format!(
+                    "for (const [{}] of __svelte_each_indexed(__each_{})) {{",
+                    idx, id
+                ));
+            } else {
+                self.emit(&format!(
+                    "for (const [{}, {}] of __svelte_each_indexed(__each_{})) {{",
+                    idx, item_pattern, id
+                ));
+            }
         } else {
             self.emit(&format!("for (const {} of __each_{}) {{", item_pattern, id));
         }

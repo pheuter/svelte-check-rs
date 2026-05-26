@@ -1941,3 +1941,187 @@ fn test_issue_136_transformed_output_not_garbled() {
         assert_props_lhs_transform_is_valid(&content, name);
     }
 }
+
+// ============================================================================
+// ISSUE #143: EACH BLOCKS WITHOUT AN ITEM ({#each iterable, i})
+// ============================================================================
+// Svelte supports `{#each iterable, i}` to render N items without a value
+// binding (https://svelte.dev/docs/svelte/each#Each-blocks-without-an-item).
+// The transformer was emitting `const __each_0 = iterable, i;` (parsing the
+// comma as a JS declaration list) and `for (const  of __each_0)` (empty
+// iterator variable), which tsgo rejected with TS1155 / TS7005 / TS1123.
+//
+// Fixture: src/routes/issue-143-each-no-item/+page.svelte
+//   Line 7: {#each { length: count }, i}     (count-driven length)
+//   Line 11: {#each { length: 3 }, j}        (literal length)
+#[test]
+fn test_issue_143_each_without_item_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // Specific guard against the broken-transform error shape.
+    let each_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-143-each-no-item/+page.svelte")
+                && (d.code == "TS1155" || d.code == "TS1123" || d.code == "TS7005")
+        })
+        .collect();
+    assert!(
+        each_errors.is_empty(),
+        "Issue #143: item-less each block produced TS parse/init errors:\n{:#?}",
+        each_errors
+    );
+
+    // No other TS errors should land in this fixture either.
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-143-each-no-item/+page.svelte");
+}
+
+// ============================================================================
+// ISSUE #144: DUPLICATE PAGEPROPS IMPORT (./$types import hoisted but original
+// not stripped from the render body)
+// ============================================================================
+// When a `+page.svelte` did `import type { PageProps } from "./$types"` and
+// then `let { data }: PageProps = $props()`, the transformer hoisted the
+// `import type` to module scope *and* left the original import in
+// `__svelte_render`, producing two `TS2300 Duplicate identifier 'PageProps'`.
+//
+// Fixture: src/routes/issue-144-duplicate-pageprops/{+page.server.ts,+page.svelte}
+//   Line 2: import type { PageProps } from "./$types";
+//   Line 3: let { data }: PageProps = $props();
+#[test]
+fn test_issue_144_no_duplicate_pageprops_identifier() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let duplicate_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-144-duplicate-pageprops/+page.svelte")
+                && d.code == "TS2300"
+                && d.message.contains("PageProps")
+        })
+        .collect();
+    assert!(
+        duplicate_errors.is_empty(),
+        "Issue #144: hoisted PageProps import left a duplicate behind:\n{:#?}",
+        duplicate_errors
+    );
+
+    // Belt-and-suspenders: nothing else should fail on this fixture.
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "issue-144-duplicate-pageprops/+page.svelte",
+    );
+}
+
+/// Cached transformed output must contain exactly one `import type { PageProps }`.
+/// Two means the hoist+strip pair is broken (the bug from issue #144).
+#[test]
+fn test_issue_144_transformed_output_has_single_pageprops_import() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/routes/issue-144-duplicate-pageprops/+page.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-144 +page.svelte"));
+
+    let pageprops_import_count = content.matches("import type { PageProps }").count();
+    assert_eq!(
+        pageprops_import_count, 1,
+        "Issue #144: expected exactly 1 `import type {{ PageProps }}` in transformed output, found {}:\n{}",
+        pageprops_import_count, content
+    );
+}
+// ============================================================================
+// ISSUE #146: MODULE-LEVEL `type X = unknown` STRIPPED WHEN `generics=` PRESENT
+// ============================================================================
+// When a component has both a `<script lang="ts" module>` containing
+// `type T = unknown` declarations *and* a `<script generics="T extends ...">`
+// instance block that re-uses the same identifiers, the transformer stripped
+// the module-level aliases. Any other code that referenced them (e.g.
+// `interface Column<T = TValue>`) then failed with TS2304.
+//
+// Fixture: src/lib/issue-146-module-generic-unknown.svelte
+//   Module script lines 2-3: type TData = unknown; type TValue = unknown;
+//   Line 5:  interface Column<T = TValue>         <- TValue must still exist
+//   Line 11: interface DataTableProps<TPropData = TData, TPropValue = TValue>
+#[test]
+fn test_issue_146_module_unknown_aliases_not_stripped() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let cannot_find: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-146-module-generic-unknown.svelte")
+                && d.code == "TS2304"
+                && (d.message.contains("TData") || d.message.contains("TValue"))
+        })
+        .collect();
+    assert!(
+        cannot_find.is_empty(),
+        "Issue #146: module-level `type X = unknown` aliases were stripped:\n{:#?}",
+        cannot_find
+    );
+
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-146-module-generic-unknown.svelte");
+}
+
+/// Cached transformed output must still contain the module-level `type ... = unknown`
+/// declarations — they're load-bearing for the interfaces that reference them.
+#[test]
+fn test_issue_146_transformed_output_preserves_unknown_aliases() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/lib/issue-146-module-generic-unknown.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-146 component"));
+
+    assert!(
+        content.contains("type TData = unknown") || content.contains("type TData=unknown"),
+        "Issue #146: transformed output missing `type TData = unknown`:\n{}",
+        content
+    );
+    assert!(
+        content.contains("type TValue = unknown") || content.contains("type TValue=unknown"),
+        "Issue #146: transformed output missing `type TValue = unknown`:\n{}",
+        content
+    );
+}
+// ============================================================================
+// ISSUE #145: UNTYPED `children` PROP INFERRED AS `unknown` INSTEAD OF `Snippet`
+// ============================================================================
+// `let { children } = $props()` with no annotation should still let
+// `{@render children?.()}` type-check, because `svelte-check` contextually
+// infers `children` (and other slot/snippet names) as optional Snippets. Our
+// transformer was widening to `Record<string, unknown>`, so `children` came
+// back as `unknown`, and tsgo reported TS2349 "This expression is not callable".
+//
+// Fixture: src/lib/issue-145-untyped-children.svelte
+//   Line 2: let { children } = $props();
+//   Line 6: {@render children?.()}
+#[test]
+fn test_issue_145_untyped_children_is_callable() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let not_callable: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("issue-145-untyped-children.svelte") && d.code == "TS2349")
+        .collect();
+    assert!(
+        not_callable.is_empty(),
+        "Issue #145: untyped `children` prop was not inferred as a Snippet:\n{:#?}",
+        not_callable
+    );
+
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-145-untyped-children.svelte");
+}

@@ -18,7 +18,7 @@ use svelte_parser::{
     TemplateNode,
 };
 use swc_common::{FileName, SourceMap as SwcSourceMap, Spanned};
-use swc_ecma_ast::{Module, ModuleDecl, ModuleItem, Stmt};
+use swc_ecma_ast::{ImportSpecifier, Module, ModuleDecl, ModuleItem, Stmt};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
 
 /// The kind of SvelteKit route file.
@@ -783,6 +783,31 @@ fn parse_script_module(script: &str) -> Option<Module> {
     parser.parse_module().ok()
 }
 
+/// Returns true if `script` has a top-level import that binds `name`
+/// (named, default, or namespace specifier).
+///
+/// Used to avoid injecting a synthetic SvelteKit `./$types` import when the
+/// user already imports that identifier themselves — emitting both produces
+/// a `TS2300 Duplicate identifier` (issue #144).
+fn script_imports_identifier(script: &str, name: &str) -> bool {
+    let Some(module) = parse_script_module(script) else {
+        return false;
+    };
+    module.body.iter().any(|item| {
+        let ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) = item else {
+            return false;
+        };
+        import_decl.specifiers.iter().any(|spec| {
+            let local = match spec {
+                ImportSpecifier::Named(named) => &named.local.sym,
+                ImportSpecifier::Default(default) => &default.local.sym,
+                ImportSpecifier::Namespace(ns) => &ns.local.sym,
+            };
+            local.as_ref() == name
+        })
+    })
+}
+
 fn mask_range(bytes: &mut [u8], start: usize, end: usize) {
     if start >= end || start >= bytes.len() {
         return;
@@ -1158,7 +1183,21 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
 
     // Add SvelteKit type imports for route files
     // Use .js extension for NodeNext/Node16 module resolution
-    if let Some(props_type) = route_kind.props_type() {
+    //
+    // Skip the synthetic import when the user already imports the same
+    // identifier (typically `import type { PageProps } from './$types'`);
+    // their import is hoisted separately, so injecting ours too would yield
+    // `TS2300 Duplicate identifier` (issue #144).
+    let user_imports_props_type = route_kind.props_type().is_some_and(|props_type| {
+        doc.instance_script
+            .as_ref()
+            .is_some_and(|s| script_imports_identifier(&s.content, props_type))
+            || doc
+                .module_script
+                .as_ref()
+                .is_some_and(|s| script_imports_identifier(&s.content, props_type))
+    });
+    if let Some(props_type) = route_kind.props_type().filter(|_| !user_imports_props_type) {
         let types_path = if options.use_nodenext_imports {
             "./$types.js"
         } else {
@@ -1359,23 +1398,14 @@ declare module "svelte" {
         let base_offset: u32 = module.content_span.start.into();
         let rune_result =
             transform_runes_with_options(&module.content, base_offset, default_props_type);
-        let mut script_output = rune_result.output;
-        let mut script_mappings = rune_result.mappings;
-        let mut edits = Vec::new();
-        if !placeholder_types.is_empty() {
-            edits.extend(placeholder_type_alias_edits(
-                &script_output,
-                &placeholder_types,
-            ));
-        }
-        if !edits.is_empty() {
-            (script_output, script_mappings) = apply_script_edits_with_mappings(
-                &script_output,
-                base_offset,
-                &script_mappings,
-                edits,
-            );
-        }
+        // Module-script `type X = unknown` placeholder aliases are kept on
+        // purpose. Module-scope declarations (interfaces, other aliases) may use
+        // them as default type arguments, e.g. `interface Column<T = TValue>`;
+        // stripping them produces `TS2304 Cannot find name` (issue #146). They
+        // are stripped from the *instance* script below, where they would
+        // otherwise clash with the render function's generic parameters.
+        let script_output = rune_result.output;
+        let script_mappings = rune_result.mappings;
 
         let indent = script_indent(&script_output);
         if rune_result.uses_props_accessor {
