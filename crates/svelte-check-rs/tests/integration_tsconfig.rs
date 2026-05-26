@@ -204,6 +204,16 @@ fn run_check_json_internal(
     fixture_name: &str,
     emit_ts: bool,
 ) -> (i32, Vec<JsonDiagnostic>, String) {
+    run_check_json_with_args(fixture_name, emit_ts, &[])
+}
+
+/// Like `run_check_json_internal` but lets the caller append extra CLI args
+/// (e.g. `--tsconfig tsconfig.array.json`) without forking the whole helper.
+fn run_check_json_with_args(
+    fixture_name: &str,
+    emit_ts: bool,
+    extra_args: &[&str],
+) -> (i32, Vec<JsonDiagnostic>, String) {
     let _lock = lock_fixture(fixture_name);
 
     // Map fixture name to its ready flag
@@ -230,6 +240,7 @@ fn run_check_json_internal(
         .args(if emit_ts { vec!["--emit-ts"] } else { vec![] })
         .arg("--output")
         .arg("json")
+        .args(extra_args)
         .output()
         .expect("Failed to execute svelte-check-rs");
 
@@ -1524,4 +1535,48 @@ fn test_issue_7_use_directive_member_access() {
         "REGRESSION (issue #7): Type checking should work for use directives with member access.\n\
          Expected TypeScript errors for intentional type mismatches."
     );
+}
+
+// ============================================================================
+// EXTENDS-ARRAY TSCONFIG TESTS (Issue #140)
+// ============================================================================
+// `tsconfig.array.json` lives next to `tsconfig.json` in the sveltekit-bundler
+// fixture and uses the TS 5.0+ `extends: [...]` array form. Before #141, this
+// caused `load_tsconfig_snapshot_inner` to silently drop the entire extends
+// chain — emptying `compilerOptions.paths` — so every `$lib/...` import in the
+// fixture would fail with TS2307. The test below feeds the array tsconfig
+// through `--tsconfig` and asserts diagnostics stay byte-identical to the
+// canonical single-string run.
+
+#[test]
+#[serial]
+fn test_bundler_extends_array_no_module_resolution_errors() {
+    let (_exit_code, diagnostics, _stderr) = run_check_json_with_args(
+        "sveltekit-bundler",
+        false,
+        &["--tsconfig", "tsconfig.array.json"],
+    );
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // Before #141, every `$lib/...` import in the fixture would fail with
+    // TS2307 because the extends-array snapshot was empty. The repro is loud:
+    // a single regression here floods diagnostics with thousands of these.
+    assert_no_resolution_errors(&diagnostics);
+}
+
+#[test]
+#[serial]
+fn test_bundler_extends_array_matches_single_string_errors() {
+    let (exit_code, diagnostics, _stderr) = run_check_json_with_args(
+        "sveltekit-bundler",
+        false,
+        &["--tsconfig", "tsconfig.array.json"],
+    );
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // Semantic equivalence: the array form `["./.svelte-kit/tsconfig.json"]`
+    // must produce the exact same diagnostics as the string form
+    // `"./.svelte-kit/tsconfig.json"` that the rest of the suite asserts on.
+    assert_exact_errors(&diagnostics, &bundler_expected_errors());
+    assert_ne!(exit_code, 0, "Expected non-zero exit code due to errors");
 }

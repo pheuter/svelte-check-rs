@@ -837,11 +837,25 @@ impl TsgoRunner {
                 snapshot.root_dirs_base = tsconfig_path.parent().map(|p| p.to_owned());
             }
             if let Some(paths) = options.get("paths").and_then(Value::as_object) {
-                snapshot.paths_base = tsconfig_path.parent().map(|p| p.to_owned());
+                // Absolutize each entry against THIS tsconfig's parent dir so
+                // that paths inherited from an extends chain keep their
+                // defining tsconfig's base. Storing relative strings with a
+                // single shared `paths_base` would silently mis-resolve
+                // ancestor paths once the leaf (or a later array entry)
+                // defines its own paths block.
+                let parent = tsconfig_path.parent();
+                snapshot.paths_base = parent.map(|p| p.to_owned());
                 for (key, value) in paths {
                     if let Some(entries) = parse_string_array(Some(value)) {
                         if !entries.is_empty() {
-                            snapshot.paths.insert(key.clone(), entries);
+                            let resolved_entries: Vec<String> = match parent {
+                                Some(base) => entries
+                                    .into_iter()
+                                    .map(|e| resolve_path_value(base, &e))
+                                    .collect(),
+                                None => entries,
+                            };
+                            snapshot.paths.insert(key.clone(), resolved_entries);
                         }
                     }
                 }
@@ -2439,9 +2453,14 @@ mod tests {
         );
         let snapshot = runner.load_tsconfig_snapshot(&tsconfig_path);
 
+        // Paths are stored absolute (resolved against the defining tsconfig's
+        // dir) so that an extends chain with multiple paths-defining ancestors
+        // doesn't share a single mis-pointed base. The expected value is the
+        // absolutized form of `./from-b` relative to the temp root.
+        let expected = resolve_path_value(&temp_root, "./from-b");
         assert_eq!(
             snapshot.paths.get("$dup").map(Vec::as_slice),
-            Some(["./from-b".to_string()].as_slice()),
+            Some([expected].as_slice()),
             "later array entry must override earlier entry's path for the same key"
         );
     }
@@ -2478,9 +2497,10 @@ mod tests {
         );
         let snapshot = runner.load_tsconfig_snapshot(&tsconfig_path);
 
+        let expected = resolve_path_value(&temp_root, "./local");
         assert_eq!(
             snapshot.paths.get("$lib").map(Vec::as_slice),
-            Some(["./local".to_string()].as_slice()),
+            Some([expected].as_slice()),
             "current tsconfig's paths must override inherited paths"
         );
     }
