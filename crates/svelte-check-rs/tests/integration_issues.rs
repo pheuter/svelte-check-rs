@@ -1941,3 +1941,39 @@ fn test_issue_136_transformed_output_not_garbled() {
         assert_props_lhs_transform_is_valid(&content, name);
     }
 }
+
+// ============================================================================
+// ISSUE #143: EACH BLOCKS WITHOUT AN ITEM ({#each iterable, i})
+// ============================================================================
+// Svelte supports `{#each iterable, i}` to render N items without a value
+// binding (https://svelte.dev/docs/svelte/each#Each-blocks-without-an-item).
+// The transformer was emitting `const __each_0 = iterable, i;` (parsing the
+// comma as a JS declaration list) and `for (const  of __each_0)` (empty
+// iterator variable), which tsgo rejected with TS1155 / TS7005 / TS1123.
+//
+// Fixture: src/routes/issue-143-each-no-item/+page.svelte
+//   Line 7: {#each { length: count }, i}     (count-driven length)
+//   Line 11: {#each { length: 3 }, j}        (literal length)
+#[test]
+fn test_issue_143_each_without_item_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // Specific guard against the broken-transform error shape.
+    let each_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-143-each-no-item/+page.svelte")
+                && (d.code == "TS1155" || d.code == "TS1123" || d.code == "TS7005")
+        })
+        .collect();
+    assert!(
+        each_errors.is_empty(),
+        "Issue #143: item-less each block produced TS parse/init errors:\n{:#?}",
+        each_errors
+    );
+
+    // No other TS errors should land in this fixture either.
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-143-each-no-item/+page.svelte");
+}

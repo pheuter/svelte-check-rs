@@ -2549,7 +2549,10 @@ impl<'src> Parser<'src> {
         // that separates the expression from the pattern, since the expression itself
         // may contain TypeScript " as " casts.
         // Note: " as" may be followed by any whitespace (space, newline, tab).
-        let (expression, expression_span, rest, rest_offset) = {
+        // `item_less` marks the `{#each EXPR, INDEX}` form (no `as` binding),
+        // where `rest` holds only the index (plus an optional key) and there is
+        // no value binding. See `parse_each_rest` for how that changes parsing.
+        let (expression, expression_span, rest, rest_offset, item_less) = {
             // Find all occurrences of " as" followed by whitespace and use the last one
             let mut last_as_match: Option<(usize, usize)> = None;
             let mut search_start = 0;
@@ -2568,18 +2571,69 @@ impl<'src> Parser<'src> {
                     TextSize::from(u32::from(expr_start) + as_pos as u32),
                 );
                 let rest_start = as_pos + match_len;
-                (expr, expr_span, &full_expr[rest_start..], rest_start)
+                (expr, expr_span, &full_expr[rest_start..], rest_start, false)
+            } else if let Some(comma_pos) = Self::find_char_in_expr(&full_expr, ',') {
+                // `{#each EXPR, INDEX}` — each block without an item.
+                // <https://svelte.dev/docs/svelte/each#Each-blocks-without-an-item>
+                // Split on the top-level comma: left side is the iterable, the
+                // right side is the index (and possibly a `(key)`).
+                let expr = full_expr[..comma_pos].trim().to_string();
+                let expr_span = Span::new(
+                    expr_start,
+                    TextSize::from(u32::from(expr_start) + comma_pos as u32),
+                );
+                let rest_start = comma_pos + 1;
+                (expr, expr_span, &full_expr[rest_start..], rest_start, true)
             } else {
-                (full_expr.trim().to_string(), full_span, "", 0)
+                (full_expr.trim().to_string(), full_span, "", 0, false)
             }
         };
 
         let rest = rest.trim();
 
-        // Parse context and index using brace-aware parsing
-        let (context, context_span, index, key) = if let Some(paren_pos) =
-            Self::find_char_in_expr(rest, '(')
-        {
+        // Parse context and index using brace-aware parsing.
+        //
+        // For the item-less form `{#each EXPR, INDEX (key)?}`, `rest` is just
+        // `INDEX (key)?` with no value binding, so `context` stays empty and the
+        // whole pre-paren chunk is the index.
+        let (context, context_span, index, key) = if item_less {
+            let (idx_part, key) = if let Some(paren_pos) = Self::find_char_in_expr(rest, '(') {
+                let key_start = paren_pos + 1;
+                let key_end = rest.len().saturating_sub(1); // trailing )
+                let key_expr = if key_start < key_end {
+                    rest[key_start..key_end].trim().to_string()
+                } else {
+                    String::new()
+                };
+                let key_span_start = TextSize::from(
+                    u32::from(expr_start) + rest_offset as u32 + paren_pos as u32 + 1,
+                );
+                let key_span_end =
+                    TextSize::from(u32::from(expr_start) + rest_offset as u32 + key_end as u32);
+                (
+                    rest[..paren_pos].trim(),
+                    Some(EachKey {
+                        span: Span::new(key_span_start, key_span_end),
+                        expression: key_expr,
+                    }),
+                )
+            } else {
+                (rest, None)
+            };
+
+            let ctx_span_start = TextSize::from(u32::from(expr_start) + rest_offset as u32);
+            let index = if idx_part.is_empty() {
+                None
+            } else {
+                Some(SmolStr::new(idx_part))
+            };
+            (
+                String::new(),
+                Span::new(ctx_span_start, ctx_span_start),
+                index,
+                key,
+            )
+        } else if let Some(paren_pos) = Self::find_char_in_expr(rest, '(') {
             // Has key expression: item, index (key)
             let before_paren = rest[..paren_pos].trim();
 
@@ -3439,6 +3493,47 @@ mod tests {
             assert!(block.key.is_some());
             let key = block.key.as_ref().unwrap();
             assert_eq!(key.expression.trim(), "item.id");
+        } else {
+            panic!("Expected EachBlock");
+        }
+    }
+
+    #[test]
+    fn test_parse_each_without_item() {
+        // `{#each EXPR, INDEX}` — each block without an item (issue #143).
+        let result = Parser::new(
+            "{#each { length: 4 }, i}{i}{/each}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        if let TemplateNode::EachBlock(block) = &result.document.fragment.nodes[0] {
+            assert_eq!(block.expression.trim(), "{ length: 4 }");
+            assert_eq!(block.context.trim(), "");
+            assert_eq!(block.index, Some(SmolStr::new("i")));
+            assert!(block.key.is_none());
+        } else {
+            panic!("Expected EachBlock");
+        }
+    }
+
+    #[test]
+    fn test_parse_each_without_item_with_key() {
+        // Item-less each blocks may still carry a `(key)`.
+        let result = Parser::new(
+            "{#each { length: 4 }, i (i)}{i}{/each}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        if let TemplateNode::EachBlock(block) = &result.document.fragment.nodes[0] {
+            assert_eq!(block.expression.trim(), "{ length: 4 }");
+            assert_eq!(block.context.trim(), "");
+            assert_eq!(block.index, Some(SmolStr::new("i")));
+            let key = block.key.as_ref().expect("expected key");
+            assert_eq!(key.expression.trim(), "i");
         } else {
             panic!("Expected EachBlock");
         }
