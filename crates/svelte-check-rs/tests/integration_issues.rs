@@ -1977,3 +1977,62 @@ fn test_issue_143_each_without_item_no_ts_errors() {
     // No other TS errors should land in this fixture either.
     assert_no_diagnostics_in_file(&ts_diagnostics, "issue-143-each-no-item/+page.svelte");
 }
+
+// ============================================================================
+// ISSUE #144: DUPLICATE PAGEPROPS IMPORT (./$types import hoisted but original
+// not stripped from the render body)
+// ============================================================================
+// When a `+page.svelte` did `import type { PageProps } from "./$types"` and
+// then `let { data }: PageProps = $props()`, the transformer hoisted the
+// `import type` to module scope *and* left the original import in
+// `__svelte_render`, producing two `TS2300 Duplicate identifier 'PageProps'`.
+//
+// Fixture: src/routes/issue-144-duplicate-pageprops/{+page.server.ts,+page.svelte}
+//   Line 2: import type { PageProps } from "./$types";
+//   Line 3: let { data }: PageProps = $props();
+#[test]
+fn test_issue_144_no_duplicate_pageprops_identifier() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let duplicate_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-144-duplicate-pageprops/+page.svelte")
+                && d.code == "TS2300"
+                && d.message.contains("PageProps")
+        })
+        .collect();
+    assert!(
+        duplicate_errors.is_empty(),
+        "Issue #144: hoisted PageProps import left a duplicate behind:\n{:#?}",
+        duplicate_errors
+    );
+
+    // Belt-and-suspenders: nothing else should fail on this fixture.
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "issue-144-duplicate-pageprops/+page.svelte",
+    );
+}
+
+/// Cached transformed output must contain exactly one `import type { PageProps }`.
+/// Two means the hoist+strip pair is broken (the bug from issue #144).
+#[test]
+fn test_issue_144_transformed_output_has_single_pageprops_import() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/routes/issue-144-duplicate-pageprops/+page.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-144 +page.svelte"));
+
+    let pageprops_import_count = content.matches("import type { PageProps }").count();
+    assert_eq!(
+        pageprops_import_count, 1,
+        "Issue #144: expected exactly 1 `import type {{ PageProps }}` in transformed output, found {}:\n{}",
+        pageprops_import_count, content
+    );
+}
