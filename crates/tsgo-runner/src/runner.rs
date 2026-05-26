@@ -304,6 +304,47 @@ struct TsconfigSnapshot {
     files_base: Option<Utf8PathBuf>,
 }
 
+impl TsconfigSnapshot {
+    /// Layer `other` on top of `self`. Used to walk an `extends` array (TS
+    /// 5.0+) where later entries override earlier ones. Only fields that
+    /// `other` actually sets clobber `self`; everything else is preserved so
+    /// upstream bases still contribute what later bases leave untouched.
+    fn merge_from(&mut self, other: TsconfigSnapshot) {
+        if other.base_url.is_some() {
+            self.base_url = other.base_url;
+            self.base_url_base = other.base_url_base;
+        }
+        if other.root_dirs.is_some() {
+            self.root_dirs = other.root_dirs;
+            self.root_dirs_base = other.root_dirs_base;
+        }
+        if !other.paths.is_empty() {
+            self.paths_base = other.paths_base;
+            for (key, value) in other.paths {
+                self.paths.insert(key, value);
+            }
+        }
+        if other.allow_js.is_some() {
+            self.allow_js = other.allow_js;
+        }
+        if other.check_js.is_some() {
+            self.check_js = other.check_js;
+        }
+        if other.include.is_some() {
+            self.include = other.include;
+            self.include_base = other.include_base;
+        }
+        if other.exclude.is_some() {
+            self.exclude = other.exclude;
+            self.exclude_base = other.exclude_base;
+        }
+        if other.files.is_some() {
+            self.files = other.files;
+            self.files_base = other.files_base;
+        }
+    }
+}
+
 struct TsconfigOverlayOptions<'a> {
     temp_root: &'a Utf8Path,
     tsconfig_path: &'a Utf8Path,
@@ -775,16 +816,16 @@ impl TsgoRunner {
             None => return TsconfigSnapshot::default(),
         };
 
-        let mut snapshot = if let Some(extends_value) = value.get("extends").and_then(Value::as_str)
-        {
-            if let Some(parent) = self.resolve_extends_path(tsconfig_path, extends_value) {
-                self.load_tsconfig_snapshot_inner(&parent, visited)
-            } else {
-                TsconfigSnapshot::default()
+        // TS 5.0+ allows `extends` to be an array; later entries override
+        // earlier ones, and the current tsconfig wins over all of them. The
+        // single-string form is just the one-element case.
+        let mut snapshot = TsconfigSnapshot::default();
+        for entry in collect_extends_entries(value.get("extends")) {
+            if let Some(parent) = self.resolve_extends_path(tsconfig_path, &entry) {
+                let parent_snapshot = self.load_tsconfig_snapshot_inner(&parent, visited);
+                snapshot.merge_from(parent_snapshot);
             }
-        } else {
-            TsconfigSnapshot::default()
-        };
+        }
 
         if let Some(options) = value.get("compilerOptions").and_then(Value::as_object) {
             if let Some(base_url) = options.get("baseUrl").and_then(Value::as_str) {
@@ -1457,6 +1498,23 @@ impl TsgoRunner {
         stats.timings.total_time = total_start.elapsed();
 
         Ok(TsgoCheckOutput { diagnostics, stats })
+    }
+}
+
+/// Normalize a tsconfig `extends` field into an ordered list of entries.
+///
+/// TS 5.0+ accepts either a single string or an array of strings; earlier
+/// versions only accept a string. Returning a `Vec` lets the caller treat
+/// both shapes uniformly. Non-string array members are skipped silently to
+/// match TypeScript's tolerant parsing.
+fn collect_extends_entries(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -2272,5 +2330,158 @@ mod tests {
         let cache_base = node_modules.join(".cache/svelte-check-rs");
         assert!(cache_a.starts_with(&cache_base));
         assert!(cache_b.starts_with(&cache_base));
+    }
+
+    /// Regression for #140: when `extends` is an array (TS 5.0+), each
+    /// referenced tsconfig must contribute its `compilerOptions.paths` to the
+    /// resolved snapshot. Before the fix, `Value::as_str` silently returned
+    /// `None` on the array, so the whole extends chain was dropped and paths
+    /// like `$lib` from `.svelte-kit/tsconfig.json` were lost — yielding
+    /// thousands of "Cannot find module '$lib/...'" errors in real projects.
+    #[test]
+    fn test_load_tsconfig_snapshot_resolves_extends_array() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        std::fs::write(
+            temp_root.join("base-a.json"),
+            br#"{
+                "compilerOptions": {
+                    "paths": {
+                        "$foo": ["./src/foo"]
+                    }
+                }
+            }"#,
+        )
+        .expect("write base-a");
+
+        std::fs::write(
+            temp_root.join("base-b.json"),
+            br#"{
+                "compilerOptions": {
+                    "paths": {
+                        "$lib": ["./src/lib"],
+                        "$lib/*": ["./src/lib/*"]
+                    }
+                }
+            }"#,
+        )
+        .expect("write base-b");
+
+        let tsconfig_path = temp_root.join("tsconfig.json");
+        std::fs::write(
+            &tsconfig_path,
+            br#"{
+                "extends": ["./base-a.json", "./base-b.json"],
+                "compilerOptions": { "erasableSyntaxOnly": false }
+            }"#,
+        )
+        .expect("write tsconfig");
+
+        let runner = TsgoRunner::new(
+            Utf8PathBuf::from("/nonexistent/tsgo"),
+            temp_root.clone(),
+            Some(tsconfig_path.clone()),
+            HashMap::new(),
+        );
+
+        let snapshot = runner.load_tsconfig_snapshot(&tsconfig_path);
+
+        assert!(
+            snapshot.paths.contains_key("$foo"),
+            "expected $foo from base-a in extends array, got keys: {:?}",
+            snapshot.paths.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            snapshot.paths.contains_key("$lib"),
+            "expected $lib from base-b in extends array, got keys: {:?}",
+            snapshot.paths.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            snapshot.paths.contains_key("$lib/*"),
+            "expected $lib/* from base-b in extends array, got keys: {:?}",
+            snapshot.paths.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// When the same path alias appears in multiple bases of an extends
+    /// array, the later entry must win (TS 5.0+ semantics).
+    #[test]
+    fn test_extends_array_later_entry_overrides_earlier_for_same_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        std::fs::write(
+            temp_root.join("base-a.json"),
+            br#"{ "compilerOptions": { "paths": { "$dup": ["./from-a"] } } }"#,
+        )
+        .expect("write base-a");
+        std::fs::write(
+            temp_root.join("base-b.json"),
+            br#"{ "compilerOptions": { "paths": { "$dup": ["./from-b"] } } }"#,
+        )
+        .expect("write base-b");
+
+        let tsconfig_path = temp_root.join("tsconfig.json");
+        std::fs::write(
+            &tsconfig_path,
+            br#"{ "extends": ["./base-a.json", "./base-b.json"] }"#,
+        )
+        .expect("write tsconfig");
+
+        let runner = TsgoRunner::new(
+            Utf8PathBuf::from("/nonexistent/tsgo"),
+            temp_root.clone(),
+            Some(tsconfig_path.clone()),
+            HashMap::new(),
+        );
+        let snapshot = runner.load_tsconfig_snapshot(&tsconfig_path);
+
+        assert_eq!(
+            snapshot.paths.get("$dup").map(Vec::as_slice),
+            Some(["./from-b".to_string()].as_slice()),
+            "later array entry must override earlier entry's path for the same key"
+        );
+    }
+
+    /// The current tsconfig's own `paths` block must still win over anything
+    /// inherited from an extends array.
+    #[test]
+    fn test_extends_array_current_paths_override_inherited() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        std::fs::write(
+            temp_root.join("base-a.json"),
+            br#"{ "compilerOptions": { "paths": { "$lib": ["./inherited"] } } }"#,
+        )
+        .expect("write base-a");
+
+        let tsconfig_path = temp_root.join("tsconfig.json");
+        std::fs::write(
+            &tsconfig_path,
+            br#"{
+                "extends": ["./base-a.json"],
+                "compilerOptions": { "paths": { "$lib": ["./local"] } }
+            }"#,
+        )
+        .expect("write tsconfig");
+
+        let runner = TsgoRunner::new(
+            Utf8PathBuf::from("/nonexistent/tsgo"),
+            temp_root.clone(),
+            Some(tsconfig_path.clone()),
+            HashMap::new(),
+        );
+        let snapshot = runner.load_tsconfig_snapshot(&tsconfig_path);
+
+        assert_eq!(
+            snapshot.paths.get("$lib").map(Vec::as_slice),
+            Some(["./local".to_string()].as_slice()),
+            "current tsconfig's paths must override inherited paths"
+        );
     }
 }
