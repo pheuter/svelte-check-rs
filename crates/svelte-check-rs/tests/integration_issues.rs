@@ -2188,3 +2188,73 @@ fn test_issue_149_transformed_output_uses_getter_setter_tuple() {
         content
     );
 }
+// ============================================================================
+// ISSUE #150: RENAMING `class` IN AN UNTYPED `$props()` DESTRUCTURE
+// ============================================================================
+// `let { children, class: className = "" } = $props()` (no explicit Props type)
+// produced two false positives that `svelte-check` does not:
+//   - TS2749: `'className' refers to a value, but is being used as a type here`
+//     — the rename `class: className` was misread as a type annotation, so the
+//     generated export type was `class?: className` (a value in a type slot).
+//   - TS2339: `Property 'class' does not exist on type '{ children?: ... }'`
+//     — the untyped-children `$props()` placeholder was a closed object, so the
+//     renamed sibling could not be destructured.
+//
+// Fixtures:
+//   src/lib/issue-150-class-rename.svelte           (the component)
+//   src/routes/issue-150-class-rename/+page.svelte  (a consumer)
+#[test]
+fn test_issue_150_class_rename_no_false_positive() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let rename_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-150-class-rename.svelte")
+                && (d.code == "TS2749" || d.code == "TS2339")
+        })
+        .collect();
+    assert!(
+        rename_errors.is_empty(),
+        "Issue #150: untyped `class: className` rename produced false positives:\n{:#?}",
+        rename_errors
+    );
+
+    // Both the component and its consumer must be clean.
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-150-class-rename.svelte");
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-150-class-rename/+page.svelte");
+}
+
+/// The generated component-export type must infer a type for the renamed prop,
+/// not reuse the local alias name. `class?: cls` in the `return { props: ... }`
+/// line (the bug) means the rename was misparsed as a type annotation.
+#[test]
+fn test_issue_150_transformed_output_does_not_use_alias_as_type() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/lib/issue-150-class-rename.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-150 component"));
+
+    // Inspect only the component-export line so the assertion can't be fooled
+    // by the prop alias appearing elsewhere (template refs, comments).
+    let props_line = content
+        .lines()
+        .find(|l| l.contains("return { props:"))
+        .unwrap_or_else(|| panic!("missing `return {{ props: ... }}` line:\n{}", content));
+
+    assert!(
+        !props_line.contains("class?: cls"),
+        "Issue #150: export type uses the local alias `cls` as a type:\n{}",
+        props_line
+    );
+    // Positive check: the renamed prop should be present with an inferred type.
+    assert!(
+        props_line.contains("class?: unknown"),
+        "Issue #150: expected `class?: unknown` in the export type, got:\n{}",
+        props_line
+    );
+}

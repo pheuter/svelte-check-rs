@@ -1064,9 +1064,21 @@ impl<'a> RuneScanner<'a> {
                         // type-checks (issue #145). The `<[]>` matters: Svelte's
                         // Snippet resolves its rest args to `never` for non-tuple
                         // parameter lists, so the alias default (`any[]`) would
-                        // reject a zero-arg call. `__SvelteLoosen` keeps the
-                        // pattern open for any other destructured props.
-                        self.push_str("({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>)");
+                        // reject a zero-arg call.
+                        //
+                        // The `[key: string]: any` index signature keeps the shape
+                        // open so *sibling* props destructured alongside `children`
+                        // (e.g. `let { children, class: className } = $props()`) are
+                        // still accessible — without it they error with TS2339
+                        // (issue #150). A declared property wins over the index
+                        // signature for known keys, so `children` keeps its precise
+                        // Snippet type while everything else is `any` (untyped props
+                        // are intentionally loose, matching `svelte-check`). This is
+                        // a plain type literal, not `__SvelteLoosen`, whose index
+                        // branch is an invalid mapped type that silently no-ops.
+                        self.push_str(
+                            "({} as { children?: __SvelteSnippet<[]>; [key: string]: any })",
+                        );
                     } else {
                         self.push_str("({} as __SvelteLoosen<");
                         self.push_str(fallback_type);
@@ -2153,22 +2165,25 @@ let { data } = $props();"#,
     #[test]
     fn test_props_untyped_children_is_snippet() {
         // Issue #145: untyped `children` should be an optional no-arg Snippet,
-        // not `unknown`, so `{@render children?.()}` type-checks.
+        // not `unknown`, so `{@render children?.()}` type-checks. The index
+        // signature keeps sibling props accessible (issue #150).
         let result = transform_runes("let { children } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { children } = ({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>);"
+            "let { children } = ({} as { children?: __SvelteSnippet<[]>; [key: string]: any });"
         );
     }
 
     #[test]
     fn test_props_untyped_children_among_other_props() {
-        // The Snippet fallback also applies when `children` is one of several
-        // destructured props; `__SvelteLoosen` keeps the rest open.
+        // Issue #150: when `children` is one of several destructured props, the
+        // `[key: string]: any` index signature keeps the siblings (`foo`, `bar`)
+        // accessible instead of erroring with TS2339; `children` still wins the
+        // known key, keeping its precise Snippet type.
         let result = transform_runes("let { foo, children, bar } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { foo, children, bar } = ({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>);"
+            "let { foo, children, bar } = ({} as { children?: __SvelteSnippet<[]>; [key: string]: any });"
         );
     }
 

@@ -241,14 +241,19 @@ fn parse_single_property(prop_str: &str, base_offset: u32) -> Option<PropPropert
 
     let name = name_part.trim();
 
-    // Check if name contains type annotation: `prop: Type`
-    let (final_name, type_ann) = if let Some(colon_idx) = name.find(':') {
-        let n = name[..colon_idx].trim();
-        let t = name[colon_idx + 1..].trim();
-        (n, Some(t.to_string()))
-    } else {
-        (name, None)
+    // Inside a destructuring pattern, `prop: local` is a *rename* (bind the
+    // `prop` property to the local variable `local`), NOT a type annotation —
+    // TypeScript does not allow inline type annotations within a destructuring
+    // pattern (the type goes after the closing brace: `let { a }: T = ...`).
+    // The exposed prop name is the part before the colon; the alias after it is
+    // a local-binding name and irrelevant to the generated props type. Treating
+    // the alias as a type produced types like `class?: className` — a value used
+    // as a type, i.e. TS2749 (see issue #150).
+    let final_name = match name.find(':') {
+        Some(colon_idx) => name[..colon_idx].trim(),
+        None => name,
     };
+    let type_ann: Option<String> = None;
 
     // Check if default is $bindable
     let (is_bindable, actual_default) = if let Some(default) = default_part {

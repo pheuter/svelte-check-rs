@@ -237,6 +237,26 @@ fn test_props_with_rest() {
     );
 }
 
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/150 — an
+// untyped `$props()` that *renames* a prop (`class: className`) must treat the
+// alias as a local-binding name, not a type. The generated export type used to
+// be `class?: className` (a value used as a type → TS2749). It must instead be
+// `class?: unknown`, and the `$props()` placeholder must stay open so the
+// renamed sibling is destructurable alongside `children` (no TS2339).
+#[test]
+fn test_props_untyped_class_rename() {
+    transform_snapshot(
+        "props_untyped_class_rename",
+        r#"<script lang="ts">
+    let { children, class: className = "" } = $props();
+</script>
+
+<span class={className}>
+    {@render children?.()}
+</span>"#,
+    );
+}
+
 #[test]
 fn test_props_with_comment_before() {
     transform_snapshot(
