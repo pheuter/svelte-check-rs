@@ -11,6 +11,10 @@
 //! - `let props = $props()` (generic props object)
 
 use source_map::Span;
+use std::sync::Arc;
+use swc_common::{FileName, SourceMap as SwcSourceMap, Spanned};
+use swc_ecma_ast::{Expr, Lit};
+use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
 
 /// Information about the component's props extracted from `$props()`.
 #[derive(Debug, Clone, Default)]
@@ -657,7 +661,20 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
             ""
         };
 
-        let prop_type = prop.type_annotation.as_deref().unwrap_or("unknown");
+        // Infer the prop type from its default value (mirrors svelte2tsx) so a
+        // wrong-typed prop is flagged at the call site, e.g. `let { label = "" }`
+        // makes `<Comp label={123} />` an error. Falls back to `unknown` when the
+        // default can't be classified — consumer-equivalent to svelte2tsx's `any`,
+        // so no spurious errors are introduced.
+        let prop_type = prop
+            .type_annotation
+            .clone()
+            .or_else(|| {
+                prop.default_value
+                    .as_deref()
+                    .and_then(infer_type_from_default)
+            })
+            .unwrap_or_else(|| "unknown".to_string());
 
         type_parts.push(format!("{}{}: {}", prop.name, optional, prop_type));
     }
@@ -676,6 +693,59 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
         }
     } else {
         base
+    }
+}
+
+/// Infer a TypeScript type for an untyped prop from its default-value expression,
+/// mirroring svelte2tsx's inference (`packages/svelte2tsx/.../ExportedNames.ts`).
+///
+/// The default expression is parsed with swc and classified by AST node, exactly
+/// as svelte2tsx classifies the TS AST node. Anything not in the table returns
+/// `None`, so the caller falls back to `unknown`; for a consumer-facing prop type
+/// that accepts any passed value just like svelte2tsx's `any`, so falling back
+/// never introduces a spurious error — it only forgoes the extra check. Parsing
+/// (rather than string heuristics) matters for cases like `-5`, which is a unary
+/// expression — not a numeric literal — so it is correctly *not* inferred as
+/// `number` (which would wrongly reject `<Comp prop="x" />`).
+fn infer_type_from_default(default: &str) -> Option<String> {
+    let trimmed = default.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let cm: Arc<SwcSourceMap> = Default::default();
+    let fm = cm.new_source_file(
+        FileName::Custom("svelte-prop-default".into()).into(),
+        trimmed.to_string(),
+    );
+    let syntax = Syntax::Typescript(TsSyntax {
+        tsx: false,
+        ..Default::default()
+    });
+    let mut parser = Parser::new(syntax, StringInput::from(&*fm), None);
+    let expr = parser.parse_expr().ok()?;
+
+    match &*expr {
+        Expr::Lit(Lit::Str(_)) => Some("string".to_string()),
+        Expr::Lit(Lit::Num(_)) => Some("number".to_string()),
+        Expr::Lit(Lit::Bool(_)) => Some("boolean".to_string()),
+        Expr::Arrow(_) => Some("Function".to_string()),
+        Expr::Object(_) => Some("Record<string, any>".to_string()),
+        Expr::Array(_) => Some("any[]".to_string()),
+        // `value as Foo` -> `Foo`: slice the type annotation's source text
+        // (swc BytePos is 1-based per the fresh source file, so offset by
+        // `fm.start_pos`).
+        Expr::TsAs(as_expr) => {
+            let span = as_expr.type_ann.span();
+            let lo = span.lo.0.saturating_sub(fm.start_pos.0) as usize;
+            let hi = span.hi.0.saturating_sub(fm.start_pos.0) as usize;
+            trimmed.get(lo..hi).map(|s| s.trim().to_string())
+        }
+        // A bare identifier default (e.g. an imported/declared constant) carries a
+        // useful type via `typeof`. `undefined` does not; `null` parses as a
+        // literal, not an identifier, so it is handled by the fallback.
+        Expr::Ident(id) if &*id.sym != "undefined" => Some(format!("typeof {}", id.sym)),
+        _ => None,
     }
 }
 
@@ -710,6 +780,43 @@ fn is_complex_type_reference(type_ann: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_infer_type_from_default() {
+        // Literals classify to their precise types (matches svelte2tsx).
+        assert_eq!(infer_type_from_default("\"\""), Some("string".to_string()));
+        // Template literals are not string literals (svelte2tsx's
+        // `ts.isStringLiteral` is false for them too) -> fall back.
+        assert_eq!(infer_type_from_default("`x`"), None);
+        assert_eq!(infer_type_from_default("0"), Some("number".to_string()));
+        assert_eq!(infer_type_from_default("3.14"), Some("number".to_string()));
+        assert_eq!(infer_type_from_default("true"), Some("boolean".to_string()));
+        assert_eq!(infer_type_from_default("[]"), Some("any[]".to_string()));
+        assert_eq!(
+            infer_type_from_default("{ a: 1 }"),
+            Some("Record<string, any>".to_string())
+        );
+        assert_eq!(
+            infer_type_from_default("() => {}"),
+            Some("Function".to_string())
+        );
+        assert_eq!(
+            infer_type_from_default("DEFAULT"),
+            Some("typeof DEFAULT".to_string())
+        );
+        assert_eq!(infer_type_from_default("x as Foo"), Some("Foo".to_string()));
+
+        // `-5` is a unary expression, not a numeric literal — svelte2tsx infers
+        // `any` for it, so we must NOT infer `number` (that would wrongly reject
+        // a string value at the call site). Falls back to `unknown` (caller),
+        // which is consumer-equivalent to `any`.
+        assert_eq!(infer_type_from_default("-5"), None);
+        // `undefined`/`null` and unclassifiable expressions carry no useful type.
+        assert_eq!(infer_type_from_default("undefined"), None);
+        assert_eq!(infer_type_from_default("null"), None);
+        assert_eq!(infer_type_from_default("foo()"), None);
+        assert_eq!(infer_type_from_default("a.b"), None);
+    }
 
     #[test]
     fn test_extract_simple_destructuring() {

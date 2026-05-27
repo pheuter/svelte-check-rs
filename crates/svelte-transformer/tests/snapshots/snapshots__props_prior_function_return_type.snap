@@ -173,7 +173,7 @@ async function __svelte_render() {
 
 // === TEMPLATE TYPE-CHECK ===
   isAdmin(role) ? "Admin" : "User";
-return { props: null as any as { role?: unknown }, exports: {}, slots: {}, events: {} };
+return { props: null as any as { role?: string }, exports: {}, slots: {}, events: {} };
 }
 
 // === COMPONENT TYPE EXPORT ===

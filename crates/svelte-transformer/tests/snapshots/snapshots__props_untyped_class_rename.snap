@@ -170,7 +170,7 @@ async function __svelte_render() {
     class: className,
   });
   children?.();
-return { props: null as any as { children: unknown; class?: unknown }, exports: {}, slots: {}, events: {} };
+return { props: null as any as { children: unknown; class?: string }, exports: {}, slots: {}, events: {} };
 }
 
 // === COMPONENT TYPE EXPORT ===

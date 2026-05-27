@@ -167,7 +167,7 @@ async function __svelte_render() {
 
 // === TEMPLATE TYPE-CHECK ===
   label;
-return { props: null as any as { label?: unknown }, exports: {}, slots: {}, events: {} };
+return { props: null as any as { label?: string }, exports: {}, slots: {}, events: {} };
 }
 
 // === COMPONENT TYPE EXPORT ===

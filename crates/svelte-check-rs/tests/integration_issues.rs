@@ -2251,10 +2251,11 @@ fn test_issue_150_transformed_output_does_not_use_alias_as_type() {
         "Issue #150: export type uses the local alias `cls` as a type:\n{}",
         props_line
     );
-    // Positive check: the renamed prop should be present with an inferred type.
+    // Positive check: the renamed prop is present with the type inferred from its
+    // `= ""` default (`string`), matching svelte2tsx — not the alias, not a value.
     assert!(
-        props_line.contains("class?: unknown"),
-        "Issue #150: expected `class?: unknown` in the export type, got:\n{}",
+        props_line.contains("class?: string"),
+        "Issue #150: expected `class?: string` (inferred from the default) in the export type, got:\n{}",
         props_line
     );
 }
