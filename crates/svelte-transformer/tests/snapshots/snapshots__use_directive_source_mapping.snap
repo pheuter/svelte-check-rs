@@ -153,8 +153,10 @@ declare function __svelte_ensure_component<T>(type: T): NonNullable<__SvelteCall
 declare module "svelte" {
   export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
     component: __SvelteComponent<Props, Exports>,
+    // `mount()` accepts extra props (matching svelte-check), but declared props
+    // are still checked — `& Record<string, any>` admits the extras.
     options: Omit<MountOptions<Props>, "props"> & {
-      props: __SvelteLoosen<Props>;
+      props: Props & Record<string, any>;
     }
   ): Exports;
   export function mount(
@@ -186,5 +188,5 @@ export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (2) ===
-  0: generated 6307..6427 -> original 18..138
-  1: generated 6510..6522 -> original 159..171
+  0: generated 6466..6586 -> original 18..138
+  1: generated 6669..6681 -> original 159..171

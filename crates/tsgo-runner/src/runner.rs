@@ -174,8 +174,10 @@ declare global {
 declare module "svelte" {
   export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
     component: __SvelteComponent<Props, Exports>,
+    // `mount()` accepts extra props (matching svelte-check), but declared props
+    // are still checked — `& Record<string, any>` admits the extras.
     options: Omit<MountOptions<Props>, "props"> & {
-      props: __SvelteLoosen<Props>;
+      props: Props & Record<string, any>;
     }
   ): Exports;
   export function mount(

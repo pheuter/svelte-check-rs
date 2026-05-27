@@ -2373,3 +2373,29 @@ fn test_issue_151_transformed_output_only_aliases_real_stores() {
         callback_aliases
     );
 }
+// ============================================================================
+// `mount()` ACCEPTS EXTRA PROPS (parity with svelte-check)
+// ============================================================================
+// `svelte-check` lets `mount()` receive props beyond a component's declared
+// ones (Svelte's own `mount` type is loose), while still type-checking the
+// declared props. svelte-check-rs typed the mount props as `__SvelteLoosen<Props>`
+// (now an identity), so an extra prop produced a spurious TS2769 "No overload
+// matches this call". The mount overload now uses `Props & Record<string, any>`.
+//
+// Fixtures: src/lib/mount-loosen.svelte.ts + src/lib/mount-loosen-child.svelte
+#[test]
+fn test_mount_accepts_extra_props() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let mount_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("mount-loosen.svelte.ts"))
+        .collect();
+    assert!(
+        mount_errors.is_empty(),
+        "mount() should accept extra props without error, but got:\n{:#?}",
+        mount_errors
+    );
+}
