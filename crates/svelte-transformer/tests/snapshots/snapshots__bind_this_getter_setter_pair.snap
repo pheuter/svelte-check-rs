@@ -170,7 +170,8 @@ async function __svelte_render() {
 
 
 // === TEMPLATE TYPE-CHECK ===
-  const __bind_this_pair_0: [() => any, (value: ElementTagNameMap["input"]) => void] = [() => inputRef, setInputRef];
+  const __bind_this_0 = null as unknown as ElementTagNameMap["input"];
+  (setInputRef)(__bind_this_0);
 return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, events: {} };
 }
 
@@ -181,4 +182,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 5 ===
+=== Source Map Mappings: 4 ===

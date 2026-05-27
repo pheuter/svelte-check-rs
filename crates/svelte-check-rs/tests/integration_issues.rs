@@ -2165,11 +2165,11 @@ fn test_issue_149_bind_this_getter_setter_no_false_positive() {
     );
 }
 
-/// The transformed output must route the getter/setter form through the
-/// `[getter, setter]` tuple, not the broken `() => ref, setter = __bind_this`
-/// comma-operator assignment.
+/// The transformed output must call the setter with the typed element
+/// (`(setInputRef)(__bind_this_N)`, matching svelte2tsx), not the broken
+/// `() => ref, setter = __bind_this` comma-operator assignment.
 #[test]
-fn test_issue_149_transformed_output_uses_getter_setter_tuple() {
+fn test_issue_149_transformed_output_calls_setter_with_element() {
     let fixture_path = fixtures_dir().join("sveltekit-bundler");
     let _ = run_check_json(&fixture_path);
 
@@ -2178,8 +2178,8 @@ fn test_issue_149_transformed_output_uses_getter_setter_tuple() {
         .unwrap_or_else(|| panic!("missing transformed cache for issue-149 +page.svelte"));
 
     assert!(
-        content.contains("__bind_this_pair_"),
-        "Issue #149: transformed output should use the `[getter, setter]` tuple form:\n{}",
+        content.contains("(setInputRef)(__bind_this_"),
+        "Issue #149: transformed output should call the setter with the element:\n{}",
         content
     );
     assert!(

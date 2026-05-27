@@ -605,10 +605,11 @@ fn test_bind_with_getter_setter_pair_unchanged() {
 }
 
 // Regression for https://github.com/pheuter/svelte-check-rs/issues/149 — the
-// getter/setter (function-binding) form of `bind:this` must be split into a
-// `[getter, setter]` tuple rather than emitted as `() => ref, setter = __bind_this`,
-// which the comma operator parses as `(() => ref), (setter = ...)` (TS2695 + TS2630).
-// The setter is type-checked against the element type; the getter stays loose.
+// getter/setter (function-binding) form of `bind:this` must call the setter with
+// the typed element (`(setter)(element)`, matching svelte2tsx) rather than emit
+// `() => ref, setter = __bind_this`, which the comma operator parses as
+// `(() => ref), (setter = ...)` (TS2695 + TS2630). The setter is type-checked
+// against the element type; the getter is left untyped (as in svelte2tsx).
 #[test]
 fn test_bind_this_getter_setter_pair() {
     transform_snapshot(

@@ -1325,47 +1325,38 @@ impl TemplateContext {
             } else if directive.kind == DirectiveKind::Bind {
                 if directive.name == "this" {
                     let bind_type = bind_this_type(element_name);
-                    if let Some((getter, setter)) =
+                    if let Some((_getter, setter)) =
                         split_top_level_comma(&expr.expression, expr.expression_span)
                     {
                         // Getter/setter (function-binding) form of `bind:this`:
                         //   `bind:this={() => ref, (el) => ...}`
                         // At runtime Svelte calls `bind_this(element, setter, getter)`,
                         // so the *setter* (second expression) receives the element.
-                        // Type-check the setter against the element type and keep the
-                        // getter loose — its return is the *current* ref, which is
-                        // nullable before mount, so constraining it would be wrong.
-                        // Emitting a plain assignment here instead would turn the
-                        // expression into `() => ref, setter = __bind_this_N`, which
-                        // the comma operator parses as `(() => ref), (setter = ...)`
-                        // — see issue #149.
-                        let getter_span = getter.span;
+                        // Match svelte2tsx, which emits `(setter)(element)`: type-check
+                        // the setter by calling it with the typed element and leave the
+                        // getter untyped (its return is the current ref, nullable before
+                        // mount). Emitting a plain assignment here instead would turn the
+                        // expression into `() => ref, setter = __bind_this_N`, which the
+                        // comma operator parses as `(() => ref), (setter = ...)` — the
+                        // bug in issue #149.
                         let setter_span = setter.span;
-                        let getter = self.transform_expr(&getter.text);
                         let setter = self.transform_expr(&setter.text);
-                        self.expressions.push(TemplateExpression {
-                            expression: getter.clone(),
-                            span: getter_span,
-                            context,
-                        });
                         self.expressions.push(TemplateExpression {
                             expression: setter.clone(),
                             span: setter_span,
                             context,
                         });
                         let id = self.next_id();
-                        let indent_str = self.indent_str();
-                        self.output.push_str(&indent_str);
-                        self.output.push_str(&format!(
-                            "const __bind_this_pair_{}: [() => any, (value: {}) => void] = [",
+                        self.emit(&format!(
+                            "const __bind_this_{} = null as unknown as {};",
                             id, bind_type
                         ));
-                        self.record_mapping_at_current_pos(&getter, getter_span);
-                        self.output.push_str(&getter);
-                        self.output.push_str(", ");
+                        let indent_str = self.indent_str();
+                        self.output.push_str(&indent_str);
+                        self.output.push('(');
                         self.record_mapping_at_current_pos(&setter, setter_span);
                         self.output.push_str(&setter);
-                        self.output.push_str("];\n");
+                        self.output.push_str(&format!(")(__bind_this_{});\n", id));
                     } else {
                         let transformed = self.transform_expr(&expr.expression);
                         self.expressions.push(TemplateExpression {
