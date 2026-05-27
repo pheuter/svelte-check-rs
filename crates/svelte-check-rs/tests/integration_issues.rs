@@ -2125,3 +2125,66 @@ fn test_issue_145_untyped_children_is_callable() {
 
     assert_no_diagnostics_in_file(&ts_diagnostics, "issue-145-untyped-children.svelte");
 }
+// ============================================================================
+// ISSUE #149: GETTER/SETTER FORM OF `bind:this`
+// ============================================================================
+// Svelte 5 supports the function-binding form of `bind:this`:
+//   <input bind:this={() => inputRef, setInputRef} />
+// where the first expression is a getter and the second a setter. The
+// transformer used to emit this as a plain assignment:
+//   () => inputRef, setInputRef = __bind_this_0;
+// which the comma operator parses as `(() => inputRef), (setInputRef = ...)`,
+// producing TS2695 (left side of comma unused) and TS2630 (cannot assign to a
+// function). `svelte-check` reports neither. The fix splits the comma into a
+// `[getter, setter]` tuple, type-checking the setter against the element type.
+//
+// Fixture: src/routes/issue-149-bind-this-getter-setter/+page.svelte
+#[test]
+fn test_issue_149_bind_this_getter_setter_no_false_positive() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let comma_op_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-149-bind-this-getter-setter/+page.svelte")
+                && (d.code == "TS2695" || d.code == "TS2630")
+        })
+        .collect();
+    assert!(
+        comma_op_errors.is_empty(),
+        "Issue #149: getter/setter `bind:this` produced comma-operator errors:\n{:#?}",
+        comma_op_errors
+    );
+
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "issue-149-bind-this-getter-setter/+page.svelte",
+    );
+}
+
+/// The transformed output must route the getter/setter form through the
+/// `[getter, setter]` tuple, not the broken `() => ref, setter = __bind_this`
+/// comma-operator assignment.
+#[test]
+fn test_issue_149_transformed_output_uses_getter_setter_tuple() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/routes/issue-149-bind-this-getter-setter/+page.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-149 +page.svelte"));
+
+    assert!(
+        content.contains("__bind_this_pair_"),
+        "Issue #149: transformed output should use the `[getter, setter]` tuple form:\n{}",
+        content
+    );
+    assert!(
+        !content.contains("setInputRef = __bind_this_"),
+        "Issue #149: transformed output still uses the broken comma-operator assignment:\n{}",
+        content
+    );
+}
