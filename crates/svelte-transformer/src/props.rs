@@ -58,14 +58,12 @@ pub fn extract_props_info(
     original_script: &str,
     base_offset: u32,
 ) -> Option<PropsInfo> {
-    // Find $props in the original script - it could be $props() or $props<Type>()
-    let props_idx = original_script.find("$props")?;
-
-    // Verify it's actually a $props call (followed by `(` or `<`)
-    let after_props = &original_script[props_idx + 6..];
-    if !after_props.starts_with('(') && !after_props.starts_with('<') {
-        return None;
-    }
+    // Find the `$props()`/`$props<...>()` rune call, skipping any `$props`
+    // mentioned in a comment or string literal. A plain `find("$props")` is
+    // fooled by an explanatory comment like `// untyped $props()` and then fails
+    // the backward search for the declaration, silently falling back to
+    // `Record<string, unknown>`.
+    let props_idx = find_props_rune(original_script)?;
 
     // Look backwards from $props to find the variable declaration
     let before_props = &original_script[..props_idx];
@@ -78,6 +76,74 @@ pub fn extract_props_info(
 
     // Parse the declaration pattern
     parse_props_declaration(declaration, base_offset + decl_start as u32)
+}
+
+/// Find the byte offset of the `$props` rune call (`$props(` or `$props<`),
+/// skipping occurrences inside strings and comments. Returns the offset of the
+/// `$`. `$props.x` accessors and identifiers like `$propsFoo` are not matched.
+fn find_props_rune(script: &str) -> Option<usize> {
+    let mut chars = script.char_indices().peekable();
+    let mut in_string: Option<char> = None;
+    let mut prev_escape = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && chars.peek().map(|(_, c)| *c) == Some('/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if let Some(quote) = in_string {
+            if prev_escape {
+                prev_escape = false;
+            } else if ch == '\\' {
+                prev_escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek().map(|(_, c)| *c) == Some('/') {
+            chars.next();
+            in_line_comment = true;
+            continue;
+        }
+        if ch == '/' && chars.peek().map(|(_, c)| *c) == Some('*') {
+            chars.next();
+            in_block_comment = true;
+            continue;
+        }
+        if ch == '\'' || ch == '"' || ch == '`' {
+            in_string = Some(ch);
+            continue;
+        }
+
+        // A `$props` token is a rune only when it is not part of a larger
+        // identifier (`$propsFoo`) and is immediately followed by `(` or `<`.
+        if ch == '$' && script[idx..].starts_with("$props") {
+            let preceded_by_ident = idx > 0
+                && script[..idx]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+            let after = idx + "$props".len();
+            let next = script[after..].chars().next();
+            if !preceded_by_ident && matches!(next, Some('(') | Some('<')) {
+                return Some(idx);
+            }
+        }
+    }
+
+    None
 }
 
 /// Parse a props declaration to extract property information.
@@ -664,6 +730,33 @@ mod tests {
 
         assert!(info.is_destructured);
         assert_eq!(info.type_annotation, Some("Props".to_string()));
+    }
+
+    #[test]
+    fn test_extract_ignores_props_in_comment_and_string() {
+        // A `$props` mentioned in a comment or string must not be mistaken for
+        // the rune call; otherwise the backward search for the declaration fails
+        // and props silently fall back to `Record<string, unknown>`.
+        let script = r#"// configure via $props() below
+        const note = "see $props docs";
+        let { a, b } = $props();"#;
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert!(info.is_destructured);
+        assert_eq!(info.properties.len(), 2);
+        assert_eq!(info.properties[0].name, "a");
+        assert_eq!(info.properties[1].name, "b");
+    }
+
+    #[test]
+    fn test_find_props_rune_skips_accessor_and_lookalikes() {
+        // `$props.id()` accessor and `$propsFoo` identifier are not the rune call.
+        assert_eq!(find_props_rune("let { a } = $props();"), Some(12));
+        assert_eq!(find_props_rune("const x = $propsFoo();"), None);
+        assert_eq!(
+            find_props_rune("const id = $props.id(); let { a } = $props();"),
+            Some(36)
+        );
     }
 
     #[test]
