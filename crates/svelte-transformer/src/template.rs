@@ -302,6 +302,23 @@ fn transform_store_subscriptions_in_template(
             continue;
         }
 
+        // Member access like `obj.$prop` (e.g. ProseMirror's `selection.$from`)
+        // is never a store subscription. Emit the `.$identifier` verbatim without
+        // collecting it as a store name (issue #151).
+        if ch == '.' && chars.peek() == Some(&'$') {
+            result.push(ch); // '.'
+            result.push(chars.next().unwrap()); // '$'
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    result.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
         if ch == '$' {
             if let Some(&next) = chars.peek() {
                 if next == '$' {

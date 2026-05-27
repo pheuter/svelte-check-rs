@@ -848,6 +848,50 @@ fn test_store_subscription_in_script_function() {
     );
 }
 
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/151 — a
+// `$`-prefixed *property access* (e.g. ProseMirror's `selection.$from`) must not
+// be collected as a store subscription. No `let $from!: __StoreValue<typeof from>`
+// alias should be emitted (`from` does not exist → TS2552/TS2304).
+#[test]
+fn test_dollar_member_access_not_a_store() {
+    transform_snapshot(
+        "dollar_member_access_not_a_store",
+        r#"<script lang="ts">
+    interface ResolvedPos { pos: number; }
+    interface Selection { $from: ResolvedPos; $to: ResolvedPos; }
+    let { selection }: { selection: Selection } = $props();
+    function getPos(): number {
+        return selection.$from.pos;
+    }
+</script>
+
+<p>{getPos()}</p>
+<p>{selection.$to.pos}</p>"#,
+    );
+}
+
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/151 — a
+// `$`-prefixed *callback parameter* (`($item) => ...`) is not a store. Only a
+// genuine store (`form`, declared bare) gets a `$form` alias; `$item`/`$val` do
+// not, since `item`/`val` are never referenceable names.
+#[test]
+fn test_dollar_callback_param_not_a_store() {
+    transform_snapshot(
+        "dollar_callback_param_not_a_store",
+        r#"<script lang="ts">
+    import { writable } from "svelte/store";
+    const form = writable({ name: "" });
+    function update() {
+        form.update(($form) => ({ ...$form, name: "x" }));
+    }
+    const items = [1, 2, 3];
+    const mapped = items.map(($item) => $item * 2);
+</script>
+
+<button onclick={update}>{mapped.join(",")}</button>"#,
+    );
+}
+
 // ============================================================================
 // COMPLEX GENERIC COMPONENT TESTS
 // ============================================================================

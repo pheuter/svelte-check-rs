@@ -2258,3 +2258,117 @@ fn test_issue_150_transformed_output_does_not_use_alias_as_type() {
         props_line
     );
 }
+// ============================================================================
+// ISSUE #151: OVER-EAGER `$`-PREFIXED STORE DETECTION
+// ============================================================================
+// The transformer scanned for `$identifier` tokens and emitted a store alias
+// `let $X!: __StoreValue<typeof X>` for each, without checking context. Two
+// false positives resulted (TS2552/TS2304 under both tsgo and tsc; `svelte-check`
+// reports neither):
+//   - Pattern A: `$`-prefixed *property access* (ProseMirror's `selection.$from`)
+//     — `$from` is a property of `selection`, not a `$store`.
+//   - Pattern B: `$`-prefixed *callback parameters* (`($item) => $item * 2`)
+//     — `item` is never a real name, so `typeof item` is undefined.
+//
+// Fixtures:
+//   src/lib/issue-151-member-access.svelte
+//   src/lib/issue-151-callback-param.svelte
+#[test]
+fn test_issue_151_dollar_member_access_not_a_store() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let store_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-151-member-access.svelte")
+                && (d.code == "TS2552" || d.code == "TS2304")
+        })
+        .collect();
+    assert!(
+        store_errors.is_empty(),
+        "Issue #151: `selection.$from` was treated as a store subscription:\n{:#?}",
+        store_errors
+    );
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-151-member-access.svelte");
+}
+
+#[test]
+fn test_issue_151_dollar_callback_param_not_a_store() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let store_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-151-callback-param.svelte")
+                && (d.code == "TS2552" || d.code == "TS2304")
+        })
+        .collect();
+    assert!(
+        store_errors.is_empty(),
+        "Issue #151: a `$`-prefixed callback parameter was treated as a store:\n{:#?}",
+        store_errors
+    );
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-151-callback-param.svelte");
+}
+
+/// The transformed output must not emit store aliases for the false-positive
+/// `$`-prefixed identifiers, while still emitting one for the real store.
+///
+/// Inspect only the generated alias *declaration* lines (`let $X!: ...` /
+/// `declare let $X: ...`) so the assertions can't be fooled by the fixture's
+/// explanatory comments, which are carried through into the output verbatim.
+#[test]
+fn test_issue_151_transformed_output_only_aliases_real_stores() {
+    fn aliased_store_names(content: &str) -> Vec<String> {
+        content
+            .lines()
+            .map(str::trim_start)
+            .filter_map(|line| {
+                let rest = line
+                    .strip_prefix("let $")
+                    .or_else(|| line.strip_prefix("declare let $"))?;
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                // Alias lines are `let $X!: ...` (definite assignment) or
+                // `declare let $X: ...`; accept the optional `!`.
+                let after = rest[name.len()..].trim_start();
+                let after = after.strip_prefix('!').unwrap_or(after);
+                (!name.is_empty() && after.trim_start().starts_with(':')).then_some(name)
+            })
+            .collect()
+    }
+
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let member =
+        find_transformed_cache_content(&fixture_path, "src/lib/issue-151-member-access.svelte.ts")
+            .unwrap_or_else(|| panic!("missing transformed cache for issue-151 member-access"));
+    assert!(
+        aliased_store_names(&member).is_empty(),
+        "Issue #151: emitted store aliases for `$`-prefixed property access: {:?}",
+        aliased_store_names(&member)
+    );
+
+    let callback =
+        find_transformed_cache_content(&fixture_path, "src/lib/issue-151-callback-param.svelte.ts")
+            .unwrap_or_else(|| panic!("missing transformed cache for issue-151 callback-param"));
+    let callback_aliases = aliased_store_names(&callback);
+    assert!(
+        !callback_aliases.iter().any(|n| n == "item" || n == "val"),
+        "Issue #151: emitted a store alias for a `$`-prefixed callback parameter: {:?}",
+        callback_aliases
+    );
+    // The genuine store still subscribes.
+    assert!(
+        callback_aliases.iter().any(|n| n == "form"),
+        "Issue #151: dropped the alias for the real store `form`: {:?}",
+        callback_aliases
+    );
+}

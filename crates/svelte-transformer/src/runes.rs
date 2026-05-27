@@ -198,6 +198,22 @@ fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
             continue;
         }
 
+        // Member access like `obj.$prop` (e.g. ProseMirror's `selection.$from`)
+        // is never a store subscription — the `$prop` is a property of `obj`,
+        // not a `$store` auto-subscription. Consume the `.$identifier` so it is
+        // not collected as a store name (issue #151).
+        if ch == '.' && chars.peek() == Some(&'$') {
+            chars.next(); // consume '$'
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
         if ch == '$' {
             if let Some(&next) = chars.peek() {
                 if next == '$' {
@@ -2109,6 +2125,36 @@ function updateEndTime() {
             "Expected $formData to remain but got:\n{}",
             result.output
         );
+        assert!(result.store_names.contains("formData"));
+    }
+
+    #[test]
+    fn test_dollar_member_access_not_collected_as_store() {
+        // Issue #151: `selection.$from` is a property access, not a `$store`
+        // subscription, so neither `from` nor `to` should be collected.
+        let result = transform_runes(
+            r#"function getPos() {
+    return selection.$from.pos + selection.$to.pos;
+}"#,
+            0,
+        );
+        assert!(
+            !result.store_names.contains("from"),
+            "Expected `from` not to be a store (member access), got: {:?}",
+            result.store_names
+        );
+        assert!(
+            !result.store_names.contains("to"),
+            "Expected `to` not to be a store (member access), got: {:?}",
+            result.store_names
+        );
+    }
+
+    #[test]
+    fn test_dollar_store_at_expression_start_still_collected() {
+        // A leading `$store` is still a subscription even when followed by member
+        // access on the *store value* (`$formData.x`).
+        let result = transform_runes("function f() { return $formData.value; }", 0);
         assert!(result.store_names.contains("formData"));
     }
 
