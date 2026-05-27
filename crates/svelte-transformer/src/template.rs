@@ -302,6 +302,23 @@ fn transform_store_subscriptions_in_template(
             continue;
         }
 
+        // Member access like `obj.$prop` (e.g. ProseMirror's `selection.$from`)
+        // is never a store subscription. Emit the `.$identifier` verbatim without
+        // collecting it as a store name (issue #151).
+        if ch == '.' && chars.peek() == Some(&'$') {
+            result.push(ch); // '.'
+            result.push(chars.next().unwrap()); // '$'
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    result.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
         if ch == '$' {
             if let Some(&next) = chars.peek() {
                 if next == '$' {
@@ -1307,19 +1324,53 @@ impl TemplateContext {
                 self.emit(&format!("void __action_result_{};", id));
             } else if directive.kind == DirectiveKind::Bind {
                 if directive.name == "this" {
-                    let transformed = self.transform_expr(&expr.expression);
-                    self.expressions.push(TemplateExpression {
-                        expression: transformed.clone(),
-                        span: expr.expression_span,
-                        context,
-                    });
-                    let id = self.next_id();
                     let bind_type = bind_this_type(element_name);
-                    self.emit(&format!(
-                        "const __bind_this_{} = null as unknown as {};",
-                        id, bind_type
-                    ));
-                    self.emit(&format!("{} = __bind_this_{};", transformed, id));
+                    if let Some((_getter, setter)) =
+                        split_top_level_comma(&expr.expression, expr.expression_span)
+                    {
+                        // Getter/setter (function-binding) form of `bind:this`:
+                        //   `bind:this={() => ref, (el) => ...}`
+                        // At runtime Svelte calls `bind_this(element, setter, getter)`,
+                        // so the *setter* (second expression) receives the element.
+                        // Match svelte2tsx, which emits `(setter)(element)`: type-check
+                        // the setter by calling it with the typed element and leave the
+                        // getter untyped (its return is the current ref, nullable before
+                        // mount). Emitting a plain assignment here instead would turn the
+                        // expression into `() => ref, setter = __bind_this_N`, which the
+                        // comma operator parses as `(() => ref), (setter = ...)` — the
+                        // bug in issue #149.
+                        let setter_span = setter.span;
+                        let setter = self.transform_expr(&setter.text);
+                        self.expressions.push(TemplateExpression {
+                            expression: setter.clone(),
+                            span: setter_span,
+                            context,
+                        });
+                        let id = self.next_id();
+                        self.emit(&format!(
+                            "const __bind_this_{} = null as unknown as {};",
+                            id, bind_type
+                        ));
+                        let indent_str = self.indent_str();
+                        self.output.push_str(&indent_str);
+                        self.output.push('(');
+                        self.record_mapping_at_current_pos(&setter, setter_span);
+                        self.output.push_str(&setter);
+                        self.output.push_str(&format!(")(__bind_this_{});\n", id));
+                    } else {
+                        let transformed = self.transform_expr(&expr.expression);
+                        self.expressions.push(TemplateExpression {
+                            expression: transformed.clone(),
+                            span: expr.expression_span,
+                            context,
+                        });
+                        let id = self.next_id();
+                        self.emit(&format!(
+                            "const __bind_this_{} = null as unknown as {};",
+                            id, bind_type
+                        ));
+                        self.emit(&format!("{} = __bind_this_{};", transformed, id));
+                    }
                 } else if let Some((getter, setter)) =
                     split_top_level_comma(&expr.expression, expr.expression_span)
                 {

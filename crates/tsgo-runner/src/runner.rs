@@ -93,10 +93,10 @@ declare global {
 
   type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
-  type __SvelteLoosen<T> =
-    T extends (...args: any) => any ? T :
-    T extends readonly any[] ? T :
-    T extends object ? { [K in keyof T]: T[K]; [key: string]: unknown } : T;
+  // Identity: component props are checked strictly (matching svelte-check). The
+  // earlier mapped-type-plus-index-signature form was invalid TS (TS7061) that
+  // tsgo silently dropped to this identity anyway.
+  type __SvelteLoosen<T> = T;
 
   type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;
 
@@ -174,8 +174,10 @@ declare global {
 declare module "svelte" {
   export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
     component: __SvelteComponent<Props, Exports>,
+    // `mount()` accepts extra props (matching svelte-check), but declared props
+    // are still checked — `& Record<string, any>` admits the extras.
     options: Omit<MountOptions<Props>, "props"> & {
-      props: __SvelteLoosen<Props>;
+      props: Props & Record<string, any>;
     }
   ): Exports;
   export function mount(
@@ -2074,6 +2076,22 @@ impl TransformedFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shared helpers must be valid TS. `__SvelteLoosen` previously mixed a
+    /// mapped type with an index signature (`{ [K in keyof T]: T[K]; [key:
+    /// string]: unknown }`), which is invalid (TS7061) and silently no-ops. It
+    /// is now an identity; guard against the invalid form creeping back.
+    #[test]
+    fn test_shared_helpers_loosen_is_valid_identity() {
+        assert!(
+            SHARED_HELPERS_DTS.contains("type __SvelteLoosen<T> = T;"),
+            "expected `__SvelteLoosen` to be the identity type"
+        );
+        assert!(
+            !SHARED_HELPERS_DTS.contains("[K in keyof T]: T[K]; [key: string]"),
+            "`__SvelteLoosen` must not mix a mapped type with an index signature (TS7061)"
+        );
+    }
 
     #[test]
     fn test_transformed_files() {

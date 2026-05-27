@@ -150,16 +150,105 @@ fn script_indent(script: &str) -> String {
     String::new()
 }
 
+/// Collect identifiers that can be referenced as values in `script` — every
+/// identifier *not* immediately preceded by `.` (a member access) and not itself
+/// `$`-prefixed (a store token or rune). A genuine `$store` subscription targets
+/// a real name (an import or a `let`/`const`/`function`/… declaration), so its
+/// bare `store` shows up here. A `$`-prefixed callback parameter such as the
+/// `$item` in `items.map(($item) => $item * 2)` does not — `item` never appears
+/// as a referenceable name — so it can be filtered out (issue #151).
+fn collect_referenceable_names(script: &str) -> HashSet<SmolStr> {
+    let mut names = HashSet::new();
+    let chars: Vec<char> = script.chars().collect();
+    let mut i = 0;
+    let mut in_string: Option<char> = None;
+    let mut prev_escape = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && chars.get(i + 1) == Some(&'/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if let Some(quote) = in_string {
+            if prev_escape {
+                prev_escape = false;
+            } else if ch == '\\' {
+                prev_escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '/' && chars.get(i + 1) == Some(&'/') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == '/' && chars.get(i + 1) == Some(&'*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == '\'' || ch == '"' || ch == '`' {
+            in_string = Some(ch);
+            i += 1;
+            continue;
+        }
+
+        if ch.is_ascii_alphabetic() || ch == '_' || ch == '$' {
+            let start = i;
+            while i < chars.len()
+                && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '$')
+            {
+                i += 1;
+            }
+            let preceded_by_dot = start > 0 && chars[start - 1] == '.';
+            if !preceded_by_dot && chars[start] != '$' {
+                let ident: String = chars[start..i].iter().collect();
+                names.insert(SmolStr::new(&ident));
+            }
+            continue;
+        }
+
+        i += 1;
+    }
+
+    names
+}
+
 fn render_store_aliases(
     store_names: &HashSet<SmolStr>,
+    referenceable: &HashSet<SmolStr>,
     indent: &str,
     in_function: bool,
 ) -> Option<String> {
-    if store_names.is_empty() {
+    // A `$X` is only a real store subscription when `X` is a referenceable name
+    // in the script; otherwise the alias `let $X!: __StoreValue<typeof X>` refers
+    // to a non-existent `X` (TS2552/TS2304) — issue #151.
+    let mut stores: Vec<_> = store_names
+        .iter()
+        .filter(|name| referenceable.contains(*name))
+        .collect();
+    if stores.is_empty() {
         return None;
     }
-
-    let mut stores: Vec<_> = store_names.iter().collect();
     stores.sort();
 
     let mut out = String::new();
@@ -1131,6 +1220,20 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
         collect_placeholder_types(&instance.content, &mut placeholder_types);
     }
 
+    // Names that a `$store` subscription may legitimately target, gathered from
+    // both script blocks so a store declared in `<script module>` and used in the
+    // instance/template is still recognized. Used to drop spurious store aliases
+    // for `$`-prefixed identifiers that are not real names (issue #151).
+    let mut store_scope = String::new();
+    if let Some(module) = &doc.module_script {
+        store_scope.push_str(&module.content);
+        store_scope.push('\n');
+    }
+    if let Some(instance) = &doc.instance_script {
+        store_scope.push_str(&instance.content);
+    }
+    let referenceable_names = collect_referenceable_names(&store_scope);
+
     if !placeholder_types.is_empty() {
         let generic_names: HashSet<_> = generic_decls
             .iter()
@@ -1259,11 +1362,12 @@ type __StoreValue<S> = S extends { subscribe(fn: (value: infer T) => void): any 
 // Helper to mark specific props as optional without expanding complex unions.
 type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
-// Loosen props to allow extra top-level fields while preserving declared shapes.
-type __SvelteLoosen<T> =
-  T extends (...args: any) => any ? T :
-  T extends readonly any[] ? T :
-  T extends object ? { [K in keyof T]: T[K]; [key: string]: unknown } : T;
+// Component props are checked strictly: extra props on a component tag and extra
+// destructured names both error, matching `svelte-check`. So this is an identity.
+// (The earlier `{ [K in keyof T]: T[K]; [key: string]: unknown }` mixed a mapped
+// type with an index signature — invalid TS (TS7061) that tsgo silently dropped
+// to this same identity anyway.)
+type __SvelteLoosen<T> = T;
 
 // Helper for $props.<name>() accessors.
 type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;
@@ -1344,8 +1448,10 @@ declare function __svelte_ensure_component<T>(type: T): NonNullable<__SvelteCall
 declare module "svelte" {
   export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
     component: __SvelteComponent<Props, Exports>,
+    // `mount()` accepts extra props (matching svelte-check), but declared props
+    // are still checked — `& Record<string, any>` admits the extras.
     options: Omit<MountOptions<Props>, "props"> & {
-      props: __SvelteLoosen<Props>;
+      props: Props & Record<string, any>;
     }
   ): Exports;
   export function mount(
@@ -1417,7 +1523,12 @@ declare module "svelte" {
             output.push_str(&decl);
             builder.add_generated(&decl);
         }
-        if let Some(aliases) = render_store_aliases(&rune_result.store_names, &indent, false) {
+        if let Some(aliases) = render_store_aliases(
+            &rune_result.store_names,
+            &referenceable_names,
+            &indent,
+            false,
+        ) {
             output.push_str(&aliases);
             builder.add_generated(&aliases);
         }
@@ -1500,7 +1611,7 @@ declare module "svelte" {
         for name in &template_body_result.store_names {
             store_names.insert(name.clone());
         }
-        let store_aliases = render_store_aliases(&store_names, &indent, true);
+        let store_aliases = render_store_aliases(&store_names, &referenceable_names, &indent, true);
 
         if has_generics {
             let (import_segments, script_body) = extract_top_level_imports(&script_output);
@@ -2000,5 +2111,29 @@ mod tests {
             instance_section.contains("arr.indexOf(t) === i)"),
             "Instance script should have complete filter expression with === i). Got:\n{instance_section}"
         );
+    }
+
+    #[test]
+    fn test_collect_referenceable_names() {
+        // Issue #151: a name is referenceable when it appears as a plain
+        // identifier — not when it only appears `$`-prefixed or after a `.`.
+        let names = collect_referenceable_names(
+            r#"const form = writable({});
+            form.update(($form) => $form);
+            const mapped = items.map(($item) => $item * 2);
+            const t = selection.$anchor.depth;"#,
+        );
+        // Declared / plainly-referenced names are present.
+        assert!(names.contains("form"));
+        assert!(names.contains("items"));
+        assert!(names.contains("selection"));
+        // `$`-prefixed-only tokens are not referenceable bare names.
+        assert!(!names.contains("item"), "callback param `$item` leaked in");
+        // Member-access suffixes are not referenceable on their own.
+        assert!(
+            !names.contains("anchor"),
+            "member access `.$anchor` leaked in"
+        );
+        assert!(!names.contains("depth"), "member access `.depth` leaked in");
     }
 }

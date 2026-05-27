@@ -2125,3 +2125,277 @@ fn test_issue_145_untyped_children_is_callable() {
 
     assert_no_diagnostics_in_file(&ts_diagnostics, "issue-145-untyped-children.svelte");
 }
+// ============================================================================
+// ISSUE #149: GETTER/SETTER FORM OF `bind:this`
+// ============================================================================
+// Svelte 5 supports the function-binding form of `bind:this`:
+//   <input bind:this={() => inputRef, setInputRef} />
+// where the first expression is a getter and the second a setter. The
+// transformer used to emit this as a plain assignment:
+//   () => inputRef, setInputRef = __bind_this_0;
+// which the comma operator parses as `(() => inputRef), (setInputRef = ...)`,
+// producing TS2695 (left side of comma unused) and TS2630 (cannot assign to a
+// function). `svelte-check` reports neither. The fix splits the comma into a
+// `[getter, setter]` tuple, type-checking the setter against the element type.
+//
+// Fixture: src/routes/issue-149-bind-this-getter-setter/+page.svelte
+#[test]
+fn test_issue_149_bind_this_getter_setter_no_false_positive() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let comma_op_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-149-bind-this-getter-setter/+page.svelte")
+                && (d.code == "TS2695" || d.code == "TS2630")
+        })
+        .collect();
+    assert!(
+        comma_op_errors.is_empty(),
+        "Issue #149: getter/setter `bind:this` produced comma-operator errors:\n{:#?}",
+        comma_op_errors
+    );
+
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "issue-149-bind-this-getter-setter/+page.svelte",
+    );
+}
+
+/// The transformed output must call the setter with the typed element
+/// (`(setInputRef)(__bind_this_N)`, matching svelte2tsx), not the broken
+/// `() => ref, setter = __bind_this` comma-operator assignment.
+#[test]
+fn test_issue_149_transformed_output_calls_setter_with_element() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/routes/issue-149-bind-this-getter-setter/+page.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-149 +page.svelte"));
+
+    assert!(
+        content.contains("(setInputRef)(__bind_this_"),
+        "Issue #149: transformed output should call the setter with the element:\n{}",
+        content
+    );
+    assert!(
+        !content.contains("setInputRef = __bind_this_"),
+        "Issue #149: transformed output still uses the broken comma-operator assignment:\n{}",
+        content
+    );
+}
+// ============================================================================
+// ISSUE #150: RENAMING `class` IN AN UNTYPED `$props()` DESTRUCTURE
+// ============================================================================
+// `let { children, class: className = "" } = $props()` (no explicit Props type)
+// produced two false positives that `svelte-check` does not:
+//   - TS2749: `'className' refers to a value, but is being used as a type here`
+//     — the rename `class: className` was misread as a type annotation, so the
+//     generated export type was `class?: className` (a value in a type slot).
+//   - TS2339: `Property 'class' does not exist on type '{ children?: ... }'`
+//     — the untyped-children `$props()` placeholder was a closed object, so the
+//     renamed sibling could not be destructured.
+//
+// Fixtures:
+//   src/lib/issue-150-class-rename.svelte           (the component)
+//   src/routes/issue-150-class-rename/+page.svelte  (a consumer)
+#[test]
+fn test_issue_150_class_rename_no_false_positive() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let rename_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-150-class-rename.svelte")
+                && (d.code == "TS2749" || d.code == "TS2339")
+        })
+        .collect();
+    assert!(
+        rename_errors.is_empty(),
+        "Issue #150: untyped `class: className` rename produced false positives:\n{:#?}",
+        rename_errors
+    );
+
+    // Both the component and its consumer must be clean.
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-150-class-rename.svelte");
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-150-class-rename/+page.svelte");
+}
+
+/// The generated component-export type must infer a type for the renamed prop,
+/// not reuse the local alias name. `class?: cls` in the `return { props: ... }`
+/// line (the bug) means the rename was misparsed as a type annotation.
+#[test]
+fn test_issue_150_transformed_output_does_not_use_alias_as_type() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let relative_path = "src/lib/issue-150-class-rename.svelte.ts";
+    let content = find_transformed_cache_content(&fixture_path, relative_path)
+        .unwrap_or_else(|| panic!("missing transformed cache for issue-150 component"));
+
+    // Inspect only the component-export line so the assertion can't be fooled
+    // by the prop alias appearing elsewhere (template refs, comments).
+    let props_line = content
+        .lines()
+        .find(|l| l.contains("return { props:"))
+        .unwrap_or_else(|| panic!("missing `return {{ props: ... }}` line:\n{}", content));
+
+    assert!(
+        !props_line.contains("class?: cls"),
+        "Issue #150: export type uses the local alias `cls` as a type:\n{}",
+        props_line
+    );
+    // Positive check: the renamed prop is present with the type inferred from its
+    // `= ""` default (`string`), matching svelte2tsx — not the alias, not a value.
+    assert!(
+        props_line.contains("class?: string"),
+        "Issue #150: expected `class?: string` (inferred from the default) in the export type, got:\n{}",
+        props_line
+    );
+}
+// ============================================================================
+// ISSUE #151: OVER-EAGER `$`-PREFIXED STORE DETECTION
+// ============================================================================
+// The transformer scanned for `$identifier` tokens and emitted a store alias
+// `let $X!: __StoreValue<typeof X>` for each, without checking context. Two
+// false positives resulted (TS2552/TS2304 under both tsgo and tsc; `svelte-check`
+// reports neither):
+//   - Pattern A: `$`-prefixed *property access* (ProseMirror's `selection.$from`)
+//     — `$from` is a property of `selection`, not a `$store`.
+//   - Pattern B: `$`-prefixed *callback parameters* (`($item) => $item * 2`)
+//     — `item` is never a real name, so `typeof item` is undefined.
+//
+// Fixtures:
+//   src/lib/issue-151-member-access.svelte
+//   src/lib/issue-151-callback-param.svelte
+#[test]
+fn test_issue_151_dollar_member_access_not_a_store() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let store_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-151-member-access.svelte")
+                && (d.code == "TS2552" || d.code == "TS2304")
+        })
+        .collect();
+    assert!(
+        store_errors.is_empty(),
+        "Issue #151: `selection.$from` was treated as a store subscription:\n{:#?}",
+        store_errors
+    );
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-151-member-access.svelte");
+}
+
+#[test]
+fn test_issue_151_dollar_callback_param_not_a_store() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let store_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("issue-151-callback-param.svelte")
+                && (d.code == "TS2552" || d.code == "TS2304")
+        })
+        .collect();
+    assert!(
+        store_errors.is_empty(),
+        "Issue #151: a `$`-prefixed callback parameter was treated as a store:\n{:#?}",
+        store_errors
+    );
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-151-callback-param.svelte");
+}
+
+/// The transformed output must not emit store aliases for the false-positive
+/// `$`-prefixed identifiers, while still emitting one for the real store.
+///
+/// Inspect only the generated alias *declaration* lines (`let $X!: ...` /
+/// `declare let $X: ...`) so the assertions can't be fooled by the fixture's
+/// explanatory comments, which are carried through into the output verbatim.
+#[test]
+fn test_issue_151_transformed_output_only_aliases_real_stores() {
+    fn aliased_store_names(content: &str) -> Vec<String> {
+        content
+            .lines()
+            .map(str::trim_start)
+            .filter_map(|line| {
+                let rest = line
+                    .strip_prefix("let $")
+                    .or_else(|| line.strip_prefix("declare let $"))?;
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                // Alias lines are `let $X!: ...` (definite assignment) or
+                // `declare let $X: ...`; accept the optional `!`.
+                let after = rest[name.len()..].trim_start();
+                let after = after.strip_prefix('!').unwrap_or(after);
+                (!name.is_empty() && after.trim_start().starts_with(':')).then_some(name)
+            })
+            .collect()
+    }
+
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&fixture_path);
+
+    let member =
+        find_transformed_cache_content(&fixture_path, "src/lib/issue-151-member-access.svelte.ts")
+            .unwrap_or_else(|| panic!("missing transformed cache for issue-151 member-access"));
+    assert!(
+        aliased_store_names(&member).is_empty(),
+        "Issue #151: emitted store aliases for `$`-prefixed property access: {:?}",
+        aliased_store_names(&member)
+    );
+
+    let callback =
+        find_transformed_cache_content(&fixture_path, "src/lib/issue-151-callback-param.svelte.ts")
+            .unwrap_or_else(|| panic!("missing transformed cache for issue-151 callback-param"));
+    let callback_aliases = aliased_store_names(&callback);
+    assert!(
+        !callback_aliases.iter().any(|n| n == "item" || n == "val"),
+        "Issue #151: emitted a store alias for a `$`-prefixed callback parameter: {:?}",
+        callback_aliases
+    );
+    // The genuine store still subscribes.
+    assert!(
+        callback_aliases.iter().any(|n| n == "form"),
+        "Issue #151: dropped the alias for the real store `form`: {:?}",
+        callback_aliases
+    );
+}
+// ============================================================================
+// `mount()` ACCEPTS EXTRA PROPS (parity with svelte-check)
+// ============================================================================
+// `svelte-check` lets `mount()` receive props beyond a component's declared
+// ones (Svelte's own `mount` type is loose), while still type-checking the
+// declared props. svelte-check-rs typed the mount props as `__SvelteLoosen<Props>`
+// (now an identity), so an extra prop produced a spurious TS2769 "No overload
+// matches this call". The mount overload now uses `Props & Record<string, any>`.
+//
+// Fixtures: src/lib/mount-loosen.svelte.ts + src/lib/mount-loosen-child.svelte
+#[test]
+fn test_mount_accepts_extra_props() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let mount_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("mount-loosen.svelte.ts"))
+        .collect();
+    assert!(
+        mount_errors.is_empty(),
+        "mount() should accept extra props without error, but got:\n{:#?}",
+        mount_errors
+    );
+}

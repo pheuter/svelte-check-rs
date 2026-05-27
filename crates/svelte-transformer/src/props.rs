@@ -11,6 +11,10 @@
 //! - `let props = $props()` (generic props object)
 
 use source_map::Span;
+use std::sync::Arc;
+use swc_common::{FileName, SourceMap as SwcSourceMap, Spanned};
+use swc_ecma_ast::{Expr, Lit};
+use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
 
 /// Information about the component's props extracted from `$props()`.
 #[derive(Debug, Clone, Default)]
@@ -58,14 +62,12 @@ pub fn extract_props_info(
     original_script: &str,
     base_offset: u32,
 ) -> Option<PropsInfo> {
-    // Find $props in the original script - it could be $props() or $props<Type>()
-    let props_idx = original_script.find("$props")?;
-
-    // Verify it's actually a $props call (followed by `(` or `<`)
-    let after_props = &original_script[props_idx + 6..];
-    if !after_props.starts_with('(') && !after_props.starts_with('<') {
-        return None;
-    }
+    // Find the `$props()`/`$props<...>()` rune call, skipping any `$props`
+    // mentioned in a comment or string literal. A plain `find("$props")` is
+    // fooled by an explanatory comment like `// untyped $props()` and then fails
+    // the backward search for the declaration, silently falling back to
+    // `Record<string, unknown>`.
+    let props_idx = find_props_rune(original_script)?;
 
     // Look backwards from $props to find the variable declaration
     let before_props = &original_script[..props_idx];
@@ -78,6 +80,74 @@ pub fn extract_props_info(
 
     // Parse the declaration pattern
     parse_props_declaration(declaration, base_offset + decl_start as u32)
+}
+
+/// Find the byte offset of the `$props` rune call (`$props(` or `$props<`),
+/// skipping occurrences inside strings and comments. Returns the offset of the
+/// `$`. `$props.x` accessors and identifiers like `$propsFoo` are not matched.
+fn find_props_rune(script: &str) -> Option<usize> {
+    let mut chars = script.char_indices().peekable();
+    let mut in_string: Option<char> = None;
+    let mut prev_escape = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && chars.peek().map(|(_, c)| *c) == Some('/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if let Some(quote) = in_string {
+            if prev_escape {
+                prev_escape = false;
+            } else if ch == '\\' {
+                prev_escape = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek().map(|(_, c)| *c) == Some('/') {
+            chars.next();
+            in_line_comment = true;
+            continue;
+        }
+        if ch == '/' && chars.peek().map(|(_, c)| *c) == Some('*') {
+            chars.next();
+            in_block_comment = true;
+            continue;
+        }
+        if ch == '\'' || ch == '"' || ch == '`' {
+            in_string = Some(ch);
+            continue;
+        }
+
+        // A `$props` token is a rune only when it is not part of a larger
+        // identifier (`$propsFoo`) and is immediately followed by `(` or `<`.
+        if ch == '$' && script[idx..].starts_with("$props") {
+            let preceded_by_ident = idx > 0
+                && script[..idx]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+            let after = idx + "$props".len();
+            let next = script[after..].chars().next();
+            if !preceded_by_ident && matches!(next, Some('(') | Some('<')) {
+                return Some(idx);
+            }
+        }
+    }
+
+    None
 }
 
 /// Parse a props declaration to extract property information.
@@ -241,14 +311,19 @@ fn parse_single_property(prop_str: &str, base_offset: u32) -> Option<PropPropert
 
     let name = name_part.trim();
 
-    // Check if name contains type annotation: `prop: Type`
-    let (final_name, type_ann) = if let Some(colon_idx) = name.find(':') {
-        let n = name[..colon_idx].trim();
-        let t = name[colon_idx + 1..].trim();
-        (n, Some(t.to_string()))
-    } else {
-        (name, None)
+    // Inside a destructuring pattern, `prop: local` is a *rename* (bind the
+    // `prop` property to the local variable `local`), NOT a type annotation —
+    // TypeScript does not allow inline type annotations within a destructuring
+    // pattern (the type goes after the closing brace: `let { a }: T = ...`).
+    // The exposed prop name is the part before the colon; the alias after it is
+    // a local-binding name and irrelevant to the generated props type. Treating
+    // the alias as a type produced types like `class?: className` — a value used
+    // as a type, i.e. TS2749 (see issue #150).
+    let final_name = match name.find(':') {
+        Some(colon_idx) => name[..colon_idx].trim(),
+        None => name,
     };
+    let type_ann: Option<String> = None;
 
     // Check if default is $bindable
     let (is_bindable, actual_default) = if let Some(default) = default_part {
@@ -586,7 +661,20 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
             ""
         };
 
-        let prop_type = prop.type_annotation.as_deref().unwrap_or("unknown");
+        // Infer the prop type from its default value (mirrors svelte2tsx) so a
+        // wrong-typed prop is flagged at the call site, e.g. `let { label = "" }`
+        // makes `<Comp label={123} />` an error. Falls back to `unknown` when the
+        // default can't be classified — consumer-equivalent to svelte2tsx's `any`,
+        // so no spurious errors are introduced.
+        let prop_type = prop
+            .type_annotation
+            .clone()
+            .or_else(|| {
+                prop.default_value
+                    .as_deref()
+                    .and_then(infer_type_from_default)
+            })
+            .unwrap_or_else(|| "unknown".to_string());
 
         type_parts.push(format!("{}{}: {}", prop.name, optional, prop_type));
     }
@@ -605,6 +693,59 @@ pub fn generate_props_type(info: &PropsInfo) -> String {
         }
     } else {
         base
+    }
+}
+
+/// Infer a TypeScript type for an untyped prop from its default-value expression,
+/// mirroring svelte2tsx's inference (`packages/svelte2tsx/.../ExportedNames.ts`).
+///
+/// The default expression is parsed with swc and classified by AST node, exactly
+/// as svelte2tsx classifies the TS AST node. Anything not in the table returns
+/// `None`, so the caller falls back to `unknown`; for a consumer-facing prop type
+/// that accepts any passed value just like svelte2tsx's `any`, so falling back
+/// never introduces a spurious error — it only forgoes the extra check. Parsing
+/// (rather than string heuristics) matters for cases like `-5`, which is a unary
+/// expression — not a numeric literal — so it is correctly *not* inferred as
+/// `number` (which would wrongly reject `<Comp prop="x" />`).
+fn infer_type_from_default(default: &str) -> Option<String> {
+    let trimmed = default.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let cm: Arc<SwcSourceMap> = Default::default();
+    let fm = cm.new_source_file(
+        FileName::Custom("svelte-prop-default".into()).into(),
+        trimmed.to_string(),
+    );
+    let syntax = Syntax::Typescript(TsSyntax {
+        tsx: false,
+        ..Default::default()
+    });
+    let mut parser = Parser::new(syntax, StringInput::from(&*fm), None);
+    let expr = parser.parse_expr().ok()?;
+
+    match &*expr {
+        Expr::Lit(Lit::Str(_)) => Some("string".to_string()),
+        Expr::Lit(Lit::Num(_)) => Some("number".to_string()),
+        Expr::Lit(Lit::Bool(_)) => Some("boolean".to_string()),
+        Expr::Arrow(_) => Some("Function".to_string()),
+        Expr::Object(_) => Some("Record<string, any>".to_string()),
+        Expr::Array(_) => Some("any[]".to_string()),
+        // `value as Foo` -> `Foo`: slice the type annotation's source text
+        // (swc BytePos is 1-based per the fresh source file, so offset by
+        // `fm.start_pos`).
+        Expr::TsAs(as_expr) => {
+            let span = as_expr.type_ann.span();
+            let lo = span.lo.0.saturating_sub(fm.start_pos.0) as usize;
+            let hi = span.hi.0.saturating_sub(fm.start_pos.0) as usize;
+            trimmed.get(lo..hi).map(|s| s.trim().to_string())
+        }
+        // A bare identifier default (e.g. an imported/declared constant) carries a
+        // useful type via `typeof`. `undefined` does not; `null` parses as a
+        // literal, not an identifier, so it is handled by the fallback.
+        Expr::Ident(id) if &*id.sym != "undefined" => Some(format!("typeof {}", id.sym)),
+        _ => None,
     }
 }
 
@@ -641,6 +782,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_infer_type_from_default() {
+        // Literals classify to their precise types (matches svelte2tsx).
+        assert_eq!(infer_type_from_default("\"\""), Some("string".to_string()));
+        // Template literals are not string literals (svelte2tsx's
+        // `ts.isStringLiteral` is false for them too) -> fall back.
+        assert_eq!(infer_type_from_default("`x`"), None);
+        assert_eq!(infer_type_from_default("0"), Some("number".to_string()));
+        assert_eq!(infer_type_from_default("3.14"), Some("number".to_string()));
+        assert_eq!(infer_type_from_default("true"), Some("boolean".to_string()));
+        assert_eq!(infer_type_from_default("[]"), Some("any[]".to_string()));
+        assert_eq!(
+            infer_type_from_default("{ a: 1 }"),
+            Some("Record<string, any>".to_string())
+        );
+        assert_eq!(
+            infer_type_from_default("() => {}"),
+            Some("Function".to_string())
+        );
+        assert_eq!(
+            infer_type_from_default("DEFAULT"),
+            Some("typeof DEFAULT".to_string())
+        );
+        assert_eq!(infer_type_from_default("x as Foo"), Some("Foo".to_string()));
+
+        // `-5` is a unary expression, not a numeric literal — svelte2tsx infers
+        // `any` for it, so we must NOT infer `number` (that would wrongly reject
+        // a string value at the call site). Falls back to `unknown` (caller),
+        // which is consumer-equivalent to `any`.
+        assert_eq!(infer_type_from_default("-5"), None);
+        // `undefined`/`null` and unclassifiable expressions carry no useful type.
+        assert_eq!(infer_type_from_default("undefined"), None);
+        assert_eq!(infer_type_from_default("null"), None);
+        assert_eq!(infer_type_from_default("foo()"), None);
+        assert_eq!(infer_type_from_default("a.b"), None);
+    }
+
+    #[test]
     fn test_extract_simple_destructuring() {
         let script = "let { a, b } = $props();";
         let info = extract_props_info(script, script, 0).unwrap();
@@ -659,6 +837,33 @@ mod tests {
 
         assert!(info.is_destructured);
         assert_eq!(info.type_annotation, Some("Props".to_string()));
+    }
+
+    #[test]
+    fn test_extract_ignores_props_in_comment_and_string() {
+        // A `$props` mentioned in a comment or string must not be mistaken for
+        // the rune call; otherwise the backward search for the declaration fails
+        // and props silently fall back to `Record<string, unknown>`.
+        let script = r#"// configure via $props() below
+        const note = "see $props docs";
+        let { a, b } = $props();"#;
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert!(info.is_destructured);
+        assert_eq!(info.properties.len(), 2);
+        assert_eq!(info.properties[0].name, "a");
+        assert_eq!(info.properties[1].name, "b");
+    }
+
+    #[test]
+    fn test_find_props_rune_skips_accessor_and_lookalikes() {
+        // `$props.id()` accessor and `$propsFoo` identifier are not the rune call.
+        assert_eq!(find_props_rune("let { a } = $props();"), Some(12));
+        assert_eq!(find_props_rune("const x = $propsFoo();"), None);
+        assert_eq!(
+            find_props_rune("const id = $props.id(); let { a } = $props();"),
+            Some(36)
+        );
     }
 
     #[test]

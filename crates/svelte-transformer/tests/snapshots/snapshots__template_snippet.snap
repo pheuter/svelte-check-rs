@@ -69,11 +69,12 @@ type __StoreValue<S> = S extends { subscribe(fn: (value: infer T) => void): any 
 // Helper to mark specific props as optional without expanding complex unions.
 type __SvelteOptionalProps<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
-// Loosen props to allow extra top-level fields while preserving declared shapes.
-type __SvelteLoosen<T> =
-  T extends (...args: any) => any ? T :
-  T extends readonly any[] ? T :
-  T extends object ? { [K in keyof T]: T[K]; [key: string]: unknown } : T;
+// Component props are checked strictly: extra props on a component tag and extra
+// destructured names both error, matching `svelte-check`. So this is an identity.
+// (The earlier `{ [K in keyof T]: T[K]; [key: string]: unknown }` mixed a mapped
+// type with an index signature — invalid TS (TS7061) that tsgo silently dropped
+// to this same identity anyway.)
+type __SvelteLoosen<T> = T;
 
 // Helper for $props.<name>() accessors.
 type __SveltePropsAccessor<T> = { [K in keyof T]: () => T[K] } & Record<string, () => any>;
@@ -154,8 +155,10 @@ declare function __svelte_ensure_component<T>(type: T): NonNullable<__SvelteCall
 declare module "svelte" {
   export function mount<Props extends Record<string, any>, Exports extends Record<string, any>>(
     component: __SvelteComponent<Props, Exports>,
+    // `mount()` accepts extra props (matching svelte-check), but declared props
+    // are still checked — `& Record<string, any>` admits the extras.
     options: Omit<MountOptions<Props>, "props"> & {
-      props: __SvelteLoosen<Props>;
+      props: Props & Record<string, any>;
     }
   ): Exports;
   export function mount(

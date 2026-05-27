@@ -237,6 +237,26 @@ fn test_props_with_rest() {
     );
 }
 
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/150 — an
+// untyped `$props()` that *renames* a prop (`class: className`) must treat the
+// alias as a local-binding name, not a type. The generated export type used to
+// be `class?: className` (a value used as a type → TS2749). It must instead be
+// `class?: unknown`, and the `$props()` placeholder must stay open so the
+// renamed sibling is destructurable alongside `children` (no TS2339).
+#[test]
+fn test_props_untyped_class_rename() {
+    transform_snapshot(
+        "props_untyped_class_rename",
+        r#"<script lang="ts">
+    let { children, class: className = "" } = $props();
+</script>
+
+<span class={className}>
+    {@render children?.()}
+</span>"#,
+    );
+}
+
 #[test]
 fn test_props_with_comment_before() {
     transform_snapshot(
@@ -584,6 +604,27 @@ fn test_bind_with_getter_setter_pair_unchanged() {
     );
 }
 
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/149 — the
+// getter/setter (function-binding) form of `bind:this` must call the setter with
+// the typed element (`(setter)(element)`, matching svelte2tsx) rather than emit
+// `() => ref, setter = __bind_this`, which the comma operator parses as
+// `(() => ref), (setter = ...)` (TS2695 + TS2630). The setter is type-checked
+// against the element type; the getter is left untyped (as in svelte2tsx).
+#[test]
+fn test_bind_this_getter_setter_pair() {
+    transform_snapshot(
+        "bind_this_getter_setter_pair",
+        r#"<script lang="ts">
+    let inputRef = $state<HTMLInputElement | null>(null);
+    function setInputRef(el: HTMLInputElement) {
+        inputRef = el;
+    }
+</script>
+
+<input bind:this={() => inputRef, setInputRef} />"#,
+    );
+}
+
 #[test]
 fn test_class_shorthand_element() {
     transform_snapshot(
@@ -805,6 +846,50 @@ fn test_store_subscription_in_script_function() {
 </script>
 
 <button onclick={() => updateEndTime()}>Update</button>"#,
+    );
+}
+
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/151 — a
+// `$`-prefixed *property access* (e.g. ProseMirror's `selection.$from`) must not
+// be collected as a store subscription. No `let $from!: __StoreValue<typeof from>`
+// alias should be emitted (`from` does not exist → TS2552/TS2304).
+#[test]
+fn test_dollar_member_access_not_a_store() {
+    transform_snapshot(
+        "dollar_member_access_not_a_store",
+        r#"<script lang="ts">
+    interface ResolvedPos { pos: number; }
+    interface Selection { $from: ResolvedPos; $to: ResolvedPos; }
+    let { selection }: { selection: Selection } = $props();
+    function getPos(): number {
+        return selection.$from.pos;
+    }
+</script>
+
+<p>{getPos()}</p>
+<p>{selection.$to.pos}</p>"#,
+    );
+}
+
+// Regression for https://github.com/pheuter/svelte-check-rs/issues/151 — a
+// `$`-prefixed *callback parameter* (`($item) => ...`) is not a store. Only a
+// genuine store (`form`, declared bare) gets a `$form` alias; `$item`/`$val` do
+// not, since `item`/`val` are never referenceable names.
+#[test]
+fn test_dollar_callback_param_not_a_store() {
+    transform_snapshot(
+        "dollar_callback_param_not_a_store",
+        r#"<script lang="ts">
+    import { writable } from "svelte/store";
+    const form = writable({ name: "" });
+    function update() {
+        form.update(($form) => ({ ...$form, name: "x" }));
+    }
+    const items = [1, 2, 3];
+    const mapped = items.map(($item) => $item * 2);
+</script>
+
+<button onclick={update}>{mapped.join(",")}</button>"#,
     );
 }
 

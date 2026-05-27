@@ -198,6 +198,22 @@ fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
             continue;
         }
 
+        // Member access like `obj.$prop` (e.g. ProseMirror's `selection.$from`)
+        // is never a store subscription — the `$prop` is a property of `obj`,
+        // not a `$store` auto-subscription. Consume the `.$identifier` so it is
+        // not collected as a store name (issue #151).
+        if ch == '.' && chars.peek() == Some(&'$') {
+            chars.next(); // consume '$'
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
         if ch == '$' {
             if let Some(&next) = chars.peek() {
                 if next == '$' {
@@ -1064,9 +1080,21 @@ impl<'a> RuneScanner<'a> {
                         // type-checks (issue #145). The `<[]>` matters: Svelte's
                         // Snippet resolves its rest args to `never` for non-tuple
                         // parameter lists, so the alias default (`any[]`) would
-                        // reject a zero-arg call. `__SvelteLoosen` keeps the
-                        // pattern open for any other destructured props.
-                        self.push_str("({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>)");
+                        // reject a zero-arg call.
+                        //
+                        // The `[key: string]: any` index signature keeps the shape
+                        // open so *sibling* props destructured alongside `children`
+                        // (e.g. `let { children, class: className } = $props()`) are
+                        // still accessible — without it they error with TS2339
+                        // (issue #150). A declared property wins over the index
+                        // signature for known keys, so `children` keeps its precise
+                        // Snippet type while everything else is `any` (untyped props
+                        // are intentionally loose, matching `svelte-check`). This is
+                        // a plain type literal, not `__SvelteLoosen`, whose index
+                        // branch is an invalid mapped type that silently no-ops.
+                        self.push_str(
+                            "({} as { children?: __SvelteSnippet<[]>; [key: string]: any })",
+                        );
                     } else {
                         self.push_str("({} as __SvelteLoosen<");
                         self.push_str(fallback_type);
@@ -2101,6 +2129,36 @@ function updateEndTime() {
     }
 
     #[test]
+    fn test_dollar_member_access_not_collected_as_store() {
+        // Issue #151: `selection.$from` is a property access, not a `$store`
+        // subscription, so neither `from` nor `to` should be collected.
+        let result = transform_runes(
+            r#"function getPos() {
+    return selection.$from.pos + selection.$to.pos;
+}"#,
+            0,
+        );
+        assert!(
+            !result.store_names.contains("from"),
+            "Expected `from` not to be a store (member access), got: {:?}",
+            result.store_names
+        );
+        assert!(
+            !result.store_names.contains("to"),
+            "Expected `to` not to be a store (member access), got: {:?}",
+            result.store_names
+        );
+    }
+
+    #[test]
+    fn test_dollar_store_at_expression_start_still_collected() {
+        // A leading `$store` is still a subscription even when followed by member
+        // access on the *store value* (`$formData.x`).
+        let result = transform_runes("function f() { return $formData.value; }", 0);
+        assert!(result.store_names.contains("formData"));
+    }
+
+    #[test]
     fn test_props_with_colon_in_import() {
         // Test that colons inside import strings don't interfere with $props() transformation
         // This was issue #21 - imports like 'virtual:something' caused parsing errors
@@ -2153,22 +2211,25 @@ let { data } = $props();"#,
     #[test]
     fn test_props_untyped_children_is_snippet() {
         // Issue #145: untyped `children` should be an optional no-arg Snippet,
-        // not `unknown`, so `{@render children?.()}` type-checks.
+        // not `unknown`, so `{@render children?.()}` type-checks. The index
+        // signature keeps sibling props accessible (issue #150).
         let result = transform_runes("let { children } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { children } = ({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>);"
+            "let { children } = ({} as { children?: __SvelteSnippet<[]>; [key: string]: any });"
         );
     }
 
     #[test]
     fn test_props_untyped_children_among_other_props() {
-        // The Snippet fallback also applies when `children` is one of several
-        // destructured props; `__SvelteLoosen` keeps the rest open.
+        // Issue #150: when `children` is one of several destructured props, the
+        // `[key: string]: any` index signature keeps the siblings (`foo`, `bar`)
+        // accessible instead of erroring with TS2339; `children` still wins the
+        // known key, keeping its precise Snippet type.
         let result = transform_runes("let { foo, children, bar } = $props();", 0);
         assert_eq!(
             result.output,
-            "let { foo, children, bar } = ({} as __SvelteLoosen<{ children?: __SvelteSnippet<[]> }>);"
+            "let { foo, children, bar } = ({} as { children?: __SvelteSnippet<[]>; [key: string]: any });"
         );
     }
 
