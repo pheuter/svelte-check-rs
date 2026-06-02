@@ -110,11 +110,16 @@ fn check_node_for_runes(node: &TemplateNode, diagnostics: &mut Vec<Diagnostic>) 
         TemplateNode::SnippetBlock(snippet_block) => {
             check_snippet_block_for_runes(snippet_block, diagnostics);
         }
-        // Text, comments, and tag nodes don't need checking
+        // Text, comments, and tag nodes don't need checking.
+        // NOTE: declaration tags legitimately allow runes in their initializer
+        // (e.g. `{let label = $state(...)}`), so they MUST stay in the no-op
+        // group and must NOT be routed through the Expression rune-rejection
+        // logic above.
         TemplateNode::Text(_)
         | TemplateNode::Comment(_)
         | TemplateNode::HtmlTag(_)
         | TemplateNode::ConstTag(_)
+        | TemplateNode::DeclarationTag(_)
         | TemplateNode::DebugTag(_)
         | TemplateNode::RenderTag(_) => {}
     }

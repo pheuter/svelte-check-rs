@@ -758,3 +758,29 @@ fn test_snapshot_loose_invalid_block() {
 {/snippet}"#,
     );
 }
+
+#[test]
+fn test_snapshot_declaration_tag_const() {
+    parse_snapshot("declaration_tag_const", "{const x = 1}");
+}
+
+#[test]
+fn test_snapshot_declaration_tag_let() {
+    parse_snapshot("declaration_tag_let", "{let y = 2}");
+}
+
+#[test]
+fn test_snapshot_declaration_tag_in_each() {
+    parse_snapshot(
+        "declaration_tag_in_each",
+        "{#each items as item}\n  {const area = item.w * item.h}\n  {let label = $state(area)}\n{/each}",
+    );
+}
+
+#[test]
+fn test_snapshot_declaration_tag_vs_expression() {
+    parse_snapshot(
+        "declaration_tag_vs_expression",
+        "{const x = 1}\n{constFoo}\n{let}\n{x}",
+    );
+}

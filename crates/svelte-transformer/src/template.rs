@@ -402,6 +402,8 @@ pub enum ExpressionContext {
     RenderTag,
     /// `{@const x = ...}` - const tag.
     ConstTag,
+    /// `{const x = ...}` / `{let x = ...}` - declaration tag.
+    DeclarationTag,
     /// `{@debug ...}` - debug tag.
     DebugTag,
     /// `{@attach expr}` - attach tag.
@@ -849,6 +851,30 @@ impl TemplateContext {
                 });
 
                 self.emit(&format!("const {};", transformed));
+            }
+            TemplateNode::DeclarationTag(tag) => {
+                // {const x = y} -> `const x = y;`, {let x = y} -> `let x = y;`.
+                // Mirrors language-tools DeclarationTag.ts: keep the keyword +
+                // declaration in place and append a single `;`.
+                let transformed = self.transform_expr(&tag.declaration);
+                let keyword = match tag.kind {
+                    DeclarationKind::Const => "const ",
+                    DeclarationKind::Let => "let ",
+                };
+
+                // Record source mapping anchored to the declaration text
+                // (after the keyword) so type errors map to the variable.
+                let indent_str = self.indent_str();
+                let generated_start = self.output.len() + indent_str.len() + keyword.len();
+                let generated_end = generated_start + transformed.len();
+
+                self.mappings.push(GeneratedMapping {
+                    generated_start,
+                    generated_end,
+                    original_span: tag.declaration_span,
+                });
+
+                self.emit(&format!("{}{};", keyword, transformed));
             }
             TemplateNode::DebugTag(tag) => {
                 for ident in &tag.identifiers {

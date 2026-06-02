@@ -3184,6 +3184,11 @@ impl<'src> Parser<'src> {
             return None;
         }
 
+        // Svelte 5 declaration tags: {const x = ...} / {let x = ...}
+        if let Some(kind) = self.peek_declaration_kind() {
+            return self.parse_declaration_tag(start, kind);
+        }
+
         let (expression, expression_span) = self.read_expression_until('}');
         self.eat(TokenKind::RBrace);
 
@@ -3197,6 +3202,105 @@ impl<'src> Parser<'src> {
             span: Span::new(start, end),
             expression_span,
             expression: expression.trim().to_string(),
+        }))
+    }
+
+    /// Peeks at the token(s) after the consumed `{` to decide whether this is a
+    /// Svelte 5 declaration tag (`{const x = ...}` / `{let x = ...}`).
+    ///
+    /// Assumes `self.pos` points at the token immediately after the consumed
+    /// `LBrace`. Pure lookahead: does not mutate parser state.
+    ///
+    /// Returns `Some(kind)` only when the keyword is `const`/`let` AND it is
+    /// followed by something that can begin a declaration target: an identifier,
+    /// an object destructuring pattern `{...}`, or an array destructuring pattern
+    /// `[...]`. This keeps bare `{let}`, `{let.x}`, `{constFoo}` (a single `Ident`
+    /// via lexer max-munch), and plain `{x}` as ordinary expressions.
+    fn peek_declaration_kind(&self) -> Option<DeclarationKind> {
+        // Skip leading newline tokens (the lexer keeps `\n` as a token).
+        let mut p = self.pos;
+        while self.tokens.get(p).map(|t| t.kind) == Some(TokenKind::Newline) {
+            p += 1;
+        }
+
+        let kw = self.tokens.get(p)?;
+        let kind = if kw.kind == TokenKind::Const {
+            DeclarationKind::Const
+        } else if kw.kind == TokenKind::Ident
+            && &self.source[u32::from(kw.span.start) as usize..u32::from(kw.span.end) as usize]
+                == "let"
+        {
+            DeclarationKind::Let
+        } else {
+            return None;
+        };
+
+        // Guard: the token after the keyword (skipping newlines) must be able to
+        // start a declaration target. `const` is already safe via lexer
+        // max-munch, but routed through the same guard for symmetry.
+        let mut q = p + 1;
+        while self.tokens.get(q).map(|t| t.kind) == Some(TokenKind::Newline) {
+            q += 1;
+        }
+        let target = self.tokens.get(q)?;
+        match target.kind {
+            // `{const x = ...}` / `{const {a, b} = ...}` (object destructuring).
+            TokenKind::Ident | TokenKind::LBrace => Some(kind),
+            // Array destructuring `{const [a, b] = ...}`: the lexer has no
+            // dedicated `LBracket`, so `[` is lexed as a `Text` token. Accept it
+            // only when that text begins with `[` (other `Text` punctuation such
+            // as `!`/`?` cannot start a declaration target).
+            TokenKind::Text
+                if self.source[u32::from(target.span.start) as usize..].starts_with('[') =>
+            {
+                Some(kind)
+            }
+            _ => None,
+        }
+    }
+
+    /// Parses a Svelte 5 declaration tag (`{const ...}` / `{let ...}`).
+    ///
+    /// `start` is the `TextSize` captured at the opening `{`. Assumes the
+    /// opening `LBrace` has already been consumed and that
+    /// [`Self::peek_declaration_kind`] has confirmed the keyword.
+    fn parse_declaration_tag(
+        &mut self,
+        start: TextSize,
+        kind: DeclarationKind,
+    ) -> Option<TemplateNode> {
+        // Skip any leading newline tokens so we land on the keyword.
+        while self.check(TokenKind::Newline) {
+            self.advance();
+        }
+        // Consume the keyword token (`Const` or `Ident("let")`).
+        self.advance();
+
+        let (declaration, declaration_span) = self.read_expression_until('}');
+        self.eat(TokenKind::RBrace);
+
+        let end = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span.end)
+            .unwrap_or(start);
+
+        let declaration = declaration.trim().to_string();
+
+        // Semicolons are disallowed inside declaration tags (matches the Svelte
+        // compiler / language-tools rule). Non-fatal: still build the node so
+        // downstream stages keep working.
+        if declaration.contains(';') {
+            self.error(ParseErrorKind::SyntaxError {
+                message: "declaration tags may not contain a semicolon".to_string(),
+            });
+        }
+
+        Some(TemplateNode::DeclarationTag(DeclarationTag {
+            span: Span::new(start, end),
+            declaration_span,
+            declaration,
+            kind,
         }))
     }
 
@@ -5127,6 +5231,230 @@ mod tests {
             assert!(expr.expression.contains("/test/"));
         } else {
             panic!("Expected Expression");
+        }
+    }
+
+    // === Svelte 5 declaration tags ({const x = ...} / {let x = ...}) ===
+
+    #[test]
+    fn test_declaration_tag_const() {
+        let result = Parser::new("{const x = 1}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "{{const x = 1}} should parse without errors, got: {:?}",
+            result.errors
+        );
+        if let TemplateNode::DeclarationTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.kind, DeclarationKind::Const);
+            assert_eq!(tag.declaration, "x = 1");
+        } else {
+            panic!(
+                "Expected DeclarationTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_let() {
+        let result = Parser::new("{let y = 2}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "{{let y = 2}} should parse without errors, got: {:?}",
+            result.errors
+        );
+        if let TemplateNode::DeclarationTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.kind, DeclarationKind::Let);
+            assert_eq!(tag.declaration, "y = 2");
+        } else {
+            panic!(
+                "Expected DeclarationTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_whitespace() {
+        let result = Parser::new("{ const z = 3 }", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "declaration tag with surrounding spaces should parse, got: {:?}",
+            result.errors
+        );
+        if let TemplateNode::DeclarationTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.kind, DeclarationKind::Const);
+            assert_eq!(tag.declaration, "z = 3");
+        } else {
+            panic!(
+                "Expected DeclarationTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_destructuring() {
+        let result = Parser::new("{const {a, b} = obj}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "destructuring declaration tag should parse, got: {:?}",
+            result.errors
+        );
+        if let TemplateNode::DeclarationTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.kind, DeclarationKind::Const);
+            assert_eq!(tag.declaration, "{a, b} = obj");
+        } else {
+            panic!(
+                "Expected DeclarationTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_array_destructuring() {
+        let result = Parser::new("{const [a, b] = arr}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "array destructuring declaration tag should parse, got: {:?}",
+            result.errors
+        );
+        if let TemplateNode::DeclarationTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.kind, DeclarationKind::Const);
+            assert_eq!(tag.declaration, "[a, b] = arr");
+        } else {
+            panic!(
+                "Expected DeclarationTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_let_array_destructuring() {
+        let result = Parser::new("{let [first, ...rest] = items}", ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "let array destructuring should parse, got: {:?}",
+            result.errors
+        );
+        if let TemplateNode::DeclarationTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.kind, DeclarationKind::Let);
+            assert_eq!(tag.declaration, "[first, ...rest] = items");
+        } else {
+            panic!(
+                "Expected DeclarationTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_disambiguation_const_foo() {
+        // `{constFoo}` lexes as a single Ident, so it must stay an expression.
+        let result = Parser::new("{constFoo}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "got: {:?}", result.errors);
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression, "constFoo");
+        } else {
+            panic!(
+                "Expected Expression, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_disambiguation_plain_ident() {
+        let result = Parser::new("{x}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "got: {:?}", result.errors);
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression, "x");
+        } else {
+            panic!(
+                "Expected Expression, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_disambiguation_bare_let() {
+        // Bare `{let}` is an ordinary identifier expression, not a declaration.
+        let result = Parser::new("{let}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "got: {:?}", result.errors);
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression, "let");
+        } else {
+            panic!(
+                "Expected Expression, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_disambiguation_letter() {
+        // `{letter}` lexes as a single Ident, so it must stay an expression.
+        let result = Parser::new("{letter}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "got: {:?}", result.errors);
+        if let TemplateNode::Expression(expr) = &result.document.fragment.nodes[0] {
+            assert_eq!(expr.expression, "letter");
+        } else {
+            panic!(
+                "Expected Expression, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_const_tag_regression() {
+        // `{@const}` is unaffected and still parses as ConstTag.
+        let result = Parser::new("{@const x = 1}", ParseOptions::default()).parse();
+        assert!(result.errors.is_empty(), "got: {:?}", result.errors);
+        if let TemplateNode::ConstTag(tag) = &result.document.fragment.nodes[0] {
+            assert_eq!(tag.declaration, "x = 1");
+        } else {
+            panic!(
+                "Expected ConstTag, got {:?}",
+                result.document.fragment.nodes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_tag_semicolon_banned() {
+        // Semicolons are disallowed; an error is reported but a node still forms.
+        let result = Parser::new("{const x = 1;}", ParseOptions::default()).parse();
+        assert!(
+            !result.errors.is_empty(),
+            "expected a parse error for semicolon in declaration tag"
+        );
+        assert!(matches!(
+            &result.document.fragment.nodes[0],
+            TemplateNode::DeclarationTag(_)
+        ));
+    }
+
+    #[test]
+    fn test_declaration_tag_in_each() {
+        let result = Parser::new(
+            "{#each items as item}{const a = item.x}{/each}",
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty(), "got: {:?}", result.errors);
+        if let TemplateNode::EachBlock(block) = &result.document.fragment.nodes[0] {
+            if let TemplateNode::DeclarationTag(tag) = &block.body.nodes[0] {
+                assert_eq!(tag.kind, DeclarationKind::Const);
+                assert_eq!(tag.declaration, "a = item.x");
+            } else {
+                panic!("Expected DeclarationTag, got {:?}", block.body.nodes[0]);
+            }
+        } else {
+            panic!("Expected EachBlock");
         }
     }
 }

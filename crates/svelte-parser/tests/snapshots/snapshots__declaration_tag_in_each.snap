@@ -1,0 +1,88 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{#each items as item}
+  {const area = item.w * item.h}
+  {let label = $state(area)}
+{/each}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            EachBlock(
+                EachBlock {
+                    span: Span {
+                        start: 0,
+                        end: 91,
+                    },
+                    expression_span: Span {
+                        start: 7,
+                        end: 12,
+                    },
+                    expression: "items",
+                    context: "item",
+                    context_span: Span {
+                        start: 16,
+                        end: 20,
+                    },
+                    index: None,
+                    key: None,
+                    body: Fragment {
+                        nodes: [
+                            DeclarationTag(
+                                DeclarationTag {
+                                    span: Span {
+                                        start: 24,
+                                        end: 54,
+                                    },
+                                    declaration_span: Span {
+                                        start: 31,
+                                        end: 53,
+                                    },
+                                    declaration: "area = item.w * item.h",
+                                    kind: Const,
+                                },
+                            ),
+                            DeclarationTag(
+                                DeclarationTag {
+                                    span: Span {
+                                        start: 57,
+                                        end: 83,
+                                    },
+                                    declaration_span: Span {
+                                        start: 62,
+                                        end: 82,
+                                    },
+                                    declaration: "label = $state(area)",
+                                    kind: Let,
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 21,
+                            end: 83,
+                        },
+                    },
+                    fallback: None,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 91,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 91,
+    },
+}
