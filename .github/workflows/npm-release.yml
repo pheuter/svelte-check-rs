@@ -65,4 +65,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          node -e "const fs=require('fs');const {execSync}=require('child_process');const tag='${{ steps.resolve-tag.outputs.tag }}';const distTag=tag.includes('-')?'beta':'latest';const data=JSON.parse(fs.readFileSync('dist/npm/publish-order.json','utf8'));for(const pkg of data.packages){console.log('Publishing',pkg,'tag',distTag);execSync('npm publish --access public --tag '+distTag+' \"'+pkg+'\"',{stdio:'inherit'});}"
+          node scripts/npm/publish-packages.mjs \
+            --tag "${{ steps.resolve-tag.outputs.tag }}" \
+            --out-dir dist/npm
