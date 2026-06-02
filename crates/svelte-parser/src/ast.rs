@@ -100,6 +100,8 @@ pub enum TemplateNode {
     HtmlTag(HtmlTag),
     /// An `{@const name = expr}` tag.
     ConstTag(ConstTag),
+    /// A `{const x = expr}` or `{let x = expr}` declaration tag (Svelte 5).
+    DeclarationTag(DeclarationTag),
     /// An `{@debug vars}` tag.
     DebugTag(DebugTag),
     /// An `{@render snippet()}` tag.
@@ -128,6 +130,7 @@ impl TemplateNode {
             TemplateNode::Expression(n) => n.span,
             TemplateNode::HtmlTag(n) => n.span,
             TemplateNode::ConstTag(n) => n.span,
+            TemplateNode::DeclarationTag(n) => n.span,
             TemplateNode::DebugTag(n) => n.span,
             TemplateNode::RenderTag(n) => n.span,
             TemplateNode::IfBlock(n) => n.span,
@@ -258,6 +261,28 @@ pub struct ConstTag {
     pub declaration_span: Span,
     /// The raw declaration text.
     pub declaration: String,
+}
+
+/// The kind of a declaration tag (`{let}` vs `{const}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclarationKind {
+    /// A `const` declaration.
+    Const,
+    /// A `let` declaration.
+    Let,
+}
+
+/// A Svelte 5 declaration tag, e.g. `{const x = expr}` or `{let y = expr}` (no `@`).
+#[derive(Debug, Clone)]
+pub struct DeclarationTag {
+    /// The span of the whole tag including braces.
+    pub span: Span,
+    /// The span of the declaration text after the keyword (e.g. `x = expr`).
+    pub declaration_span: Span,
+    /// The raw declaration text after the keyword (no keyword, no trailing `;`).
+    pub declaration: String,
+    /// Whether this is a `let` or `const` declaration.
+    pub kind: DeclarationKind,
 }
 
 /// An `{@debug vars}` tag.

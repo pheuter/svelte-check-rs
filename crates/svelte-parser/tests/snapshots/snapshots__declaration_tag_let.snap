@@ -1,0 +1,42 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+{let y = 2}
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            DeclarationTag(
+                DeclarationTag {
+                    span: Span {
+                        start: 0,
+                        end: 11,
+                    },
+                    declaration_span: Span {
+                        start: 5,
+                        end: 10,
+                    },
+                    declaration: "y = 2",
+                    kind: Let,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 11,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 11,
+    },
+}

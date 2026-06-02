@@ -77,6 +77,7 @@ fn check_fragment(
             | TemplateNode::Expression(_)
             | TemplateNode::HtmlTag(_)
             | TemplateNode::ConstTag(_)
+            | TemplateNode::DeclarationTag(_)
             | TemplateNode::DebugTag(_)
             | TemplateNode::RenderTag(_) => {}
         }

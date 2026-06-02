@@ -1932,3 +1932,89 @@ fn test_sveltekit_page_with_props() {
 <h1>{data.title}</h1>"#,
     );
 }
+
+// === Svelte 5 declaration tags ({const}/{let}) ===
+
+/// Simple declaration tags: `{const x = 1}` -> `const x = 1;`,
+/// `{let y = 2}` -> `let y = 2;`.
+#[test]
+fn test_declaration_tag_simple() {
+    transform_snapshot("declaration_tag_simple", "{const x = 1}\n{let y = 2}");
+}
+
+/// Destructuring declaration targets: object `{a, b}` and array `[a, b]` /
+/// `[head, ...tail]`. Array patterns are notable because `[` lexes as a `Text`
+/// token (the lexer has no dedicated `LBracket`).
+#[test]
+fn test_declaration_tag_destructuring() {
+    transform_snapshot(
+        "declaration_tag_destructuring",
+        "{const {a, b} = obj}\n{const [first, second] = arr}\n{let [head, ...tail] = arr}",
+    );
+}
+
+/// Mirrors language-tools ts-declaration-tag.v5: declarations inside `{#each}`
+/// with a `$state` rune initializer and a nested shadowing `{const area = ...}`.
+#[test]
+fn test_declaration_tag_each() {
+    transform_snapshot(
+        "declaration_tag_each",
+        r#"<script lang="ts">
+    type Box = { width: number; height: number };
+    let boxes: Box[] = [
+        { width: 3, height: 4 },
+        { width: 5, height: 7 }
+    ];
+</script>
+
+{#each boxes as box}
+    {const area = box.width * box.height}
+    {let label = $state(`${area} square pixels`)}
+    {const doubled = area * 2}
+
+    <p>{doubled} {label}</p>
+    <div>
+        {const area = 'nested'}
+        {area}
+    </div>
+{/each}"#,
+    );
+}
+
+/// Mirrors language-tools declaration-tag-async.v5: `await` preserved verbatim,
+/// declaration inside a `{#snippet}`.
+#[test]
+fn test_declaration_tag_async() {
+    transform_snapshot(
+        "declaration_tag_async",
+        r#"<script lang="ts">
+    type Box = { width: number; height: number };
+    let boxes: Box[] = [
+        { width: 3, height: 4 },
+        { width: 5, height: 7 }
+    ];
+</script>
+
+{#each boxes as box}
+    {const area = box.width * box.height}
+    {let label = $state(await `${area} square pixels`)}
+
+    <p>{label}</p>
+    <div>
+        {const area = await 'nested'}
+        {area}
+    </div>
+
+    {#snippet foo()}
+        {const area = await 'snippet'}
+        {area}
+    {/snippet}
+{/each}"#,
+    );
+}
+
+/// Verify the source map anchors to the declaration text (after the keyword).
+#[test]
+fn test_declaration_tag_source_map() {
+    transform_snapshot_with_source_map("declaration_tag_source_map", "{const x = 1}\n{let y = 2}");
+}
