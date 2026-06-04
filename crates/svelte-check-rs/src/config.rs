@@ -7,8 +7,9 @@ use std::fs;
 use std::sync::Arc;
 use swc_common::SourceMap;
 use swc_ecma_ast::{
-    Decl, ExportDefaultExpr, Expr, KeyValueProp, Lit, ModuleDecl, ModuleItem, ObjectLit, Pat, Prop,
-    PropName, PropOrSpread, Stmt, VarDeclKind,
+    AssignExpr, AssignOp, AssignTarget, Decl, ExportDefaultExpr, Expr, ExprStmt, KeyValueProp, Lit,
+    MemberExpr, MemberProp, ModuleDecl, ModuleItem, ObjectLit, Pat, Prop, PropName, PropOrSpread,
+    SimpleAssignTarget, Stmt, VarDeclKind,
 };
 use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 
@@ -93,10 +94,22 @@ pub struct SvelteCompilerOptions {
 }
 
 impl SvelteConfig {
-    /// Loads configuration from a svelte.config.js file.
+    /// Loads configuration from a `svelte.config.{js,ts,cjs,mjs,mts}` file.
     pub fn load(project_root: &Utf8Path) -> Self {
-        // Try multiple config file names
-        let config_files = ["svelte.config.js", "svelte.config.mjs", "svelte.config.ts"];
+        // Try multiple config file names. Order mirrors upstream language-tools
+        // (js -> ts -> cjs -> mjs -> mts); first match wins.
+        //
+        // Unlike upstream, we do NOT gate the TypeScript extensions (`.ts`,
+        // `.mts`) behind `process.features.typescript`: upstream needs Node to
+        // import the config at runtime, whereas svelte-check-rs parses configs
+        // statically via SWC, so the full set is always available.
+        let config_files = [
+            "svelte.config.js",
+            "svelte.config.ts",
+            "svelte.config.cjs",
+            "svelte.config.mjs",
+            "svelte.config.mts",
+        ];
 
         for config_file in config_files {
             let config_path = project_root.join(config_file);
@@ -114,7 +127,12 @@ impl SvelteConfig {
         Self::default()
     }
 
-    /// Parses a svelte.config.js or svelte.config.ts file using SWC.
+    /// Parses a `svelte.config.{js,ts,cjs,mjs,mts}` file using SWC.
+    ///
+    /// Supports both ESM (`export default { ... }` / `export default config`)
+    /// and CommonJS (`module.exports = { ... }` / `exports = { ... }`, and the
+    /// identifier forms `module.exports = config`). CommonJS assignments are fed
+    /// through the same extraction path as `export default`.
     fn parse_config(path: &Utf8Path) -> Result<Self, String> {
         let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
 
@@ -124,8 +142,11 @@ impl SvelteConfig {
             content,
         );
 
-        // Use TypeScript syntax for .ts files, ES for .js/.mjs
-        let syntax = if path.as_str().ends_with(".ts") {
+        // Use TypeScript syntax for .ts/.mts files, ES for .js/.cjs/.mjs.
+        // Note: `"svelte.config.mts".ends_with(".ts")` is false (it ends with
+        // `.mts`), so `.mts` must be matched explicitly or it would wrongly
+        // parse with the ES branch and choke on TS-only syntax.
+        let syntax = if path.as_str().ends_with(".ts") || path.as_str().ends_with(".mts") {
             Syntax::Typescript(TsSyntax {
                 tsx: false,
                 ..Default::default()
@@ -150,25 +171,116 @@ impl SvelteConfig {
 
         let object_by_name = Self::collect_top_level_object_consts(&module.body);
 
-        // Find the default export (`export default { ... }` or `export default config`)
+        // Find the config object. Supports:
+        //   - ESM `export default { ... }` / `export default config`
+        //   - CommonJS `module.exports = { ... }` / `exports = { ... }`
+        //     and the identifier forms `module.exports = config`.
+        // Plus TS forms where the object/identifier on the RHS is wrapped in a
+        // type assertion (`... satisfies Config`, `... as Config`, `... as
+        // const`, `<Config>...`, `...!`) — all transparent at runtime.
+        //
+        // Items are processed in source order; if a file mixes `export default`
+        // and `module.exports` (e.g. transpiled output), both contribute and
+        // later writes win for overlapping keys.
         for item in &module.body {
-            if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(ExportDefaultExpr {
-                expr,
-                ..
-            })) = item
-            {
-                let root = match expr.as_ref() {
-                    Expr::Object(obj) => Some(obj),
-                    Expr::Ident(ident) => object_by_name.get(ident.sym.as_ref()).copied(),
-                    _ => None,
-                };
-                if let Some(obj) = root {
-                    Self::extract_config_from_object(obj, &mut config);
+            match item {
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(ExportDefaultExpr {
+                    expr,
+                    ..
+                })) => {
+                    Self::extract_from_rhs(expr.as_ref(), &object_by_name, &mut config);
                 }
+                ModuleItem::Stmt(Stmt::Expr(ExprStmt { expr, .. })) => {
+                    if let Expr::Assign(AssignExpr {
+                        op: AssignOp::Assign,
+                        left,
+                        right,
+                        ..
+                    }) = expr.as_ref()
+                    {
+                        if Self::is_commonjs_exports_target(left) {
+                            Self::extract_from_rhs(right.as_ref(), &object_by_name, &mut config);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
         Ok(config)
+    }
+
+    /// Returns true if `target` is the CommonJS exports object, i.e. either
+    /// `module.exports` (member-expr) or a bare `exports` identifier.
+    ///
+    /// We only care about these two specific shapes, so the matches against the
+    /// large `SimpleAssignTarget` (11 variants) and `MemberProp` (3 variants)
+    /// enums fall through to `false` for everything else (any other assignment
+    /// target is simply not a config definition and is ignored).
+    fn is_commonjs_exports_target(target: &AssignTarget) -> bool {
+        let AssignTarget::Simple(simple) = target else {
+            return false;
+        };
+        match simple {
+            // `module.exports = ...`
+            SimpleAssignTarget::Member(MemberExpr { obj, prop, .. }) => {
+                let Expr::Ident(obj_ident) = obj.as_ref() else {
+                    return false;
+                };
+                if obj_ident.sym.as_ref() != "module" {
+                    return false;
+                }
+                matches!(prop, MemberProp::Ident(name) if name.sym.as_ref() == "exports")
+            }
+            // bare `exports = ...`
+            SimpleAssignTarget::Ident(binding) => binding.id.sym.as_ref() == "exports",
+            SimpleAssignTarget::SuperProp(_)
+            | SimpleAssignTarget::Paren(_)
+            | SimpleAssignTarget::OptChain(_)
+            | SimpleAssignTarget::TsAs(_)
+            | SimpleAssignTarget::TsSatisfies(_)
+            | SimpleAssignTarget::TsNonNull(_)
+            | SimpleAssignTarget::TsTypeAssertion(_)
+            | SimpleAssignTarget::TsInstantiation(_)
+            | SimpleAssignTarget::Invalid(_) => false,
+        }
+    }
+
+    /// Resolves the right-hand side of a config definition (the body of `export
+    /// default` or a CommonJS `module.exports = ...` assignment) to an object
+    /// literal and extracts configuration from it.
+    ///
+    /// Shared by both the ESM and CommonJS code paths so they use an identical
+    /// resolution strategy: peel TS assertions, then accept either a direct
+    /// object literal or an identifier referring to a top-level `const = { ... }`.
+    fn extract_from_rhs(
+        expr: &Expr,
+        object_by_name: &HashMap<&str, &ObjectLit>,
+        config: &mut SvelteConfig,
+    ) {
+        let inner = Self::unwrap_ts_assertions(expr);
+        let root = match inner {
+            Expr::Object(obj) => Some(obj),
+            Expr::Ident(ident) => object_by_name.get(ident.sym.as_ref()).copied(),
+            _ => None,
+        };
+        if let Some(obj) = root {
+            Self::extract_config_from_object(obj, config);
+        }
+    }
+
+    /// Peels TypeScript type-assertion wrappers that are transparent at runtime
+    /// (`satisfies`, `as`, `as const`, `<T>expr`, and non-null `!`) so the
+    /// underlying object/identifier can be resolved from a `.ts`/`.mts` config.
+    fn unwrap_ts_assertions(expr: &Expr) -> &Expr {
+        match expr {
+            Expr::TsSatisfies(e) => Self::unwrap_ts_assertions(e.expr.as_ref()),
+            Expr::TsAs(e) => Self::unwrap_ts_assertions(e.expr.as_ref()),
+            Expr::TsConstAssertion(e) => Self::unwrap_ts_assertions(e.expr.as_ref()),
+            Expr::TsTypeAssertion(e) => Self::unwrap_ts_assertions(e.expr.as_ref()),
+            Expr::TsNonNull(e) => Self::unwrap_ts_assertions(e.expr.as_ref()),
+            other => other,
+        }
     }
 
     /// Maps `const name = { ... }` at module top level to the object literal (for resolving
@@ -186,7 +298,11 @@ impl SvelteConfig {
                 let Pat::Ident(binding) = &decl.name else {
                     continue;
                 };
-                let Some(Expr::Object(obj)) = decl.init.as_ref().map(|e| e.as_ref()) else {
+                let Some(init) = decl.init.as_ref().map(|e| e.as_ref()) else {
+                    continue;
+                };
+                // Unwrap TS assertions like `const config = { ... } satisfies Config`.
+                let Expr::Object(obj) = Self::unwrap_ts_assertions(init) else {
                     continue;
                 };
                 out.insert(binding.id.sym.as_str(), obj);
@@ -700,6 +816,178 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(config_path).ok();
+    }
+
+    #[test]
+    fn test_parse_svelte_config_ts() {
+        // Issue #3009: a `svelte.config.ts` must be probed and parsed with the
+        // TypeScript SWC branch (so TS-only syntax is accepted) and its
+        // kit.alias / compilerOptions.runes honored.
+        let path = Utf8Path::new("../../test-fixtures/projects/svelte-config-ts");
+        let config = SvelteConfig::load(path);
+
+        assert_eq!(config.kit.alias.get("$lib"), Some(&"./src/lib".to_string()));
+        assert_eq!(config.compiler_options.runes, Some(true));
+    }
+
+    #[test]
+    fn test_parse_svelte_config_mts_uses_ts_syntax() {
+        // Issue #3009 regression guard: `"svelte.config.mts".ends_with(".ts")`
+        // is false, so before the fix `.mts` parsed with the ES branch and
+        // would reject TS-only syntax. Use a `satisfies` clause (TS-only) so
+        // this test fails if the ES branch is ever (re)selected for `.mts`.
+        let config_content = r#"
+            type Config = { kit: { alias: Record<string, string> } };
+            const config = {
+                kit: {
+                    alias: {
+                        '$lib': './src/lib'
+                    }
+                }
+            } satisfies Config;
+            export default config;
+        "#;
+
+        let temp_dir = std::env::temp_dir().join("svelte_check_rs_mts_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("svelte.config.mts");
+        std::fs::write(&config_path, config_content).unwrap();
+
+        let utf8_path = Utf8PathBuf::try_from(temp_dir.clone()).unwrap();
+        let config = SvelteConfig::load(&utf8_path);
+
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./src/lib".to_string()),
+            "expected .mts config to parse with the TypeScript SWC branch"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_parse_svelte_config_cjs() {
+        // `.cjs` is probed and parsed. This uses a *real* CommonJS body
+        // (`module.exports = { ... }`); previously this test wrote ESM `export
+        // default` into a `.cjs` file, which masked the gap that the static
+        // extractor only understood `export default`. With CommonJS support the
+        // static extractor must read `module.exports` and honor the alias.
+        let config_content = r#"
+            module.exports = {
+                kit: {
+                    alias: {
+                        '$lib': './src/lib'
+                    }
+                }
+            };
+        "#;
+
+        let temp_dir = std::env::temp_dir().join("svelte_check_rs_cjs_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("svelte.config.cjs");
+        std::fs::write(&config_path, config_content).unwrap();
+
+        let utf8_path = Utf8PathBuf::try_from(temp_dir.clone()).unwrap();
+        let config = SvelteConfig::load(&utf8_path);
+
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./src/lib".to_string()),
+            "expected CommonJS module.exports .cjs config to be parsed"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_parse_svelte_config_cjs_module_exports_ident() {
+        // CommonJS where `module.exports` is assigned an identifier referring to
+        // a top-level `const`. The RHS identifier must be resolved via
+        // object_by_name, mirroring `export default config`.
+        let config_content = r#"
+            const config = {
+                kit: {
+                    alias: {
+                        '$lib': './src/lib'
+                    }
+                },
+                compilerOptions: {
+                    runes: true
+                }
+            };
+            module.exports = config;
+        "#;
+
+        let temp_dir = std::env::temp_dir().join("svelte_check_rs_cjs_ident_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("svelte.config.cjs");
+        std::fs::write(&config_path, config_content).unwrap();
+
+        let utf8_path = Utf8PathBuf::try_from(temp_dir.clone()).unwrap();
+        let config = SvelteConfig::load(&utf8_path);
+
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./src/lib".to_string()),
+            "expected `module.exports = config` to resolve the identifier RHS"
+        );
+        assert_eq!(config.compiler_options.runes, Some(true));
+
+        // Cleanup
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_parse_svelte_config_exports_bare() {
+        // CommonJS bare `exports = { ... }` form (without the `module.` prefix).
+        let config_content = r#"
+            exports = {
+                kit: {
+                    alias: {
+                        '$lib': './src/lib'
+                    }
+                }
+            };
+        "#;
+
+        let temp_dir = std::env::temp_dir().join("svelte_check_rs_exports_bare_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("svelte.config.cjs");
+        std::fs::write(&config_path, config_content).unwrap();
+
+        let utf8_path = Utf8PathBuf::try_from(temp_dir.clone()).unwrap();
+        let config = SvelteConfig::load(&utf8_path);
+
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./src/lib".to_string()),
+            "expected bare `exports = {{ ... }}` to be parsed"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_parse_svelte_config_cjs_fixture() {
+        // Static on-disk fixture: a real CommonJS `.cjs` config mirroring the
+        // `svelte-config-ts` fixture. Exercises load() -> parse_config() ->
+        // module.exports extraction against an actual file rather than a temp.
+        let path = Utf8Path::new("../../test-fixtures/projects/svelte-config-cjs");
+        let config = SvelteConfig::load(path);
+
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./src/lib".to_string()),
+            "expected the .cjs fixture's kit.alias.$lib to be parsed"
+        );
+        assert_eq!(config.compiler_options.runes, Some(true));
     }
 
     #[test]
