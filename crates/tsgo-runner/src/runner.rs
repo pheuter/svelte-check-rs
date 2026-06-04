@@ -407,7 +407,7 @@ impl TsgoRunner {
 
     /// Resolves the absolute cache root for a project (the directory under
     /// `node_modules/.cache/svelte-check-rs/<hash>` where transformed files are
-    /// written). Public wrapper over the private [`Self::project_cache_root_for`]
+    /// written). Public wrapper over the private `project_cache_root_for`
     /// so callers can compute the eventual generated `.svelte.ts` path
     /// (`cache_root.join(virtual_path)`), which must match the physical write
     /// location used in [`Self::check`].

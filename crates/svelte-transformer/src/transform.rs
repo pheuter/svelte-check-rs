@@ -101,8 +101,8 @@ pub struct TransformOptions {
     /// Absolute path to the workspace/project root. When set together with
     /// [`TransformOptions::generated_path`] and [`TransformOptions::filename`],
     /// relative imports reaching outside the workspace are rewritten so they
-    /// stay resolvable from the generated cache location. See
-    /// [`rewrite_external_imports`].
+    /// stay resolvable from the generated cache location. See the private
+    /// `rewrite_external_imports` pass.
     pub workspace_path: Option<String>,
     /// Absolute path to the eventual generated `.svelte.ts` file in the cache.
     /// Used together with [`TransformOptions::workspace_path`] to rewrite
