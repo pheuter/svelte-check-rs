@@ -1892,24 +1892,20 @@ mod tests {
         // `current_dir()/./apps/x` with an embedded `/./`. The cache path is
         // clean, so the #2942 import rewrite compared mismatched paths and
         // mangled in-workspace imports. The workspace root must be normalized.
-        assert_eq!(
-            normalize_lexical(Utf8Path::new("/repo/./apps/x")).as_str(),
-            "/repo/apps/x"
-        );
-        assert_eq!(
-            normalize_lexical(Utf8Path::new("/a/b/../c")).as_str(),
-            "/a/c"
-        );
-        assert_eq!(
-            normalize_lexical(Utf8Path::new("/a/./b/./c")).as_str(),
-            "/a/b/c"
-        );
-        assert_eq!(normalize_lexical(Utf8Path::new("a/../b")).as_str(), "b");
+        //
+        // Compare in forward-slash form so the assertions hold on Windows too
+        // (camino joins with `\` there; the `.`/`..` collapsing is what matters).
+        let norm = |p: &str| {
+            normalize_lexical(Utf8Path::new(p))
+                .as_str()
+                .replace('\\', "/")
+        };
+        assert_eq!(norm("/repo/./apps/x"), "/repo/apps/x");
+        assert_eq!(norm("/a/b/../c"), "/a/c");
+        assert_eq!(norm("/a/./b/./c"), "/a/b/c");
+        assert_eq!(norm("a/../b"), "b");
         // A clean absolute path is unchanged.
-        assert_eq!(
-            normalize_lexical(Utf8Path::new("/Users/x/apps/web")).as_str(),
-            "/Users/x/apps/web"
-        );
+        assert_eq!(norm("/Users/x/apps/web"), "/Users/x/apps/web");
     }
 
     #[test]
