@@ -1021,6 +1021,16 @@ fn get_external_import_rewrite(
         return None;
     }
 
+    // The injected helper-shim import is emitted with a path relative to the
+    // GENERATED cache dir (which is deeper than the source dir), not the source
+    // dir this pass resolves against. In a nested/monorepo workspace its `../`
+    // count over-shoots the workspace root, so resolving it here would wrongly
+    // flag it as "outside workspace" and mangle it. It is internal infra, never
+    // a user import — skip it. (Regression: careswitch monorepo apps.)
+    if path_part.ends_with("__svelte_check_rs_helpers") {
+        return None;
+    }
+
     let target_path = lexical_resolve(source_dir, path_part);
     if is_within_directory(&target_path, workspace) {
         return None;
@@ -1730,6 +1740,7 @@ type __SvelteCallableComponent<T> =
     : T;
 
 type __SvelteEachItem<T> =
+  0 extends (1 & T) ? any :
   T extends ArrayLike<infer U> ? U :
   T extends Iterable<infer U> ? U :
   never;
@@ -2625,6 +2636,18 @@ mod tests {
     fn test_external_rewrite_collapses_to_dotdot() {
         // `../../x` -> /x (outside /x/y) -> relative from /x/y/generated == ../..
         assert_eq!(rewrite("../../x").as_deref(), Some("../.."));
+    }
+
+    #[test]
+    fn test_external_rewrite_skips_helper_shim() {
+        // Regression (careswitch monorepo): the injected helper-shim import is
+        // emitted relative to the GENERATED dir, not the source dir this pass
+        // resolves against. Resolving it here would over-count `../`, flag it as
+        // "outside workspace", and mangle it into a broken path -> every file's
+        // shim types fail to load (TS2882/TS2307/TS2614 flood). It must never be
+        // rewritten, regardless of how far its `../` chain reaches.
+        assert_eq!(rewrite("../../../__svelte_check_rs_helpers"), None);
+        assert_eq!(rewrite("../../../../../q/__svelte_check_rs_helpers"), None);
     }
 
     #[test]

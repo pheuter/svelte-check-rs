@@ -2463,6 +2463,33 @@ fn test_issue_2863_each_nullable_no_ts_errors() {
     assert_no_diagnostics_in_file(&ts_diagnostics, "issue-2863-each-nullable/+page.svelte");
 }
 
+// Regression: the #2863 `__svelte_each` helper must yield `any` items (like a
+// native `for...of`) when the iterable is typed `any`, NOT `unknown`. A
+// `sanity.fetch()`-style `any` array iterated in a non-indexed each previously
+// produced false-positive `TS18046 'item' is of type 'unknown'`. Caught only
+// against the careswitch monorepo; pinned here.
+// Fixture: src/routes/issue-2863-each-any/+page.svelte
+#[test]
+fn test_issue_2863_each_any_yields_any_not_unknown() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let unknown_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("issue-2863-each-any/+page.svelte") && d.code == "TS18046")
+        .collect();
+    assert!(
+        unknown_errors.is_empty(),
+        "Issue #2863: `any` each item resolved to `unknown` (member access fails):\n{:#?}",
+        unknown_errors
+    );
+
+    // `item.foo.bar` only type-checks if `item` stays `any`, so the whole file
+    // must be diagnostic-free.
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-2863-each-any/+page.svelte");
+}
+
 // ============================================================================
 // ISSUE #2863 NEGATIVE: GENUINE NON-ITERABLE IN #each STILL ERRORS
 // ============================================================================

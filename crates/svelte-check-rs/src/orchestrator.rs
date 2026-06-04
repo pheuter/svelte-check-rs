@@ -7,7 +7,7 @@ use bun_runner::{
     BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunExperimentalOptions, BunInput,
     BunRunner,
 };
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
 use source_map::LineIndex;
@@ -266,6 +266,42 @@ pub enum OrchestratorError {
     CompilerConfigError(String),
 }
 
+/// Lexically normalizes a path: drops `.` components and resolves `..` against
+/// preceding normal components, without touching the filesystem.
+///
+/// `current_dir().join("./apps/foo")` yields a path with an embedded `/./`
+/// segment, while the cache/`generated_path` is clean. The out-of-root import
+/// rewrite (#2942) compares these paths, so an un-normalized `.`/`..` in the
+/// workspace root makes in-workspace imports look "outside" and get mangled
+/// (regression seen on monorepo apps invoked with `--workspace ./apps/...`).
+/// Normalizing the workspace root once keeps every downstream path consistent.
+fn normalize_lexical(path: &Utf8Path) -> Utf8PathBuf {
+    let mut out = Utf8PathBuf::new();
+    let mut normal_depth = 0usize;
+    for comp in path.components() {
+        match comp {
+            Utf8Component::CurDir => {}
+            Utf8Component::ParentDir => {
+                if normal_depth > 0 {
+                    out.pop();
+                    normal_depth -= 1;
+                } else if out.as_str().is_empty() {
+                    out.push("..");
+                }
+            }
+            Utf8Component::Normal(segment) => {
+                out.push(segment);
+                normal_depth += 1;
+            }
+            root_or_prefix => out.push(root_or_prefix.as_str()),
+        }
+    }
+    if out.as_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
 /// Runs the check on all files.
 pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     let workspace = if args.workspace.is_relative() {
@@ -276,6 +312,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     } else {
         args.workspace.clone()
     };
+    let workspace = normalize_lexical(&workspace);
 
     // Load configuration
     let svelte_config = SvelteConfig::load(&workspace);
@@ -1847,6 +1884,32 @@ mod tests {
         let file = workspace.join("src/lib/Foo.svelte.ts");
         let key = virtual_path_for(&file, &workspace, false);
         assert_eq!(key.as_str(), "src/lib/Foo.svelte.ts");
+    }
+
+    #[test]
+    fn test_normalize_lexical_strips_dot_and_dotdot() {
+        // Regression (careswitch monorepo): `--workspace ./apps/x` becomes
+        // `current_dir()/./apps/x` with an embedded `/./`. The cache path is
+        // clean, so the #2942 import rewrite compared mismatched paths and
+        // mangled in-workspace imports. The workspace root must be normalized.
+        assert_eq!(
+            normalize_lexical(Utf8Path::new("/repo/./apps/x")).as_str(),
+            "/repo/apps/x"
+        );
+        assert_eq!(
+            normalize_lexical(Utf8Path::new("/a/b/../c")).as_str(),
+            "/a/c"
+        );
+        assert_eq!(
+            normalize_lexical(Utf8Path::new("/a/./b/./c")).as_str(),
+            "/a/b/c"
+        );
+        assert_eq!(normalize_lexical(Utf8Path::new("a/../b")).as_str(), "b");
+        // A clean absolute path is unchanged.
+        assert_eq!(
+            normalize_lexical(Utf8Path::new("/Users/x/apps/web")).as_str(),
+            "/Users/x/apps/web"
+        );
     }
 
     #[test]

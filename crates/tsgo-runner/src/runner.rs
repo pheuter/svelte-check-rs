@@ -47,6 +47,7 @@ declare global {
   type __SvelteSnippet<T extends any[] = any[]> = SvelteSnippet<T>;
 
   type __SvelteEachItem<T> =
+    0 extends (1 & T) ? any :
     T extends ArrayLike<infer U> ? U :
     T extends Iterable<infer U> ? U :
     never;

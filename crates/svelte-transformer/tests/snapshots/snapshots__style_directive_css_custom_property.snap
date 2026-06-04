@@ -42,6 +42,7 @@ type __SvelteCallableComponent<T> =
     : T;
 
 type __SvelteEachItem<T> =
+  0 extends (1 & T) ? any :
   T extends ArrayLike<infer U> ? U :
   T extends Iterable<infer U> ? U :
   never;
@@ -191,12 +192,12 @@ export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (9) ===
-  0: generated 6615..6637 -> original 18..40
-  1: generated 6637..6646 -> original 40..49
-  2: generated 6646..6664 -> original 49..67
-  3: generated 6664..6678 -> original 67..81
-  4: generated 6678..6680 -> original 81..83
-  5: generated 6715..6758 -> original 124..167
-  6: generated 6804..6805 -> original 180..181
-  7: generated 6819..6824 -> original 214..219
-  8: generated 6828..6833 -> original 238..241
+  0: generated 6643..6665 -> original 18..40
+  1: generated 6665..6674 -> original 40..49
+  2: generated 6674..6692 -> original 49..67
+  3: generated 6692..6706 -> original 67..81
+  4: generated 6706..6708 -> original 81..83
+  5: generated 6743..6786 -> original 124..167
+  6: generated 6832..6833 -> original 180..181
+  7: generated 6847..6852 -> original 214..219
+  8: generated 6856..6861 -> original 238..241

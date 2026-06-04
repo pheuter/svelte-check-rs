@@ -381,6 +381,70 @@ fn write_file(path: &Path, contents: &str) {
 
 /// Runs svelte-check-rs against a throwaway temp project (uncached, locked on
 /// its own name).
+/// Regression (careswitch monorepo): invoking with a RELATIVE `./` workspace
+/// left an un-normalized `/./` in the absolutized workspace root, while the
+/// cache/generated path is clean. The #2942 import rewrite compares those paths,
+/// so IN-workspace imports (and the injected helper-shim import) were judged
+/// "outside" and mangled into broken paths -> a flood of false TS2307/TS2882 in
+/// every file. The existing #2942 tests passed an ABSOLUTE `--workspace`, so
+/// they never exercised this; this one drives the binary with `./<name>`.
+#[test]
+fn test_relative_workspace_does_not_mangle_in_workspace_imports() {
+    let bundler = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&bundler); // ensure deps + .svelte-kit exist
+
+    let name = "relative-workspace";
+    let project = make_temp_project_reusing_bundler(&bundler, name);
+    // An IN-workspace sibling import: `../util` from `src/lib/components`.
+    fs::create_dir_all(project.join("src/lib/components")).expect("mkdir components");
+    write_file(
+        &project.join("src/lib/util.ts"),
+        "export const helper = 41;\n",
+    );
+    write_file(
+        &project.join("src/lib/components/Comp.svelte"),
+        "<script lang=\"ts\">\n\timport { helper } from '../util';\n\tconst n = helper + 1;\n</script>\n<p>{n}</p>\n",
+    );
+
+    ensure_binary_built();
+    let _lock = lock_fixture("sveltekit-bundler");
+    // Drive with a RELATIVE `./<name>` workspace from the temp parent dir, so the
+    // absolutized workspace contains the `/./` segment that triggered the bug.
+    let parent = project.parent().expect("temp parent");
+    let output = Command::new(binary_path())
+        .current_dir(parent)
+        .arg("--workspace")
+        .arg(format!("./{name}"))
+        .arg("--output")
+        .arg("json")
+        .output()
+        .expect("Failed to execute svelte-check-rs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let diagnostics: Vec<JsonDiagnostic> = serde_json::from_str(&stdout).unwrap_or_default();
+
+    // No file may get a mangled helper-shim import.
+    let shim: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == "TS2882" || d.message.contains("__svelte_check_rs_helpers"))
+        .collect();
+    assert!(
+        shim.is_empty(),
+        "relative `./` workspace mangled the injected helper-shim import:\n{:#?}",
+        shim
+    );
+
+    // The in-workspace `../util` import must resolve (no spurious TS2307).
+    let ts2307: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("components/Comp.svelte") && d.code == "TS2307")
+        .collect();
+    assert!(
+        ts2307.is_empty(),
+        "relative `./` workspace mangled an in-workspace sibling import:\n{:#?}",
+        ts2307
+    );
+}
+
 fn run_check_json_for_temp(project: &Path) -> (i32, Vec<JsonDiagnostic>) {
     ensure_binary_built();
     let _lock = lock_fixture("sveltekit-bundler");
