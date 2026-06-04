@@ -34,8 +34,16 @@ pub struct PropsInfo {
 /// A single property from props destructuring.
 #[derive(Debug, Clone)]
 pub struct PropProperty {
-    /// The property name.
+    /// The property name (the *exported* prop name, before any `:` rename).
     pub name: String,
+    /// The local binding name (the alias after `:` in a `prop: local` rename),
+    /// falling back to the exported `name` when there is no rename.
+    ///
+    /// This is used to mark bindable props as "used" so `noUnusedLocals` does
+    /// not flag them. The local name is always a valid identifier, whereas the
+    /// exported `name` can be a reserved word (e.g. `class`), which would make
+    /// the generated `;class;` reference a TS syntax error (upstream #3017).
+    pub local_name: Option<String>,
     /// The span of the property name in the source.
     pub span: Span,
     /// Whether this property is marked with `$bindable()`.
@@ -294,6 +302,8 @@ fn parse_single_property(prop_str: &str, base_offset: u32) -> Option<PropPropert
     if let Some(rest_name) = trimmed.strip_prefix("...") {
         return Some(PropProperty {
             name: rest_name.to_string(),
+            // Rest elements are never bindable, so the local name is unused.
+            local_name: None,
             span: Span::new(base_offset, base_offset + trimmed.len() as u32),
             is_bindable: false,
             default_value: None,
@@ -323,6 +333,13 @@ fn parse_single_property(prop_str: &str, base_offset: u32) -> Option<PropPropert
         Some(colon_idx) => name[..colon_idx].trim(),
         None => name,
     };
+    // The local binding name is the alias after the colon (always a valid
+    // identifier); without a rename it is the exported name itself. Used to
+    // mark bindable props as read (upstream #3017).
+    let local_name = match name.find(':') {
+        Some(colon_idx) => name[colon_idx + 1..].trim().to_string(),
+        None => final_name.to_string(),
+    };
     let type_ann: Option<String> = None;
 
     // Check if default is $bindable
@@ -350,6 +367,7 @@ fn parse_single_property(prop_str: &str, base_offset: u32) -> Option<PropPropert
 
     Some(PropProperty {
         name: final_name.to_string(),
+        local_name: Some(local_name),
         span: Span::new(base_offset, base_offset + prop_str.len() as u32),
         is_bindable,
         default_value: actual_default,
@@ -912,6 +930,31 @@ mod tests {
     }
 
     #[test]
+    fn test_local_name_falls_back_to_exported_name() {
+        // No `:` rename: local name equals the exported name (upstream #3017).
+        let script = "let { value = $bindable(0) } = $props();";
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert_eq!(info.properties.len(), 1);
+        assert_eq!(info.properties[0].name, "value");
+        assert_eq!(info.properties[0].local_name, Some("value".to_string()));
+    }
+
+    #[test]
+    fn test_local_name_uses_alias_for_renamed_bindable() {
+        // `class: className` — exported name is the reserved word `class`, the
+        // local binding is `className`. The marker must use the local name so
+        // the generated `;className;` is valid TS (upstream #3017).
+        let script = "let { class: className = $bindable() } = $props();";
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert_eq!(info.properties.len(), 1);
+        assert_eq!(info.properties[0].name, "class");
+        assert_eq!(info.properties[0].local_name, Some("className".to_string()));
+        assert!(info.properties[0].is_bindable);
+    }
+
+    #[test]
     fn test_extract_object_binding() {
         let script = "let props = $props();";
         let info = extract_props_info(script, script, 0).unwrap();
@@ -948,6 +991,7 @@ mod tests {
             properties: vec![
                 PropProperty {
                     name: "count".to_string(),
+                    local_name: Some("count".to_string()),
                     span: Span::default(),
                     is_bindable: false,
                     default_value: None,
@@ -956,6 +1000,7 @@ mod tests {
                 },
                 PropProperty {
                     name: "label".to_string(),
+                    local_name: Some("label".to_string()),
                     span: Span::default(),
                     is_bindable: false,
                     default_value: Some("'default'".to_string()),

@@ -39,6 +39,8 @@ SvelteDocument {
                                         value: "POST",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Normal(
@@ -57,6 +59,8 @@ SvelteDocument {
                                         value: "?/select",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Directive(
@@ -69,6 +73,8 @@ SvelteDocument {
                                 name: "formSelect.enhance",
                                 modifiers: [],
                                 expression: None,
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

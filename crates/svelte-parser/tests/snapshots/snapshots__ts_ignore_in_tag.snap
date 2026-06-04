@@ -1,0 +1,152 @@
+---
+source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
+expression: output
+---
+Source:
+<div
+    // @ts-ignore
+    dir={x}
+    foo="bar" // same line
+    baz="qux"
+    /* trailing */
+/></div>
+
+Errors: []
+
+AST:
+SvelteDocument {
+    module_script: None,
+    instance_script: None,
+    style: None,
+    fragment: Fragment {
+        nodes: [
+            Element(
+                Element {
+                    span: Span {
+                        start: 0,
+                        end: 97,
+                    },
+                    name: "div",
+                    attributes: [
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 27,
+                                    end: 34,
+                                },
+                                name: "dir",
+                                value: Expression(
+                                    ExpressionValue {
+                                        span: Span {
+                                            start: 31,
+                                            end: 34,
+                                        },
+                                        expression_span: Span {
+                                            start: 32,
+                                            end: 33,
+                                        },
+                                        expression: "x",
+                                        is_quoted: false,
+                                    },
+                                ),
+                                leading_comments: [
+                                    TagComment {
+                                        span: Span {
+                                            start: 9,
+                                            end: 22,
+                                        },
+                                        text: "// @ts-ignore",
+                                        is_line: true,
+                                        has_newline_before: true,
+                                    },
+                                ],
+                                trailing_comments: [],
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 39,
+                                    end: 48,
+                                },
+                                name: "foo",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 44,
+                                            end: 47,
+                                        },
+                                        value: "bar",
+                                    },
+                                ),
+                                leading_comments: [],
+                                trailing_comments: [],
+                            },
+                        ),
+                        Normal(
+                            NormalAttribute {
+                                span: Span {
+                                    start: 66,
+                                    end: 75,
+                                },
+                                name: "baz",
+                                value: Text(
+                                    TextValue {
+                                        span: Span {
+                                            start: 71,
+                                            end: 74,
+                                        },
+                                        value: "qux",
+                                    },
+                                ),
+                                leading_comments: [
+                                    TagComment {
+                                        span: Span {
+                                            start: 49,
+                                            end: 61,
+                                        },
+                                        text: "// same line",
+                                        is_line: true,
+                                        has_newline_before: false,
+                                    },
+                                ],
+                                trailing_comments: [
+                                    TagComment {
+                                        span: Span {
+                                            start: 80,
+                                            end: 94,
+                                        },
+                                        text: "/* trailing */",
+                                        is_line: false,
+                                        has_newline_before: true,
+                                    },
+                                ],
+                            },
+                        ),
+                    ],
+                    children: [],
+                    self_closing: true,
+                },
+            ),
+            Text(
+                Text {
+                    span: Span {
+                        start: 99,
+                        end: 102,
+                    },
+                    data: "div",
+                    is_whitespace: false,
+                },
+            ),
+        ],
+        span: Span {
+            start: 0,
+            end: 102,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 103,
+    },
+}

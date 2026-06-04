@@ -39,6 +39,8 @@ SvelteDocument {
                                         value: "text",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Attach(
@@ -52,6 +54,8 @@ SvelteDocument {
                                     end: 40,
                                 },
                                 expression: "myAttachment",
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

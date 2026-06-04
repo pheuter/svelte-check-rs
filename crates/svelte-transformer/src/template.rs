@@ -697,6 +697,27 @@ impl TemplateContext {
         self.output.push('\n');
     }
 
+    /// Emits in-tag comments (`// @ts-ignore`, `/* ... */`, etc.) captured by
+    /// the parser, each on its own indented line followed by a forced newline.
+    ///
+    /// The forced newline is important: a line comment that originally had no
+    /// trailing newline would otherwise comment out the generated code that
+    /// follows it on the same line. Emitting each comment on its own line means
+    /// a leading `// @ts-ignore` lands directly above the attribute's
+    /// `"name": value,` line, so TypeScript suppresses the error on that line —
+    /// matching upstream svelte2tsx behaviour.
+    fn emit_tag_comments(&mut self, comments: &[TagComment]) {
+        if comments.is_empty() {
+            return;
+        }
+        let indent_str = self.indent_str();
+        for comment in comments {
+            self.output.push_str(&indent_str);
+            self.output.push_str(&comment.text);
+            self.output.push('\n');
+        }
+    }
+
     fn transform_expr(&mut self, expr: &str) -> String {
         transform_store_subscriptions_in_template(expr, &mut self.store_names)
     }
@@ -951,6 +972,12 @@ impl TemplateContext {
                 d.span.start + ByteOffset::from(name_offset + d.name.len() as u32),
             );
 
+            // Emit any leading in-tag comments (e.g. `// @ts-ignore`) directly
+            // above the `__svelte_ensure_action` line so TypeScript suppresses
+            // errors on the action call. The Use directive is a no-op in
+            // `generate_directive`, so element `use:` comments are emitted here.
+            self.emit_tag_comments(&d.leading_comments);
+
             let indent_str = self.indent_str();
             self.output.push_str(&indent_str);
             self.output
@@ -974,6 +1001,7 @@ impl TemplateContext {
                 self.output.push_str(&transformed);
             }
             self.output.push_str("));\n");
+            self.emit_tag_comments(&d.trailing_comments);
             action_vars.push(var_name);
         }
         action_vars
@@ -1033,6 +1061,7 @@ impl TemplateContext {
                 Attribute::Normal(a) => {
                     if event_attribute_name(&a.name).is_some() {
                         if let AttributeValue::Expression(expr) = &a.value {
+                            self.emit_tag_comments(&a.leading_comments);
                             let name_span = Span::new(
                                 a.span.start,
                                 a.span.start + ByteOffset::from(a.name.len() as u32),
@@ -1048,9 +1077,11 @@ impl TemplateContext {
                             self.record_mapping_at_current_pos(&transformed, expr.expression_span);
                             self.output.push_str(&transformed);
                             self.output.push_str(",\n");
+                            self.emit_tag_comments(&a.trailing_comments);
                             continue;
                         }
                     }
+                    self.emit_tag_comments(&a.leading_comments);
                     let name_span = Span::new(
                         a.span.start,
                         a.span.start + ByteOffset::from(a.name.len() as u32),
@@ -1114,8 +1145,10 @@ impl TemplateContext {
                         }
                     }
                     self.output.push_str(",\n");
+                    self.emit_tag_comments(&a.trailing_comments);
                 }
                 Attribute::Shorthand(s) => {
+                    self.emit_tag_comments(&s.leading_comments);
                     let indent_str = self.indent_str();
                     self.output.push_str(&indent_str);
                     self.emit_prop_name_with_mapping(&s.name, s.span);
@@ -1124,8 +1157,10 @@ impl TemplateContext {
                     self.record_mapping_at_current_pos(&transformed, s.span);
                     self.output.push_str(&transformed);
                     self.output.push_str(",\n");
+                    self.emit_tag_comments(&s.trailing_comments);
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::On => {
+                    self.emit_tag_comments(&d.leading_comments);
                     let name = format!("on:{}", d.name);
                     let name_span = Span::new(
                         d.span.start,
@@ -1146,11 +1181,13 @@ impl TemplateContext {
                         self.output.push_str("__svelte_any");
                     }
                     self.output.push_str(",\n");
+                    self.emit_tag_comments(&d.trailing_comments);
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::Bind => {
                     if d.name == "this" {
                         continue;
                     }
+                    self.emit_tag_comments(&d.leading_comments);
                     let name = format!("bind:{}", d.name);
                     let name_span = Span::new(
                         d.span.start,
@@ -1160,6 +1197,7 @@ impl TemplateContext {
                     self.output.push_str(&indent_str);
                     self.emit_prop_name_with_mapping(&name, name_span);
                     self.output.push_str("__svelte_any,\n");
+                    self.emit_tag_comments(&d.trailing_comments);
                 }
                 _ => {}
             }
@@ -1198,11 +1236,13 @@ impl TemplateContext {
                     continue;
                 }
                 Attribute::Spread(s) => {
+                    self.emit_tag_comments(&s.leading_comments);
                     self.emit_expression(
                         &s.expression,
                         s.expression_span,
                         ExpressionContext::Spread,
                     );
+                    self.emit_tag_comments(&s.trailing_comments);
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::On => {
                     // Event handlers are type-checked in the attribute check object.
@@ -1217,6 +1257,7 @@ impl TemplateContext {
                 Attribute::Attach(a) => {
                     // {@attach expr} - ensure attachment with properly typed element
                     // This provides type context while allowing falsy attachments
+                    self.emit_tag_comments(&a.leading_comments);
                     let element_type = action_target_type(element_name);
                     let transformed = self.track_inline_expression(
                         &a.expression,
@@ -1230,6 +1271,7 @@ impl TemplateContext {
                     self.output.push_str(&transformed);
                     self.output
                         .push_str(&format!(", null as unknown as {});\n", element_type));
+                    self.emit_tag_comments(&a.trailing_comments);
                 }
                 Attribute::CssCustomProperty { value, .. } => {
                     // CSS custom property attributes (--var="value")
@@ -1252,9 +1294,41 @@ impl TemplateContext {
         directive: &Directive,
         action_attrs_type: Option<&str>,
     ) {
+        // `use:` actions on elements are handled in `emit_action_attributes`
+        // (which emits their in-tag comments), and `use:` on components is a
+        // no-op here, so short-circuit before emitting any comments to avoid
+        // double-emission / orphaned comments.
         if directive.kind == DirectiveKind::Use {
             return;
         }
+        // Emit any leading in-tag comments (e.g. `// @ts-ignore`) directly above
+        // whatever statement this directive produces (the `__event_N`,
+        // getter/setter pair, or generic expression check), and any trailing
+        // comments directly below it, so TypeScript suppresses errors on the
+        // type-checked line. This wraps every directive sub-path (bind:, on:,
+        // transition:/animate:/in:/out:, etc.) in one place, mirroring upstream
+        // svelte2tsx commit 3a3d6e3a (#2950).
+        //
+        // `bind:this` is the exception: it emits a leading `const __bind_this_N`
+        // cast (which never errors) followed by the actual type-checked
+        // assignment / setter call. A `// @ts-ignore` only suppresses the line
+        // immediately below it, so the comment must land above that *second*
+        // statement, not the harmless cast. The inner emits the comment there
+        // for `bind:this`; the wrapper handles every other path.
+        let is_bind_this = directive.kind == DirectiveKind::Bind && directive.name == "this";
+        if !is_bind_this {
+            self.emit_tag_comments(&directive.leading_comments);
+        }
+        self.generate_directive_inner(element_name, directive, action_attrs_type);
+        self.emit_tag_comments(&directive.trailing_comments);
+    }
+
+    fn generate_directive_inner(
+        &mut self,
+        element_name: &str,
+        directive: &Directive,
+        action_attrs_type: Option<&str>,
+    ) {
         // Shorthand `bind:foo` / `class:foo` / `style:foo` desugars to
         // `<dir>:foo={foo}`. The parser leaves `expression: None` for the
         // shorthand form, so emit a read of the directive name here — otherwise
@@ -1377,6 +1451,9 @@ impl TemplateContext {
                             "const __bind_this_{} = null as unknown as {};",
                             id, bind_type
                         ));
+                        // Leading comments must sit above the setter-call line —
+                        // the type-checked statement — not the harmless cast.
+                        self.emit_tag_comments(&directive.leading_comments);
                         let indent_str = self.indent_str();
                         self.output.push_str(&indent_str);
                         self.output.push('(');
@@ -1395,7 +1472,18 @@ impl TemplateContext {
                             "const __bind_this_{} = null as unknown as {};",
                             id, bind_type
                         ));
-                        self.emit(&format!("{} = __bind_this_{};", transformed, id));
+                        // Leading comments must sit above the assignment line —
+                        // the type-checked statement — not the harmless cast.
+                        self.emit_tag_comments(&directive.leading_comments);
+                        // Emit the assignment with a source mapping on the bound
+                        // expression so an assignability error (e.g. a wrongly
+                        // typed `bind:this` ref) maps back to the directive,
+                        // rather than falling back to an unrelated earlier line.
+                        let indent_str = self.indent_str();
+                        self.output.push_str(&indent_str);
+                        self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                        self.output.push_str(&transformed);
+                        self.output.push_str(&format!(" = __bind_this_{};\n", id));
                     }
                 } else if let Some((getter, setter)) =
                     split_top_level_comma(&expr.expression, expr.expression_span)
@@ -1509,6 +1597,7 @@ impl TemplateContext {
         for attr in attrs {
             match attr {
                 Attribute::Normal(a) => {
+                    self.emit_tag_comments(&a.leading_comments);
                     // Compute name span from attribute span
                     let name_span = Span::new(
                         a.span.start,
@@ -1584,8 +1673,10 @@ impl TemplateContext {
                             self.output.push_str(&format!("{},\n", template));
                         }
                     }
+                    self.emit_tag_comments(&a.trailing_comments);
                 }
                 Attribute::Spread(s) => {
+                    self.emit_tag_comments(&s.leading_comments);
                     // Include spreads in the props object with mapping
                     let transformed = self.track_inline_expression(
                         &s.expression,
@@ -1598,8 +1689,10 @@ impl TemplateContext {
                     self.record_mapping_at_current_pos(&transformed, s.expression_span);
                     self.output.push_str(&transformed);
                     self.output.push_str(",\n");
+                    self.emit_tag_comments(&s.trailing_comments);
                 }
                 Attribute::Shorthand(s) => {
+                    self.emit_tag_comments(&s.leading_comments);
                     let transformed =
                         self.track_inline_expression(&s.name, s.span, ExpressionContext::Attribute);
                     let indent_str = self.indent_str();
@@ -1607,8 +1700,10 @@ impl TemplateContext {
                     self.record_mapping_at_current_pos(&transformed, s.span);
                     self.output.push_str(&transformed);
                     self.output.push_str(",\n");
+                    self.emit_tag_comments(&s.trailing_comments);
                 }
                 Attribute::Directive(d) if d.kind == DirectiveKind::Bind && d.name != "this" => {
+                    self.emit_tag_comments(&d.leading_comments);
                     // For bind:name, the name starts after "bind:" (5 chars).
                     let name_offset = 5u32;
                     let name_span = Span::new(
@@ -1669,11 +1764,13 @@ impl TemplateContext {
                             self.output.push_str("undefined as any,\n");
                         }
                     }
+                    self.emit_tag_comments(&d.trailing_comments);
                 }
                 Attribute::Directive(_) => {
                     // Directives handled in second pass
                 }
                 Attribute::Attach(a) => {
+                    self.emit_tag_comments(&a.leading_comments);
                     // {@attach expr} => [Symbol("@attach")]: expr
                     let transformed = self.track_inline_expression(
                         &a.expression,
@@ -1686,8 +1783,11 @@ impl TemplateContext {
                     self.record_mapping_at_current_pos(&transformed, a.expression_span);
                     self.output.push_str(&transformed);
                     self.output.push_str(",\n");
+                    self.emit_tag_comments(&a.trailing_comments);
                 }
-                Attribute::CssCustomProperty { name, value, span } => {
+                Attribute::CssCustomProperty {
+                    name, value, span, ..
+                } => {
                     // CSS custom property: --name="value" => ...__svelte_css_prop({ "--name": value })
                     let indent_str = self.indent_str();
                     self.output.push_str(&indent_str);
@@ -1907,23 +2007,46 @@ impl TemplateContext {
         let item_pattern = block.context.trim();
         let index_var = block.index.as_ref().map(|i| i.to_string());
 
-        if let Some(ref idx) = index_var {
+        // Build the `for (...)` line and additionally record a mapping for the
+        // `__each_N` argument *inside* the `__svelte_each`/`__svelte_each_indexed`
+        // call. The iterable-constraint TS2345 (genuine non-iterable, e.g.
+        // `{#each someNumber as x}`) fires on that argument position, not on the
+        // `const __each_N = <expr>` RHS, so without this mapping the diagnostic
+        // would surface in raw generated coordinates. Mirrors upstream
+        // svelte2tsx, which inlines the iterable into the each call so the error
+        // maps back to the original expression.
+        let each_token = format!("__each_{}", id);
+        let for_line = if let Some(ref idx) = index_var {
             if item_pattern.is_empty() {
                 // Item-less form `{#each EXPR, INDEX}` — bind only the index.
                 // Array destructuring lets us drop the (unused) value element.
-                self.emit(&format!(
-                    "for (const [{}] of __svelte_each_indexed(__each_{})) {{",
-                    idx, id
-                ));
+                format!(
+                    "for (const [{}] of __svelte_each_indexed({})) {{",
+                    idx, each_token
+                )
             } else {
-                self.emit(&format!(
-                    "for (const [{}, {}] of __svelte_each_indexed(__each_{})) {{",
-                    idx, item_pattern, id
-                ));
+                format!(
+                    "for (const [{}, {}] of __svelte_each_indexed({})) {{",
+                    idx, item_pattern, each_token
+                )
             }
         } else {
-            self.emit(&format!("for (const {} of __each_{}) {{", item_pattern, id));
+            format!(
+                "for (const {} of __svelte_each({})) {{",
+                item_pattern, each_token
+            )
+        };
+        // Locate the `__each_N` token within the line so the mapping points at
+        // the iterable argument (the position TypeScript reports for TS2345).
+        if let Some(token_offset) = for_line.rfind(&each_token) {
+            let generated_start = self.output.len() + indent_str.len() + token_offset;
+            self.mappings.push(GeneratedMapping {
+                generated_start,
+                generated_end: generated_start + each_token.len(),
+                original_span: block.expression_span,
+            });
         }
+        self.emit(&for_line);
 
         self.indent += 1;
 
@@ -1980,10 +2103,31 @@ impl TemplateContext {
             self.emit(&format!("const __then_{} = async () => {{", id));
             self.indent += 1;
             if let Some(ref value) = then.value {
+                // Emit a typed intermediate temporary holding the awaited value,
+                // then assign the user binding from it verbatim. This preserves any
+                // user-supplied type annotation (`{:then v: T}`) while still checking
+                // it against the real awaited type. Mirrors upstream
+                // (AwaitPendingCatchBlock.ts): `const <binding> = $$_value;`.
                 self.emit(&format!(
-                    "const {}: Awaited<typeof __await_{}> = await __await_{};",
-                    value, id, id
+                    "const __value_{}: Awaited<typeof __await_{}> = await __await_{};",
+                    id, id, id
                 ));
+                // Map the binding back to the `{:then ...}` source so a type
+                // mismatch on a user annotation (`{:then v: string}` where the
+                // promise resolves to `number`) reports against the source, not
+                // raw generated coordinates.
+                let binding_line = format!("const {} = __value_{};", value, id);
+                if let Some(value_span) = then.value_span {
+                    let prefix = "const ";
+                    let generated_start =
+                        self.output.len() + self.indent_str().len() + prefix.len();
+                    self.mappings.push(GeneratedMapping {
+                        generated_start,
+                        generated_end: generated_start + value.len(),
+                        original_span: value_span,
+                    });
+                }
+                self.emit(&binding_line);
             }
             self.generate_fragment(&then.body);
             self.indent -= 1;
@@ -1998,10 +2142,17 @@ impl TemplateContext {
             self.emit("{");
             self.indent += 1;
             if let Some(ref error) = catch.error {
+                // Emit an `any`-typed intermediate temporary, then assign the user
+                // binding from it verbatim. This preserves any user-supplied type
+                // annotation (`{:catch e: Error}`) instead of clobbering it. The temp
+                // is typed `any` to mirror upstream's `__sveltets_2_any()` so a typed
+                // catch binding is not rejected. Mirrors upstream
+                // (AwaitPendingCatchBlock.ts): `const <binding> = __sveltets_2_any();`.
                 self.emit(&format!(
-                    "const {}: unknown = __svelte_catch_error(__await_{});",
-                    error, id
+                    "const __err_{}: any = __svelte_catch_error(__await_{});",
+                    id, id
                 ));
+                self.emit(&format!("const {} = __err_{};", error, id));
             }
             self.generate_fragment(&catch.body);
             self.indent -= 1;
@@ -2271,10 +2422,42 @@ mod tests {
     }
 
     #[test]
+    fn test_each_non_indexed_uses_nullish_tolerant_helper() {
+        // Non-indexed `{#each EXPR as item}` must route through the nullish-tolerant
+        // `__svelte_each(...)` helper so nullable/undefined iterables don't trigger
+        // false-positive TS18047/TS18048 (issue #2863). It must NOT emit a bare
+        // `of __each_N` native for-of over the possibly-null expression.
+        let result = parse("{#each items as item}{item}{/each}");
+        let output = generate_template_check(&result.document.fragment);
+        assert!(output.contains("__svelte_each(__each_"));
+        assert!(!output.contains("of __each_"));
+    }
+
+    #[test]
     fn test_await_block() {
         let result = parse("{#await promise then value}{value}{/await}");
         let output = generate_template_check(&result.document.fragment);
-        assert!(output.contains("Awaited<typeof"));
+        // Typed intermediate temporary carries the real awaited type, the user
+        // binding is assigned from it verbatim.
+        assert!(output.contains("const __value_0: Awaited<typeof __await_0> = await __await_0;"));
+        assert!(output.contains("const value = __value_0;"));
+    }
+
+    #[test]
+    fn test_await_block_preserves_type_annotation() {
+        // A user-supplied type annotation on the then/catch binding must be
+        // preserved (not clobbered) and assigned from the typed intermediate temp.
+        let result =
+            parse("{#await promise then v: string}{v}{:catch e: Error}{e.message}{/await}");
+        let output = generate_template_check(&result.document.fragment);
+        // then: typed temp + user-annotated binding assigned from it
+        assert!(output.contains("const __value_0: Awaited<typeof __await_0> = await __await_0;"));
+        assert!(output.contains("const v: string = __value_0;"));
+        // catch: any-typed temp + user-annotated binding assigned from it
+        assert!(output.contains("const __err_0: any = __svelte_catch_error(__await_0);"));
+        assert!(output.contains("const e: Error = __err_0;"));
+        // The broken `const v: string: Awaited<...>` form must NOT appear.
+        assert!(!output.contains(": string: Awaited"));
     }
 
     #[test]

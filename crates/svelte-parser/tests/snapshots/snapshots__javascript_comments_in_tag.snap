@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
 expression: output
 ---
 Source:
@@ -43,6 +44,18 @@ SvelteDocument {
                                         value: "a",
                                     },
                                 ),
+                                leading_comments: [
+                                    TagComment {
+                                        span: Span {
+                                            start: 9,
+                                            end: 26,
+                                        },
+                                        text: "// a line comment",
+                                        is_line: true,
+                                        has_newline_before: true,
+                                    },
+                                ],
+                                trailing_comments: [],
                             },
                         ),
                         Normal(
@@ -61,6 +74,18 @@ SvelteDocument {
                                         value: "b",
                                     },
                                 ),
+                                leading_comments: [
+                                    TagComment {
+                                        span: Span {
+                                            start: 45,
+                                            end: 66,
+                                        },
+                                        text: "/* a block comment */",
+                                        is_line: false,
+                                        has_newline_before: true,
+                                    },
+                                ],
+                                trailing_comments: [],
                             },
                         ),
                     ],

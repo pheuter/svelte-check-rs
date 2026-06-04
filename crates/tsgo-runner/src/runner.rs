@@ -54,6 +54,9 @@ declare global {
   declare function __svelte_each_indexed<
     T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
   >(arr: T): [number, __SvelteEachItem<T>][];
+  declare function __svelte_each<
+    T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+  >(arr: T): __SvelteEachItem<NonNullable<T>>[];
   declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
   declare function __svelte_store_get<T>(store: { subscribe(fn: (value: T) => void): any }): T;
@@ -402,6 +405,16 @@ impl TsgoRunner {
         None
     }
 
+    /// Resolves the absolute cache root for a project (the directory under
+    /// `node_modules/.cache/svelte-check-rs/<hash>` where transformed files are
+    /// written). Public wrapper over the private [`Self::project_cache_root_for`]
+    /// so callers can compute the eventual generated `.svelte.ts` path
+    /// (`cache_root.join(virtual_path)`), which must match the physical write
+    /// location used in [`Self::check`].
+    pub fn project_cache_root(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        Self::project_cache_root_for(project_root)
+    }
+
     fn project_cache_root_for(project_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
         let node_modules = Self::find_node_modules_dir(project_root)
             .ok_or_else(|| TsgoError::NodeModulesNotFound(project_root.to_owned()))?;
@@ -633,6 +646,7 @@ impl TsgoRunner {
             "svelte.config.cjs",
             "svelte.config.mjs",
             "svelte.config.ts",
+            "svelte.config.mts",
         ];
         for name in config_candidates {
             let path = project_root.join(name);
@@ -1505,7 +1519,17 @@ impl TsgoRunner {
 
         // Parse diagnostics from output
         let parse_start = Instant::now();
-        let diagnostics = parse_tsgo_output(&stdout, files)?;
+        let mut diagnostics = parse_tsgo_output(&stdout, files, &project_tsconfig)?;
+        // Downgrade config/options/global diagnostics attributed to the
+        // tsconfig to warnings (normal-mode parity with upstream's "TODO:
+        // enable as error in svelte-check v5") and deduplicate them, since
+        // scr's overlay `extends` the user tsconfig and tsgo may attribute the
+        // same diagnostic to both paths.
+        downgrade_and_dedup_tsconfig_diagnostics(
+            &mut diagnostics,
+            &project_tsconfig,
+            &self.project_root,
+        );
         stats.timings.parse_time = parse_start.elapsed();
 
         if emit_diagnostics {
@@ -1515,6 +1539,135 @@ impl TsgoRunner {
 
         Ok(TsgoCheckOutput { diagnostics, stats })
     }
+}
+
+/// Returns true for tsconfig-parse error codes that must stay `Error` (not be
+/// downgraded to `Warning`).
+///
+/// Upstream svelte-check (commit a5539632, sveltejs/language-tools#3005) splits
+/// tsconfig diagnostic handling into two buckets:
+///
+///   1. `lsContainer.configErrors` — the `parsedCommandLine.errors` produced
+///      while *parsing* `tsconfig.json` (e.g. an unreadable/missing `extends`
+///      target, no input files). When any of these has `Error` category,
+///      svelte-check returns them via `reportConfigError(...)` keeping their
+///      original category, so they stay Errors and fail the check.
+///   2. `program.getGlobalDiagnostics()` + `getOptionsDiagnostics()` —
+///      invalid-`lib` global diagnostics (TS2318) etc. These are explicitly
+///      downgraded `Error -> Warning` (the "TODO: enable as error in
+///      svelte-check v5" block).
+///
+/// This allowlist covers bucket (1): the tsconfig-parse codes that must remain
+/// Errors. The `--lib` value error TS6046 belongs here too: TypeScript
+/// validates `lib` values while *parsing* the config, so it lands in
+/// `parsedCommandLine.errors` (a fatal configError surfaced via
+/// `reportConfigError`), not in `getOptionsDiagnostics()`. It must NOT include
+/// TS2318 (bucket (2): a program global diagnostic that stays downgraded).
+fn is_fatal_config_code(code: &str) -> bool {
+    matches!(
+        code,
+        // Cannot read file (e.g. missing `extends` target). Empirically the
+        // code tsgo emits for `"extends": "./does-not-exist.json"`.
+        "TS5083"
+            // No inputs were found in config file. (positionless configError)
+            | "TS18003"
+            // Cannot read file '...'. (generic config-file read failure)
+            | "TS5012"
+            // File '...' not found.
+            | "TS6053"
+            // Command-line / option parse errors surfaced while parsing the
+            // tsconfig (unknown option, expects argument, etc.).
+            | "TS5009"
+            | "TS5010"
+            | "TS5023"
+            | "TS5024"
+            | "TS5025"
+            // Argument for the `--lib` option is invalid. TypeScript validates
+            // `lib` values while parsing the config, so this lands in
+            // `parsedCommandLine.errors` (a fatal configError), not in
+            // `getOptionsDiagnostics()`; upstream keeps it an Error.
+            | "TS6046"
+    )
+}
+
+/// Downgrades tsconfig-attributed options/global diagnostics to warnings and
+/// deduplicates all tsconfig-attributed diagnostics.
+///
+/// A diagnostic is treated as config-owned when it is positionless
+/// (`position_unknown`) or its file resolves to the same path as the resolved
+/// tsconfig (catches the positioned `TS6046`/`TS5xxx` config-file errors that
+/// tsc attributes to the tsconfig — tsgo prints these with a *relative* path,
+/// so we resolve against `project_root` before comparing).
+///
+/// Config-owned diagnostics are split per upstream a5539632 (#3005):
+///   - genuine fatal config-parse errors (see [`is_fatal_config_code`], e.g. a
+///     missing `extends` target TS5083 or no-inputs TS18003) keep their `Error`
+///     severity so a fatal misconfiguration still fails the check; and
+///   - program global/options diagnostics (e.g. the invalid-`lib` global type
+///     error TS2318) are downgraded `Error -> Warning`, mirroring upstream's
+///     normal-mode behavior of reporting global/options diagnostics as warnings
+///     to avoid breaking exit codes ("TODO: enable as error in svelte-check v5").
+///
+/// The dedup collapses identical tsconfig diagnostics (fatal or not) that may
+/// appear via both the overlay and the user tsconfig.
+fn downgrade_and_dedup_tsconfig_diagnostics(
+    diagnostics: &mut Vec<TsgoDiagnostic>,
+    tsconfig_path: &Utf8Path,
+    project_root: &Utf8Path,
+) {
+    let tsconfig_norm = normalize_tsconfig_path(tsconfig_path, project_root);
+
+    let mut seen: HashSet<(String, String, String, u32, u32)> = HashSet::new();
+    diagnostics.retain_mut(|diag| {
+        let file_norm = normalize_tsconfig_path(&diag.file, project_root);
+        let is_config = diag.position_unknown || file_norm == tsconfig_norm;
+        if !is_config {
+            return true;
+        }
+
+        // Genuine fatal config-parse errors stay Errors; everything else
+        // (options/global diagnostics) is downgraded to a Warning.
+        if !is_fatal_config_code(&diag.code) {
+            diag.severity = crate::parser::DiagnosticSeverity::Warning;
+        }
+
+        let key = (
+            file_norm,
+            diag.code.clone(),
+            diag.message.clone(),
+            diag.start.line,
+            diag.start.column,
+        );
+        seen.insert(key)
+    });
+}
+
+/// Normalizes a path for comparison: resolves relative paths against
+/// `project_root` and lowercases/forward-slashes for case/separator
+/// insensitivity. tsgo emits config-file diagnostics with a path relative to
+/// its working directory (the temp overlay dir) even though the option
+/// originates from the user tsconfig, so resolving against `project_root` lets
+/// a relative `tsconfig.badlib.json` match the absolute resolved tsconfig path.
+fn normalize_tsconfig_path(path: &Utf8Path, project_root: &Utf8Path) -> String {
+    let resolved = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        project_root.join(path)
+    };
+    // Collapse `.`/`..` components without touching the filesystem (the path
+    // may live in a temp dir that is already gone by the time we format).
+    let normalized = resolved.as_str().replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    format!("/{}", parts.join("/")).to_ascii_lowercase()
 }
 
 /// Normalize a tsconfig `extends` field into an ordered list of entries.
@@ -2076,6 +2229,143 @@ impl TransformedFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::{DiagnosticPosition, DiagnosticSeverity};
+
+    fn make_diag(
+        file: &str,
+        code: &str,
+        message: &str,
+        line: u32,
+        col: u32,
+        severity: DiagnosticSeverity,
+        position_unknown: bool,
+    ) -> TsgoDiagnostic {
+        TsgoDiagnostic {
+            file: Utf8PathBuf::from(file),
+            start: DiagnosticPosition {
+                line,
+                column: col,
+                offset: 0,
+            },
+            end: DiagnosticPosition {
+                line,
+                column: col + 1,
+                offset: 0,
+            },
+            message: message.to_string(),
+            code: code.to_string(),
+            severity,
+            position_unknown,
+        }
+    }
+
+    #[test]
+    fn test_downgrade_and_dedup_tsconfig_diagnostics() {
+        let project_root = Utf8Path::new("/repo");
+        let tsconfig = Utf8Path::new("/repo/tsconfig.json");
+        let mut diags = vec![
+            // Two identical positionless config diagnostics (overlay + user).
+            make_diag(
+                "/repo/tsconfig.json",
+                "TS2318",
+                "Cannot find global type 'Array'.",
+                0,
+                0,
+                DiagnosticSeverity::Error,
+                true,
+            ),
+            make_diag(
+                "/repo/tsconfig.json",
+                "TS2318",
+                "Cannot find global type 'Array'.",
+                0,
+                0,
+                DiagnosticSeverity::Error,
+                true,
+            ),
+            // A positioned diagnostic attributed to the tsconfig file (TS6046),
+            // emitted by tsgo with a *relative* path. Must still be recognized
+            // as config-owned after resolving against the project root.
+            make_diag(
+                "tsconfig.json",
+                "TS6046",
+                "Argument for '--lib' option must be: ...",
+                3,
+                13,
+                DiagnosticSeverity::Error,
+                false,
+            ),
+            // A genuine source-file error must be untouched.
+            make_diag(
+                "/repo/src/App.svelte.ts",
+                "TS2322",
+                "Type 'string' is not assignable to type 'number'.",
+                10,
+                5,
+                DiagnosticSeverity::Error,
+                false,
+            ),
+            // Two identical positionless FATAL config diagnostics (missing
+            // `extends` target). These must stay Errors but still dedup.
+            make_diag(
+                "/repo/tsconfig.json",
+                "TS5083",
+                "Cannot read file '/repo/does-not-exist.json'.",
+                0,
+                0,
+                DiagnosticSeverity::Error,
+                true,
+            ),
+            make_diag(
+                "/repo/tsconfig.json",
+                "TS5083",
+                "Cannot read file '/repo/does-not-exist.json'.",
+                0,
+                0,
+                DiagnosticSeverity::Error,
+                true,
+            ),
+        ];
+
+        downgrade_and_dedup_tsconfig_diagnostics(&mut diags, tsconfig, project_root);
+
+        // Two TS2318 collapse to one; TS6046 stays; source error stays; two
+        // TS5083 collapse to one = 4.
+        assert_eq!(diags.len(), 4);
+
+        let global = diags.iter().find(|d| d.code == "TS2318").unwrap();
+        assert_eq!(global.severity, DiagnosticSeverity::Warning);
+
+        // TS6046 is produced while parsing the config (parsedCommandLine.errors),
+        // so it stays an Error.
+        let lib_error = diags.iter().find(|d| d.code == "TS6046").unwrap();
+        assert_eq!(lib_error.severity, DiagnosticSeverity::Error);
+
+        let source_err = diags.iter().find(|d| d.code == "TS2322").unwrap();
+        assert_eq!(source_err.severity, DiagnosticSeverity::Error);
+
+        // Fatal config-parse error must NOT be downgraded; it stays an Error so
+        // a fatal misconfiguration still fails the check (upstream a5539632).
+        let fatal = diags.iter().find(|d| d.code == "TS5083").unwrap();
+        assert_eq!(fatal.severity, DiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn test_is_fatal_config_code() {
+        // Fatal tsconfig-parse errors stay Errors.
+        assert!(is_fatal_config_code("TS5083"));
+        assert!(is_fatal_config_code("TS18003"));
+        assert!(is_fatal_config_code("TS5012"));
+        assert!(is_fatal_config_code("TS6053"));
+
+        // The invalid-`lib` value error is a config-parse error too.
+        assert!(is_fatal_config_code("TS6046"));
+
+        // Program global (invalid-lib) diagnostics are NOT fatal — upstream
+        // downgrades these to Warning. Source-file errors are never fatal-config.
+        assert!(!is_fatal_config_code("TS2318"));
+        assert!(!is_fatal_config_code("TS2322"));
+    }
 
     /// The shared helpers must be valid TS. `__SvelteLoosen` previously mixed a
     /// mapped type with an index signature (`{ [K in keyof T]: T[K]; [key:
@@ -2340,6 +2630,28 @@ mod tests {
         }
         assert!(manifest.files.contains_key("src/hooks.server.ts"));
         assert!(manifest.files.contains_key("svelte.config.js"));
+    }
+
+    #[test]
+    fn test_compute_sveltekit_sync_manifest_tracks_mts_config() {
+        // Issue #3009: a `svelte.config.mts` must be tracked by the
+        // sveltekit-sync skip manifest so editing it invalidates the manifest,
+        // keeping enumeration consistent with config.rs's probe list.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let project_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        let svelte_config = project_root.join("svelte.config.mts");
+        std::fs::write(&svelte_config, b"export default {};\n").expect("svelte config");
+
+        let manifest =
+            TsgoRunner::compute_sveltekit_sync_manifest(&project_root).expect("manifest");
+
+        assert!(
+            manifest.files.contains_key("svelte.config.mts"),
+            "expected manifest to track svelte.config.mts, got keys: {:?}",
+            manifest.files.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]

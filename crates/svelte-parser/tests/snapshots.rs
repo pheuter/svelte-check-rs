@@ -675,6 +675,25 @@ fn test_snapshot_javascript_comments_in_tag() {
 }
 
 #[test]
+fn test_snapshot_ts_ignore_in_tag() {
+    // Issue #2950: in-tag `//` and `/* */` comments must be captured (not
+    // discarded) and attached to the adjacent attribute — leading on the
+    // following attribute, trailing on the last attribute before `>`. Covers a
+    // `// @ts-ignore` leading comment, a same-line `//` (leading-of-next), and a
+    // trailing block comment on the last attribute before a self-closing `/>`.
+    parse_snapshot(
+        "ts_ignore_in_tag",
+        r#"<div
+    // @ts-ignore
+    dir={x}
+    foo="bar" // same line
+    baz="qux"
+    /* trailing */
+/></div>"#,
+    );
+}
+
+#[test]
 fn test_snapshot_implicitly_closed_li() {
     // parser-legacy/implicitly-closed-li: <li> auto-closes on sibling <li>
     // or on ancestor </ul>.

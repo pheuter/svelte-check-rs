@@ -33,6 +33,8 @@ SvelteDocument {
                                 name: "handleMount(file)",
                                 modifiers: [],
                                 expression: None,
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Normal(
@@ -51,6 +53,8 @@ SvelteDocument {
                                         value: "test",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

@@ -98,6 +98,16 @@ pub struct TransformOptions {
     pub use_nodenext_imports: bool,
     /// Optional shared helpers module to import instead of inlining helper declarations.
     pub helpers_import_path: Option<String>,
+    /// Absolute path to the workspace/project root. When set together with
+    /// [`TransformOptions::generated_path`] and [`TransformOptions::filename`],
+    /// relative imports reaching outside the workspace are rewritten so they
+    /// stay resolvable from the generated cache location. See
+    /// [`rewrite_external_imports`].
+    pub workspace_path: Option<String>,
+    /// Absolute path to the eventual generated `.svelte.ts` file in the cache.
+    /// Used together with [`TransformOptions::workspace_path`] to rewrite
+    /// out-of-root relative imports.
+    pub generated_path: Option<String>,
 }
 
 /// The result of transformation.
@@ -858,6 +868,387 @@ fn rewrite_svelte_imports(script: &str) -> String {
         .replace(".svelte'", ".svelte.js'")
 }
 
+// ============================================================================
+// External import rewriting (mirrors upstream svelte2tsx rewriteExternalImports)
+// ============================================================================
+//
+// When transformed files are written to a generated cache folder, relative
+// imports inside them are resolved against the *generated* location via the
+// tsconfig `rootDirs` overlay. This breaks when a relative import reaches into
+// a directory that is NOT covered by `rootDirs` (e.g. `../../../shared/x`,
+// outside the workspace root): TypeScript cannot resolve it from the generated
+// file and emits a spurious TS2307.
+//
+// To fix this we rewrite, at transform time, any relative specifier starting
+// with `../` whose resolved target lies OUTSIDE the workspace so the specifier
+// becomes relative to the GENERATED directory instead. Imports that stay within
+// the workspace are left untouched (they resolve via `rootDirs`).
+
+/// Normalizes a `/`-separated path by resolving `.` and `..` segments
+/// lexically (no filesystem access). Leading `..` segments are preserved.
+/// The `absolute` flag controls whether a leading `..` may escape the root
+/// (it cannot when absolute, matching POSIX semantics).
+fn lexical_normalize(segments: &[&str], absolute: bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        match *seg {
+            "" | "." => {}
+            ".." => {
+                if let Some(last) = out.last() {
+                    if last != ".." {
+                        out.pop();
+                        continue;
+                    }
+                }
+                // Nothing to pop, or top is already "..".
+                if absolute {
+                    // Can't go above the root; drop the "..".
+                } else {
+                    out.push("..".to_string());
+                }
+            }
+            other => out.push(other.to_string()),
+        }
+    }
+    out
+}
+
+/// Splits a `/`-separated path into its segments, ignoring a leading slash.
+fn path_segments(path: &str) -> Vec<&str> {
+    path.split('/').filter(|s| !s.is_empty()).collect()
+}
+
+/// Returns true if `path` is an absolute path (POSIX `/...` or Windows drive
+/// such as `C:/...`). Input must already be posix-normalized (`\` -> `/`).
+fn is_absolute_posix(path: &str) -> bool {
+    if path.starts_with('/') {
+        return true;
+    }
+    // Windows drive letter, e.g. "C:/..." or "C:".
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// Lexically resolves `relative` against the directory `base`, mirroring
+/// `path.resolve(base, relative)` for already-absolute `base` inputs.
+/// Both inputs are expected to be posix (`/`-separated).
+fn lexical_resolve(base: &str, relative: &str) -> String {
+    let base_segs = path_segments(base);
+    let rel_segs = path_segments(relative);
+    let mut combined: Vec<&str> = Vec::with_capacity(base_segs.len() + rel_segs.len());
+    combined.extend_from_slice(&base_segs);
+    combined.extend_from_slice(&rel_segs);
+    let normalized = lexical_normalize(&combined, true);
+
+    // Preserve a Windows drive prefix if present, otherwise emit a POSIX root.
+    if let Some(first) = base_segs.first() {
+        if first.len() == 2
+            && first.as_bytes()[1] == b':'
+            && first.as_bytes()[0].is_ascii_alphabetic()
+        {
+            return normalized.join("/");
+        }
+    }
+    format!("/{}", normalized.join("/"))
+}
+
+/// Computes a posix relative path from directory `from` to `to`, mirroring
+/// `path.relative(from, to)`. Both inputs must be absolute posix paths.
+fn lexical_relative(from: &str, to: &str) -> String {
+    let from_segs: Vec<&str> = path_segments(from);
+    let to_segs: Vec<&str> = path_segments(to);
+
+    let mut common = 0usize;
+    while common < from_segs.len() && common < to_segs.len() && from_segs[common] == to_segs[common]
+    {
+        common += 1;
+    }
+
+    let up = from_segs.len() - common;
+    let mut out: Vec<&str> = Vec::with_capacity(up + (to_segs.len() - common));
+    out.extend(std::iter::repeat_n("..", up));
+    out.extend_from_slice(&to_segs[common..]);
+    out.join("/")
+}
+
+/// Returns the directory portion of a posix path (`dirname`).
+fn posix_dirname(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(0) => "/",
+        Some(idx) => &path[..idx],
+        None => "",
+    }
+}
+
+/// True if `file_path` is the same as, or nested within, `directory_path`.
+/// Both inputs must be absolute posix paths.
+fn is_within_directory(file_path: &str, directory_path: &str) -> bool {
+    let relative = lexical_relative(directory_path, file_path);
+    relative.is_empty() || (!relative.starts_with("..") && !is_absolute_posix(&relative))
+}
+
+/// Splits an import specifier into its path part and any `?query`/`#hash`
+/// suffix (cutting at the first `?` or `#`), preserving the suffix so it can be
+/// reattached after the path is rewritten.
+fn split_import_specifier(specifier: &str) -> (&str, &str) {
+    let query = specifier.find('?');
+    let hash = specifier.find('#');
+    let cut = match (query, hash) {
+        (None, None) => return (specifier, ""),
+        (Some(q), None) => q,
+        (None, Some(h)) => h,
+        (Some(q), Some(h)) => q.min(h),
+    };
+    (&specifier[..cut], &specifier[cut..])
+}
+
+/// Computes the rewritten specifier for a single import, or `None` if no
+/// rewrite is needed (specifier is not a `../` relative path, resolves inside
+/// the workspace, or the rewrite would be identical).
+///
+/// All path arguments must be posix-normalized (`\` -> `/`).
+/// - `source_dir` is `dirname(filename)` of the original `.svelte` source.
+/// - `generated_dir` is `dirname(generated_path)` of the cache `.svelte.ts`.
+/// - `workspace` is the absolute project root.
+fn get_external_import_rewrite(
+    specifier: &str,
+    source_dir: &str,
+    generated_dir: &str,
+    workspace: &str,
+) -> Option<String> {
+    let (path_part, suffix) = split_import_specifier(specifier);
+    if !path_part.starts_with("../") {
+        return None;
+    }
+
+    let target_path = lexical_resolve(source_dir, path_part);
+    if is_within_directory(&target_path, workspace) {
+        return None;
+    }
+
+    let rewritten_relative = lexical_relative(generated_dir, &target_path);
+    let rewritten = format!("{}{}", rewritten_relative, suffix);
+    if rewritten == specifier {
+        return None;
+    }
+    Some(rewritten)
+}
+
+fn to_posix(value: &str) -> String {
+    if value.contains('\\') {
+        value.replace('\\', "/")
+    } else {
+        value.to_string()
+    }
+}
+
+/// Final-pass rewrite of out-of-workspace relative imports in transformed code.
+///
+/// Scans for quoted import/export specifiers in their genuine syntactic
+/// contexts and rewrites those reaching outside the workspace so they resolve
+/// from the generated cache location instead. Covers:
+/// - static `import ... from '...'` / `export ... from '...'`
+/// - dynamic `import('...')` / `import("...")`
+/// - import-type `import('...').X` (TS type position)
+/// - JSDoc `import('...')` inside `/** ... */` comments
+///
+/// `filename`, `generated_path`, and `workspace` must be absolute paths; this
+/// is a no-op if any are empty.
+///
+/// Returns the rewritten code along with the list of byte edits performed, each
+/// as `(at, delta)` where `at` is the generated byte offset (in the *pre-rewrite*
+/// coordinate space — i.e. offsets into `code`) at which a specifier was edited,
+/// and `delta` is `new_len - old_len` of that specifier. Callers use these to
+/// re-align an already-built source map so generated offsets stay accurate
+/// against the post-rewrite text (see
+/// [`source_map::SourceMap::apply_generated_edits`]).
+pub(crate) fn rewrite_external_imports(
+    code: &str,
+    filename: &str,
+    generated_path: &str,
+    workspace: &str,
+) -> (String, Vec<(source_map::ByteOffset, i64)>) {
+    if filename.is_empty() || generated_path.is_empty() || workspace.is_empty() {
+        return (code.to_string(), Vec::new());
+    }
+
+    let filename = to_posix(filename);
+    let generated_path = to_posix(generated_path);
+    let workspace = to_posix(workspace);
+    let source_dir = posix_dirname(&filename).to_string();
+    let generated_dir = posix_dirname(&generated_path).to_string();
+
+    rewrite_quoted_specifiers(code, |spec| {
+        get_external_import_rewrite(spec, &source_dir, &generated_dir, &workspace)
+    })
+}
+
+/// Scans `code` for string literals that appear in import/export specifier
+/// contexts and applies `rewrite` to each. Only genuine specifier positions
+/// are considered, so arbitrary string contents are left untouched.
+///
+/// Returns the rewritten string and the list of edits performed, each as
+/// `(at, delta)` where `at` is the byte offset *in the input `code`* at which the
+/// inner specifier begins (just past the opening quote) and `delta` is
+/// `new_len - old_len` of the inner specifier. Because the source map is built
+/// against `code` (the pre-rewrite text), these pre-rewrite offsets are exactly
+/// what [`source_map::SourceMap::apply_generated_edits`] expects.
+fn rewrite_quoted_specifiers<F>(
+    code: &str,
+    rewrite: F,
+) -> (String, Vec<(source_map::ByteOffset, i64)>)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let bytes = code.as_bytes();
+    let mut out = String::with_capacity(code.len());
+    let mut edits: Vec<(source_map::ByteOffset, i64)> = Vec::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        // Candidate contexts that introduce a module specifier:
+        //   `from '...'`, `import('...')`, `import("...")`, `import '...'`
+        // We look for a quote that follows `from ` or `import(` / `import `.
+        if b == b'\'' || b == b'"' {
+            if let Some((spec, end)) = read_string_literal(bytes, i) {
+                if specifier_context(bytes, i) {
+                    if let Some(replacement) = rewrite(spec) {
+                        // The inner specifier begins just past the opening quote.
+                        // Record the edit in pre-rewrite (`code`) coordinates so
+                        // the already-built source map can be re-aligned.
+                        let at = source_map::ByteOffset::from((i + 1) as u32);
+                        let delta = replacement.len() as i64 - spec.len() as i64;
+                        if delta != 0 {
+                            edits.push((at, delta));
+                        }
+                        out.push(bytes[i] as char);
+                        out.push_str(&replacement);
+                        out.push(bytes[i] as char);
+                        i = end;
+                        continue;
+                    }
+                }
+                // Not a specifier context (or no rewrite): emit verbatim.
+                out.push_str(&code[i..end]);
+                i = end;
+                continue;
+            }
+        }
+        // Push the raw byte (safe: we only land here on ASCII boundaries since
+        // string literals and the trigger bytes are all ASCII).
+        let ch_start = i;
+        let ch_len = utf8_char_len(b);
+        i += ch_len;
+        out.push_str(&code[ch_start..i.min(code.len())]);
+    }
+
+    (out, edits)
+}
+
+fn utf8_char_len(first_byte: u8) -> usize {
+    if first_byte < 0x80 {
+        1
+    } else if first_byte >> 5 == 0b110 {
+        2
+    } else if first_byte >> 4 == 0b1110 {
+        3
+    } else if first_byte >> 3 == 0b11110 {
+        4
+    } else {
+        1
+    }
+}
+
+/// Reads a single-quoted or double-quoted string literal starting at `start`
+/// (which must point at the opening quote). Returns the inner specifier text
+/// and the index just past the closing quote. Returns `None` if unterminated
+/// or if the literal contains an escape (specifiers never do, and skipping
+/// them avoids mangling escaped content).
+fn read_string_literal(bytes: &[u8], start: usize) -> Option<(&str, usize)> {
+    let quote = bytes[start];
+    let mut j = start + 1;
+    while j < bytes.len() {
+        let c = bytes[j];
+        if c == b'\\' {
+            return None;
+        }
+        if c == quote {
+            let inner = std::str::from_utf8(&bytes[start + 1..j]).ok()?;
+            return Some((inner, j + 1));
+        }
+        if c == b'\n' || c == b'\r' {
+            return None;
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Determines whether the quote at `quote_idx` opens a module specifier by
+/// inspecting the immediately-preceding non-space token. Recognized contexts:
+/// - `from <quote>` (static import/export-from)
+/// - `import <quote>` (bare side-effect import: `import '../../x';`)
+/// - `import(<quote>` / `require(<quote>` (dynamic import / require / JSDoc / import-type)
+fn specifier_context(bytes: &[u8], quote_idx: usize) -> bool {
+    // Walk back over whitespace.
+    let mut k = quote_idx;
+    while k > 0 && matches!(bytes[k - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        k -= 1;
+    }
+    if k == 0 {
+        return false;
+    }
+
+    // `from` keyword?
+    if k >= 4 && &bytes[k - 4..k] == b"from" {
+        // Ensure the char before `from` is a boundary (not part of an identifier).
+        let before_ok = k < 5 || !is_ident_byte(bytes[k - 5]);
+        if before_ok {
+            return true;
+        }
+    }
+
+    // Bare side-effect import: `import '<spec>';` (an import declaration with no
+    // clause). The `import` keyword sits immediately before the quote (modulo
+    // whitespace) and is NOT followed by `(` (that's the dynamic-import branch
+    // below) and NOT followed by an identifier + `from` (that's the `from`
+    // branch above, which wins). Mirror upstream `ts.isImportDeclaration` whose
+    // `moduleSpecifier` is present for side-effect imports too.
+    if k >= 6 && &bytes[k - 6..k] == b"import" {
+        let before_ok = k < 7 || !is_ident_byte(bytes[k - 7]);
+        if before_ok {
+            return true;
+        }
+    }
+
+    // Opening paren preceded by `import` or `require`?
+    if bytes[k - 1] == b'(' {
+        let mut p = k - 1;
+        while p > 0 && matches!(bytes[p - 1], b' ' | b'\t') {
+            p -= 1;
+        }
+        if p >= 6 && &bytes[p - 6..p] == b"import" {
+            let before_ok = p < 7 || !is_ident_byte(bytes[p - 7]);
+            if before_ok {
+                return true;
+            }
+        }
+        if p >= 7 && &bytes[p - 7..p] == b"require" {
+            let before_ok = p < 8 || !is_ident_byte(bytes[p - 8]);
+            if before_ok {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
 fn parse_script_module(script: &str) -> Option<Module> {
     let cm: Arc<SwcSourceMap> = Default::default();
     let fm = cm.new_source_file(
@@ -1346,6 +1737,9 @@ type __SvelteEachItem<T> =
 declare function __svelte_each_indexed<
   T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
 >(arr: T): [number, __SvelteEachItem<T>][];
+declare function __svelte_each<
+  T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+>(arr: T): __SvelteEachItem<NonNullable<T>>[];
 declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
 // Helper to get store value type from store subscription ($store syntax)
@@ -1556,6 +1950,34 @@ declare module "svelte" {
             exports.props_type = Some(ty.clone());
         }
 
+        // Mark every `$bindable()` prop as "used" so `noUnusedLocals` does not
+        // report TS6133 for a bindable prop that is never read in the template.
+        // We reference the LOCAL binding name (the alias after `prop:`), never
+        // the exported name — the exported name can be a reserved word (e.g.
+        // `class`), which would make the generated `;class;` a TS syntax error.
+        // This mirrors upstream svelte2tsx (#3017). The marker is emitted as
+        // generated-only text (no source mapping) so it can never surface a
+        // diagnostic itself, matching the shorthand-bind read mechanism (#128).
+        let bindable_marker: String = props_info
+            .as_ref()
+            .map(|info| {
+                let names: String = info
+                    .properties
+                    .iter()
+                    .filter(|prop| prop.is_bindable)
+                    .map(|prop| {
+                        let local = prop.local_name.clone().unwrap_or_else(|| prop.name.clone());
+                        format!("{local};")
+                    })
+                    .collect();
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(";{names}")
+                }
+            })
+            .unwrap_or_default();
+
         let export_names = extract_component_exports(&instance.content);
         if let Some(exports_type) = build_exports_type(&export_names) {
             exports.exports_type = Some(exports_type);
@@ -1647,6 +2069,15 @@ declare module "svelte" {
             );
             builder.add_generated("\n");
 
+            // Mark bindable props as used (generated-only, no source map). See
+            // the `bindable_marker` construction above (upstream #3017).
+            if !bindable_marker.is_empty() {
+                output.push_str(&bindable_marker);
+                builder.add_generated(&bindable_marker);
+                output.push('\n');
+                builder.add_generated("\n");
+            }
+
             // Emit template body directly in render function scope to preserve control flow narrowing
             if !template_body_result.code.is_empty() {
                 output.push_str(&template_body_result.code);
@@ -1711,6 +2142,15 @@ declare module "svelte" {
                 &script_mappings,
             );
             builder.add_generated("\n");
+
+            // Mark bindable props as used (generated-only, no source map). See
+            // the `bindable_marker` construction above (upstream #3017).
+            if !bindable_marker.is_empty() {
+                output.push_str(&bindable_marker);
+                builder.add_generated(&bindable_marker);
+                output.push('\n');
+                builder.add_generated("\n");
+            }
 
             // Emit template body directly in render function scope
             if !template_body_result.code.is_empty() {
@@ -1815,6 +2255,21 @@ export default {internal_name};\n",
     output.push_str(&export_line);
     builder.add_generated(&export_line);
 
+    // Rewrite relative imports reaching outside the workspace so they resolve
+    // from the generated cache location (see `rewrite_external_imports`). This
+    // must run BEFORE the `.svelte` -> `.svelte.js` rewrite so an out-of-root
+    // `.svelte` import gets its depth fixed first, then the extension appended.
+    let (output, external_import_edits) = match (
+        options.filename.as_deref(),
+        options.generated_path.as_deref(),
+        options.workspace_path.as_deref(),
+    ) {
+        (Some(filename), Some(generated_path), Some(workspace)) => {
+            rewrite_external_imports(&output, filename, generated_path, workspace)
+        }
+        _ => (output, Vec::new()),
+    };
+
     // Rewrite .svelte imports to .svelte.js for NodeNext/Node16 module resolution
     let final_output = if options.use_nodenext_imports {
         rewrite_svelte_imports(&output)
@@ -1822,9 +2277,16 @@ export default {internal_name};\n",
         output
     };
 
+    // The external-import rewrite grows/shrinks specifiers in the already-built
+    // output, shifting every generated offset after each edit. Re-align the
+    // source map so diagnostics on lines AFTER a rewritten import still map back
+    // to the correct column in the original `.svelte` source.
+    let mut source_map = builder.build();
+    source_map.apply_generated_edits(&external_import_edits);
+
     TransformResult {
         tsx_code: final_output,
-        source_map: builder.build(),
+        source_map,
         exports,
     }
 }
@@ -2135,5 +2597,195 @@ mod tests {
             "member access `.$anchor` leaked in"
         );
         assert!(!names.contains("depth"), "member access `.depth` leaked in");
+    }
+
+    // ========================================================================
+    // External import rewrite tests (issue #2942)
+    // ========================================================================
+
+    // Mirror upstream's rewrite-imports fixture:
+    //   source   = /x/y/input.svelte  -> source_dir   = /x/y
+    //   generated= /x/y/generated/input.svelte -> generated_dir = /x/y/generated
+    //   workspace= /x/y
+    const SRC_DIR: &str = "/x/y";
+    const GEN_DIR: &str = "/x/y/generated";
+    const WS: &str = "/x/y";
+
+    fn rewrite(specifier: &str) -> Option<String> {
+        get_external_import_rewrite(specifier, SRC_DIR, GEN_DIR, WS)
+    }
+
+    #[test]
+    fn test_external_rewrite_out_of_root() {
+        // `../../foo` -> /foo (outside /x/y) -> relative from /x/y/generated
+        assert_eq!(rewrite("../../foo").as_deref(), Some("../../../foo"));
+    }
+
+    #[test]
+    fn test_external_rewrite_collapses_to_dotdot() {
+        // `../../x` -> /x (outside /x/y) -> relative from /x/y/generated == ../..
+        assert_eq!(rewrite("../../x").as_deref(), Some("../.."));
+    }
+
+    #[test]
+    fn test_external_rewrite_mhm() {
+        assert_eq!(rewrite("../../mhm").as_deref(), Some("../../../mhm"));
+    }
+
+    #[test]
+    fn test_external_rewrite_within_workspace_is_none() {
+        // `../inside` -> /x/inside, which is within workspace /x/y? No: /x/inside
+        // is a sibling of /x/y, so it's OUTSIDE. Use a path that stays inside.
+        // `../y/inside` -> /x/y/inside (inside workspace) -> no rewrite.
+        assert_eq!(rewrite("../y/inside"), None);
+    }
+
+    #[test]
+    fn test_external_rewrite_non_relative_is_none() {
+        assert_eq!(rewrite("./local"), None);
+        assert_eq!(rewrite("pkg"), None);
+        assert_eq!(rewrite("@scope/pkg"), None);
+        assert_eq!(rewrite("svelte/store"), None);
+    }
+
+    #[test]
+    fn test_external_rewrite_preserves_suffix() {
+        assert_eq!(
+            rewrite("../../foo?raw").as_deref(),
+            Some("../../../foo?raw")
+        );
+        assert_eq!(
+            rewrite("../../foo#frag").as_deref(),
+            Some("../../../foo#frag")
+        );
+    }
+
+    #[test]
+    fn test_external_rewrite_windows_paths() {
+        // Backslashes are normalized to posix; drive-relative resolution works.
+        let r = get_external_import_rewrite("../../foo", "C:/x/y", "C:/x/y/generated", "C:/x/y");
+        assert_eq!(r.as_deref(), Some("../../../foo"));
+    }
+
+    #[test]
+    fn test_rewrite_external_imports_all_forms() {
+        let code = r#"import foo from '../../foo';
+import('../../bar');
+import("../../bar");
+export { x } from '../../x';
+const y = require('../../foo');
+import '../../sideeffect';
+/** @type {import('../../mhm').mhm} */
+let mhm = true;
+/** @param {import('../../mhm'.mhm)} mhm */
+function f(mhm) {}
+let kept = "../../foo";
+"#;
+        let (out, _edits) = rewrite_external_imports(
+            code,
+            "/x/y/input.svelte",
+            "/x/y/generated/input.svelte",
+            "/x/y",
+        );
+        assert!(
+            out.contains("import foo from '../../../foo';"),
+            "static import: {out}"
+        );
+        assert!(
+            out.contains("import('../../../bar');"),
+            "dynamic single-quote: {out}"
+        );
+        assert!(
+            out.contains("import(\"../../../bar\");"),
+            "dynamic double-quote: {out}"
+        );
+        assert!(
+            out.contains("export { x } from '../..';"),
+            "export-from: {out}"
+        );
+        assert!(out.contains("require('../../../foo')"), "require: {out}");
+        // Bare side-effect import (issue #2942 refinement): rewritten too.
+        assert!(
+            out.contains("import '../../../sideeffect';"),
+            "side-effect import: {out}"
+        );
+        assert!(
+            out.contains("import('../../../mhm').mhm"),
+            "jsdoc import-type: {out}"
+        );
+        assert!(
+            out.contains("import('../../../mhm'.mhm)"),
+            "jsdoc param: {out}"
+        );
+        // A bare string literal that is not in an import context must be left alone.
+        assert!(
+            out.contains(r#"let kept = "../../foo";"#),
+            "non-import string untouched: {out}"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_external_imports_side_effect_only() {
+        // A bare side-effect import with no clause must be recognized and grown.
+        let code = "import '../../foo';\n";
+        let (out, edits) = rewrite_external_imports(
+            code,
+            "/x/y/input.svelte",
+            "/x/y/generated/input.svelte",
+            "/x/y",
+        );
+        assert_eq!(
+            out, "import '../../../foo';\n",
+            "side-effect rewrite: {out}"
+        );
+        // `../../foo` (9 bytes) -> `../../../foo` (12 bytes): delta +3.
+        assert_eq!(edits.len(), 1, "exactly one edit recorded: {edits:?}");
+        assert_eq!(edits[0].1, 3, "delta is +3 for one added `../`: {edits:?}");
+        // The inner specifier starts just past the opening quote at byte 8.
+        assert_eq!(
+            u32::from(edits[0].0),
+            8,
+            "edit offset is the inner-specifier start: {edits:?}"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_external_imports_from_wins_over_bare_import() {
+        // `import x from '../../foo'` must be treated as the from-context (the
+        // `from` branch), not misfire as a bare side-effect import. Behaviorally
+        // identical here, but guards the precedence: ensure exactly one rewrite.
+        let code = "import x from '../../foo';\n";
+        let (out, edits) = rewrite_external_imports(
+            code,
+            "/x/y/input.svelte",
+            "/x/y/generated/input.svelte",
+            "/x/y",
+        );
+        assert_eq!(out, "import x from '../../../foo';\n", "from import: {out}");
+        assert_eq!(edits.len(), 1, "exactly one edit: {edits:?}");
+    }
+
+    #[test]
+    fn test_rewrite_external_imports_edits_delta() {
+        // A grown specifier records a +3 byte delta at the inner-specifier start.
+        let code = "import foo from '../../foo';\n";
+        let (_out, edits) = rewrite_external_imports(
+            code,
+            "/x/y/input.svelte",
+            "/x/y/generated/input.svelte",
+            "/x/y",
+        );
+        assert_eq!(edits.len(), 1, "one edit: {edits:?}");
+        assert_eq!(edits[0].1, 3, "delta +3 for one added `../`: {edits:?}");
+    }
+
+    #[test]
+    fn test_rewrite_external_imports_noop_when_paths_empty() {
+        let code = "import foo from '../../foo';";
+        assert_eq!(rewrite_external_imports(code, "", "g", "w").0, code);
+        assert_eq!(rewrite_external_imports(code, "f", "", "w").0, code);
+        assert_eq!(rewrite_external_imports(code, "f", "g", "").0, code);
+        // No edits when no rewrite happens.
+        assert!(rewrite_external_imports(code, "", "g", "w").1.is_empty());
     }
 }

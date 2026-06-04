@@ -28,7 +28,7 @@
 //! }
 //! "#;
 //!
-//! let result = transform_module(source, None, None);
+//! let result = transform_module(source, None, None, None);
 //! // Result contains transformed code with runes replaced
 //! ```
 
@@ -137,6 +137,11 @@ impl std::fmt::Display for ModuleTransformError {
 ///
 /// * `source` - The source code of the module file
 /// * `filename` - Optional filename for error messages
+/// * `helpers_import_path` - Optional shared helpers module to import
+/// * `external_imports` - Optional `(workspace_path, generated_path)` (both
+///   absolute). When set together with `filename`, relative imports reaching
+///   outside the workspace are rewritten so they resolve from the generated
+///   cache location (see [`crate::transform`] `rewrite_external_imports`).
 ///
 /// # Returns
 ///
@@ -146,6 +151,7 @@ pub fn transform_module(
     source: &str,
     filename: Option<&str>,
     helpers_import_path: Option<String>,
+    external_imports: Option<(String, String)>,
 ) -> ModuleTransformResult {
     let mut builder = SourceMapBuilder::new();
     let mut errors = Vec::new();
@@ -213,9 +219,31 @@ pub fn transform_module(
     }
     output.push_str(&rune_result.output);
 
+    // Rewrite relative imports reaching outside the workspace so they resolve
+    // from the generated cache location. Module files (.svelte.ts/.svelte.js)
+    // are written to the same cache as components and hit the identical
+    // out-of-root resolution problem.
+    let mut external_import_edits: Vec<(source_map::ByteOffset, i64)> = Vec::new();
+    if let (Some(filename), Some((workspace_path, generated_path))) = (filename, &external_imports)
+    {
+        let (rewritten, edits) = crate::transform::rewrite_external_imports(
+            &output,
+            filename,
+            generated_path,
+            workspace_path,
+        );
+        output = rewritten;
+        external_import_edits = edits;
+    }
+
+    // Re-align the source map for any specifier growth/shrinkage so diagnostics
+    // after a rewritten out-of-root import map back to the correct column.
+    let mut source_map = builder.build();
+    source_map.apply_generated_edits(&external_import_edits);
+
     ModuleTransformResult {
         code: output,
-        source_map: builder.build(),
+        source_map,
         store_names: rune_result.store_names,
         has_runes,
         errors,
@@ -303,7 +331,7 @@ mod tests {
     let count = $state(0);
     return { get count() { return count; } };
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Runes are now preserved for proper TypeScript type inference
         assert!(result.code.contains("let count = $state(0);"));
@@ -317,7 +345,7 @@ mod tests {
     let count = $state<number>(0);
     return count;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Rune is preserved with generic type
         assert!(result.code.contains("let count = $state<number>(0);"));
@@ -331,7 +359,7 @@ mod tests {
     let doubled = $derived(count * 2);
     return { doubled };
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Runes are preserved
         assert!(result.code.contains("let count = $state(0);"));
@@ -345,7 +373,7 @@ mod tests {
     let value = $derived.by(() => expensiveComputation());
     return value;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // $derived.by is now preserved (no IIFE transformation)
         assert!(result
@@ -362,7 +390,7 @@ mod tests {
     });
     return { get count() { return count; } };
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // $effect is now preserved
         assert!(result.code.contains("$effect("));
@@ -376,7 +404,7 @@ mod tests {
         // runs before DOM updates
     });
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // $effect.pre is now preserved
         assert!(result.code.contains("$effect.pre("));
@@ -391,7 +419,7 @@ mod tests {
     });
     return cleanup;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // $effect.root is now preserved
         assert!(result.code.contains("$effect.root("));
@@ -403,7 +431,7 @@ mod tests {
     let items = $state.raw([1, 2, 3]);
     return items;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // $state.raw is now preserved
         assert!(result.code.contains("let items = $state.raw([1, 2, 3]);"));
@@ -414,7 +442,7 @@ mod tests {
         let source = r#"export function getSnapshot(obj: any) {
     return $state.snapshot(obj);
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // $state.snapshot is now preserved
         assert!(result.code.contains("return $state.snapshot(obj);"));
@@ -426,7 +454,7 @@ mod tests {
             "{}{}{}{}export const value = 1;\n",
             MODULE_HEADER, MODULE_HELPERS, MODULE_HEADER, MODULE_HELPERS
         );
-        let result = transform_module(&source, None, None);
+        let result = transform_module(&source, None, None, None);
 
         let helper_count = result.code.matches("// Svelte module rune helpers").count();
         assert_eq!(helper_count, 1);
@@ -440,6 +468,7 @@ mod tests {
             source,
             None,
             Some("./__svelte_check_rs_helpers".to_string()),
+            None,
         );
 
         assert!(result
@@ -455,7 +484,7 @@ mod tests {
     $inspect(count);
     return count;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // $inspect is now preserved
         assert!(result.code.contains("$inspect(count);"));
@@ -467,7 +496,7 @@ mod tests {
     let { name } = $props();
     return name;
 }"#;
-        let result = transform_module(source, Some("test.svelte.ts"), None);
+        let result = transform_module(source, Some("test.svelte.ts"), None, None);
 
         assert!(!result.errors.is_empty());
         assert!(result.errors[0]
@@ -481,7 +510,7 @@ mod tests {
     let value = $bindable(0);
     return value;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         assert!(!result.errors.is_empty());
         assert!(result.errors[0]
@@ -494,7 +523,7 @@ mod tests {
         let source = r#"export function invalid() {
     $host().dispatchEvent(new Event('test'));
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         assert!(!result.errors.is_empty());
         assert!(result.errors[0]
@@ -507,7 +536,7 @@ mod tests {
         let source = r#"export function add(a: number, b: number): number {
     return a + b;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         assert!(!result.has_runes);
         assert!(result.errors.is_empty());
@@ -536,7 +565,7 @@ export function createCounter(initial: number = 0) {
         reset() { count = initial; },
     };
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         assert!(result.has_runes);
         assert!(result.errors.is_empty());
@@ -557,7 +586,7 @@ export function createState() {
     let value = $state(0);
     return value;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         assert!(result
             .code
@@ -576,7 +605,7 @@ export function createState() {
     let value = $state(0); // This one should
     return value;
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Comments should be preserved
         assert!(result.code.contains("// This is a comment"));
@@ -596,7 +625,7 @@ export function createState() {
 export function updateStore() {
     $myStore = 'new value';
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Store names should be collected
         assert!(result.store_names.contains("myStore"));
@@ -608,7 +637,7 @@ export function updateStore() {
     let a = $state(1), b = $state(2);
     return { a, b };
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Runes are preserved
         assert!(result.code.contains("let a = $state(1), b = $state(2);"));
@@ -627,7 +656,7 @@ export function updateStore() {
 
     return { outerCount, inner };
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Runes are preserved
         assert!(result.code.contains("let outerCount = $state(0);"));
@@ -644,7 +673,7 @@ export function updateStore() {
         this.count++;
     }
 }"#;
-        let result = transform_module(source, None, None);
+        let result = transform_module(source, None, None, None);
 
         // Runes are preserved
         assert!(result.code.contains("count = $state(0);"));

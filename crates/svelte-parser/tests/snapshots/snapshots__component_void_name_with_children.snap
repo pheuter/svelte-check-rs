@@ -59,6 +59,8 @@ SvelteDocument {
                                                     value: "radio",
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                     Normal(
@@ -77,6 +79,8 @@ SvelteDocument {
                                                     value: "group",
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                     Normal(
@@ -95,6 +99,8 @@ SvelteDocument {
                                                     value: "a",
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                     Directive(
@@ -120,6 +126,8 @@ SvelteDocument {
                                                     is_quoted: false,
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                 ],
@@ -184,6 +192,8 @@ SvelteDocument {
                                                     value: "radio",
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                     Normal(
@@ -202,6 +212,8 @@ SvelteDocument {
                                                     value: "group",
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                     Normal(
@@ -220,6 +232,8 @@ SvelteDocument {
                                                     value: "b",
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                     Directive(
@@ -245,6 +259,8 @@ SvelteDocument {
                                                     is_quoted: false,
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                 ],

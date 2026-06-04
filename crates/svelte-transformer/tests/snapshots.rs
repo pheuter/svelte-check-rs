@@ -81,9 +81,85 @@ fn transform_snapshot_with_filename(name: &str, filename: &str, source: &str) {
     insta::assert_snapshot!(name, output);
 }
 
+/// Transform snapshot exercising the external-import rewrite (issue #2942).
+/// Mirrors upstream svelte2tsx's rewrite-imports fixture: filename
+/// `/x/y/input.svelte`, workspace `/x/y`, generated `/x/y/generated/input.svelte`.
+fn transform_snapshot_with_rewrite(name: &str, source: &str) {
+    let parsed = parse(source);
+    let result = transform(
+        &parsed.document,
+        TransformOptions {
+            filename: Some("/x/y/input.svelte".to_string()),
+            source_maps: true,
+            workspace_path: Some("/x/y".to_string()),
+            generated_path: Some("/x/y/generated/input.svelte".to_string()),
+            ..Default::default()
+        },
+    );
+
+    let output = format!(
+        "=== Source ===\n{}\n\n=== TSX Output ===\n{}\n\n=== Source Map Mappings: {} ===",
+        source,
+        result.tsx_code,
+        result.source_map.len()
+    );
+    insta::assert_snapshot!(name, output);
+}
+
 // ============================================================================
 // RUNE TRANSFORMATION TESTS
 // ============================================================================
+
+/// Issue #2942: relative imports reaching outside the workspace are rewritten
+/// so they stay resolvable from the generated cache location. Mirrors upstream
+/// svelte2tsx rewrite-imports fixture (instance + module scripts + template
+/// onclick, covering static / dynamic / export-from / JSDoc import forms).
+#[test]
+fn test_rewrite_external_imports() {
+    transform_snapshot_with_rewrite(
+        "rewrite_external_imports",
+        r#"<script module>
+    import foo1 from '../../foo';
+    import('../../bar');
+    export { x } from '../../x';
+
+    /** @param {import('../../mhm'.mhm)} mhm */
+    function f(mhm) {}
+</script>
+
+<script>
+    import foo2 from '../../foo';
+    import('../../bar');
+
+    /** @type {import('../../mhm').mhm} */
+    let mhm = true;
+</script>
+
+<button
+    onclick={() => {
+        import('../../bar');
+    }}
+>click</button>"#,
+    );
+}
+
+/// Issue #2942 refinement: a bare side-effect import (`import '../../x';`, an
+/// import declaration with no clause) reaching outside the workspace must also
+/// be rewritten, alongside a grown `from` specifier. Captures the rewritten TSX
+/// and the (drift-corrected) source-map mapping count.
+#[test]
+fn test_rewrite_external_imports_side_effect() {
+    transform_snapshot_with_rewrite(
+        "rewrite_external_imports_side_effect",
+        r#"<script lang="ts">
+    import '../../side-effect';
+    import { value } from '../../value';
+    const bad: string = value;
+</script>
+
+<p>{bad}</p>"#,
+    );
+}
 
 #[test]
 fn test_transform_state_rune() {
@@ -166,6 +242,20 @@ fn test_transform_bindable_rune() {
 </script>
 
 <input bind:value />"#,
+    );
+}
+
+#[test]
+fn test_transform_bindable_renamed_marker() {
+    // A renamed bindable prop whose exported name is a reserved word (`class`)
+    // must be marked used via its LOCAL binding name (`className`), not the
+    // exported name — `;class;` would be a TS syntax error (upstream #3017).
+    // The marker silences `noUnusedLocals` (TS6133) even with no template use.
+    transform_snapshot(
+        "bindable_renamed_marker",
+        r#"<script lang="ts">
+    let { class: className = $bindable() } = $props<{ class?: string }>();
+</script>"#,
     );
 }
 
@@ -384,6 +474,46 @@ fn test_template_each_block() {
 }
 
 #[test]
+fn test_each_nullable_non_indexed() {
+    // Issue #2863: a non-indexed each over a `number[] | null | undefined` prop
+    // must route through `__svelte_each(__each_0)` so the nullable iterable does
+    // not produce false-positive null/undefined diagnostics.
+    transform_snapshot(
+        "each_nullable",
+        r#"<script lang="ts">
+    let { items }: { items: number[] | null | undefined } = $props();
+</script>
+
+{#each items as item}
+    <div>{item}</div>
+{/each}"#,
+    );
+}
+
+#[test]
+fn test_each_non_iterable() {
+    // Issue #2863 NEGATIVE: loosening `{#each}` to accept null/undefined must NOT
+    // swallow a genuine non-iterable. A `number` still flows into
+    // `__svelte_each(__each_0)` / `__svelte_each_indexed(__each_1)`, whose
+    // constraint rejects it (TS2345 at type-check time). This locks in the
+    // routing shape so the iterable argument stays mapped to the source expr.
+    transform_snapshot(
+        "each_non_iterable",
+        r#"<script lang="ts">
+    const n: number = 1;
+</script>
+
+{#each n as x}
+    <div>{x}</div>
+{/each}
+
+{#each n as y, i (i)}
+    <div>{y} {i}</div>
+{/each}"#,
+    );
+}
+
+#[test]
 fn test_template_each_with_else() {
     transform_snapshot(
         "template_each_else",
@@ -413,6 +543,55 @@ fn test_template_await_block() {
     <p>{data.message}</p>
 {:catch error}
     <p>Error: {error.message}</p>
+{/await}"#,
+    );
+}
+
+#[test]
+fn test_template_await_block_typed() {
+    // Regression for #2895: user-supplied type annotations on then/catch bindings
+    // must be preserved (assigned from a typed intermediate temporary), and
+    // destructuring patterns (object/array) must still work.
+    transform_snapshot(
+        "template_await_block_typed",
+        r#"<script lang="ts">
+    type Props = { a: number; b: string };
+    let p: Promise<Props> = Promise.resolve({ a: 1, b: 'x' });
+</script>
+
+{#await p then v: Props}
+    <p>{v.a}</p>
+{:catch e: Error}
+    <p>{e.message}</p>
+{/await}
+
+{#await p then { a, b }: Props}
+    <p>{a}{b}</p>
+{/await}
+
+{#await p then [x, y]}
+    <p>{x}{y}</p>
+{/await}"#,
+    );
+}
+
+#[test]
+fn test_await_then_wrong_annotation() {
+    // Issue #2895 NEGATIVE: a `{:then}` binding annotation that disagrees with the
+    // resolved type must be preserved verbatim so it is type-checked, not erased.
+    // The emitted `const __value_N: Awaited<typeof __await_N> = await __await_N;`
+    // followed by `const v: string = __value_N;` is the shape that surfaces TS2322
+    // (here `string` vs the resolved `number`).
+    transform_snapshot(
+        "await_then_wrong_annotation",
+        r#"<script lang="ts">
+    let p: Promise<number> = Promise.resolve(1);
+</script>
+
+{#await p}
+    <p>loading</p>
+{:then v: string}
+    <p>{v}</p>
 {/await}"#,
     );
 }
@@ -1550,6 +1729,74 @@ fn test_comment_in_attr_transform() {
 </script>
 
 <div data={/* TODO: fix typing */ items as any}/>"#,
+    );
+}
+
+// === Issue #2950: @ts-ignore / eslint-disable comments within tags ===
+
+#[test]
+fn test_ts_ignore_in_tag() {
+    // Issue #2950: in-tag `//` and `/* */` comments must be emitted into the
+    // generated TS so that `// @ts-ignore` / `// eslint-disable` actually
+    // suppress diagnostics on the attribute they precede. Mirrors upstream
+    // svelte2tsx `comments-in-attributes.v5` covering element + component with
+    // comments before attributes, event handlers, attachments, bindings,
+    // spreads, and a trailing comment on the last attribute.
+    transform_snapshot(
+        "ts_ignore_in_tag",
+        r#"<script lang="ts">
+    import Component from './Component.svelte';
+    let x = true;
+    let element: any;
+    let bound_prop: any;
+    let handler: any;
+    let attachment: any;
+    let spread_props: any;
+    let action: any;
+    let params: any;
+    let fade: any;
+    let flip: any;
+</script>
+
+<div
+    // comment
+    foo="bar"
+    x // comment same line
+    /* another comment */
+    baz="qux"
+    // event handler comment
+    on:click={handler}
+    // action comment
+    use:action={params}
+    // transition comment
+    transition:fade={params}
+    // animation comment
+    animate:flip={params}
+    // attachment comment
+    {@attach attachment}
+    // binding comment
+    bind:this={element}
+    // spread comment
+    {...spread_props}
+    trailing // trailing comment same line
+></div>
+
+<Component
+    // comment
+    foo="bar"
+    /* another comment */
+    baz="qux"
+    // event handler comment
+    on:click={handler}
+    // attachment comment
+    {@attach attachment}
+    // binding comment
+    bind:prop={bound_prop}
+    // spread comment
+    {...spread_props}
+    trailing
+    // trailing comment newline
+></Component>"#,
     );
 }
 

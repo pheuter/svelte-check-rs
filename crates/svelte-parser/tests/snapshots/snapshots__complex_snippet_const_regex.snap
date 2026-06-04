@@ -48,6 +48,8 @@ SvelteDocument {
                                         value: "parent",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

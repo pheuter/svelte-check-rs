@@ -33,6 +33,8 @@ SvelteDocument {
                                 name: "tooltip(getText('hello'))",
                                 modifiers: [],
                                 expression: None,
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Normal(
@@ -51,6 +53,8 @@ SvelteDocument {
                                         value: "box",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

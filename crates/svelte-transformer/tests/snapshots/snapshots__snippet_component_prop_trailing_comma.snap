@@ -56,6 +56,9 @@ type __SvelteEachItem<T> =
 declare function __svelte_each_indexed<
   T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
 >(arr: T): [number, __SvelteEachItem<T>][];
+declare function __svelte_each<
+  T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+>(arr: T): __SvelteEachItem<NonNullable<T>>[];
 declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
 // Helper to get store value type from store subscription ($store syntax)

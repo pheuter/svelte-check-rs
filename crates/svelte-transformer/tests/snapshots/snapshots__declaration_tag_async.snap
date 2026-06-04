@@ -63,6 +63,9 @@ type __SvelteEachItem<T> =
 declare function __svelte_each_indexed<
   T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
 >(arr: T): [number, __SvelteEachItem<T>][];
+declare function __svelte_each<
+  T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+>(arr: T): __SvelteEachItem<NonNullable<T>>[];
 declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
 // Helper to get store value type from store subscription ($store syntax)
@@ -189,7 +192,7 @@ async function __svelte_render() {
 
 // === TEMPLATE TYPE-CHECK ===
   const __each_0 = boxes;
-  for (const box of __each_0) {
+  for (const box of __svelte_each(__each_0)) {
     const area = box.width * box.height;
     let label = $state(await `${area} square pixels`);
     label;
@@ -211,4 +214,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 9 ===
+=== Source Map Mappings: 10 ===

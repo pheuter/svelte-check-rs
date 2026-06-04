@@ -49,6 +49,8 @@ SvelteDocument {
                                         is_quoted: false,
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

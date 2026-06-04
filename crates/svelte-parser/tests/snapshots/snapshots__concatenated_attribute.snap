@@ -66,6 +66,8 @@ SvelteDocument {
                                         ),
                                     ],
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Normal(
@@ -102,6 +104,8 @@ SvelteDocument {
                                         ),
                                     ],
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

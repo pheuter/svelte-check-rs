@@ -33,6 +33,8 @@ SvelteDocument {
                                 name: "tooltip",
                                 modifiers: [],
                                 expression: None,
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

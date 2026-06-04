@@ -52,6 +52,13 @@ fn binary_path() -> PathBuf {
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
+struct Position {
+    line: u32,
+    column: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct JsonDiagnostic {
     #[serde(rename = "type")]
     diagnostic_type: String,
@@ -59,6 +66,8 @@ struct JsonDiagnostic {
     message: String,
     code: String,
     source: String,
+    #[serde(default)]
+    start: Option<Position>,
 }
 
 static BUN_PATH: OnceLock<Utf8PathBuf> = OnceLock::new();
@@ -193,6 +202,58 @@ fn test_class_shorthand_does_not_flag_unused() {
 fn test_style_shorthand_does_not_flag_unused() {
     let diagnostics = diagnostics();
     assert_no_ts6133_for_variable(&diagnostics, "src/ClassStyle.svelte", "color");
+}
+
+/// Renamed bindable prop (upstream #3017): `let { class: className =
+/// $bindable() } = $props()` must not flag the local binding `className` as
+/// unused, even with no template use. The transformer marks bindable props
+/// used via their LOCAL name — the exported name `class` is a reserved word
+/// and could not appear in the generated `;<name>;` marker.
+#[test]
+fn test_renamed_bindable_prop_does_not_flag_unused() {
+    let diagnostics = diagnostics();
+    assert_no_ts6133_for_variable(&diagnostics, "src/RenamedBindable.svelte", "className");
+}
+
+/// Negative / lock-in companion to the above (upstream #3017): a NON-bindable
+/// prop (`unusedProp`) destructured alongside the bindable `className` in the
+/// SAME `$props()` call, and never read, MUST still surface TS6133. Only
+/// `$bindable()` props get the mark-used reference, so this proves the
+/// suppression is bindable-targeted, not a blanket exemption of every
+/// destructured prop. Asserted at the exact source line of `unusedProp`.
+#[test]
+fn test_non_bindable_unused_prop_still_flagged() {
+    let diagnostics = diagnostics();
+    let needle = "'unusedProp' is declared but its value is never read";
+    let matching: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.ends_with("src/RenamedBindable.svelte")
+                && d.code == "TS6133"
+                && d.message.contains(needle)
+        })
+        .collect();
+
+    assert_eq!(
+        matching.len(),
+        1,
+        "Expected exactly one TS6133 for `unusedProp` in src/RenamedBindable.svelte, found:\n{:#?}\n\nAll diagnostics:\n{:#?}",
+        matching,
+        diagnostics
+    );
+
+    // The `unusedProp` binding is on line 17 of the fixture (inside the
+    // multi-line `$props()` destructuring). Verify the diagnostic maps to the
+    // real source line, not generated coordinates.
+    let pos = matching[0]
+        .start
+        .as_ref()
+        .expect("diagnostic should carry a start position");
+    assert_eq!(
+        pos.line, 17,
+        "TS6133 for `unusedProp` should map to source line 17, got {}:{}",
+        pos.line, pos.column
+    );
 }
 
 /// Sanity check: a truly unused local in the fixture is still flagged, i.e.
