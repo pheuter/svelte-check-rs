@@ -7,9 +7,9 @@ use std::fs;
 use std::sync::Arc;
 use swc_common::SourceMap;
 use swc_ecma_ast::{
-    AssignExpr, AssignOp, AssignTarget, Decl, ExportDefaultExpr, Expr, ExprStmt, KeyValueProp, Lit,
-    MemberExpr, MemberProp, ModuleDecl, ModuleItem, ObjectLit, Pat, Prop, PropName, PropOrSpread,
-    SimpleAssignTarget, Stmt, VarDeclKind,
+    ArrayLit, AssignExpr, AssignOp, AssignTarget, CallExpr, Callee, Decl, ExportDefaultExpr, Expr,
+    ExprStmt, KeyValueProp, Lit, MemberExpr, MemberProp, ModuleDecl, ModuleItem, ObjectLit, Pat,
+    Prop, PropName, PropOrSpread, SimpleAssignTarget, Stmt, VarDeclKind,
 };
 use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 
@@ -94,8 +94,58 @@ pub struct SvelteCompilerOptions {
 }
 
 impl SvelteConfig {
-    /// Loads configuration from a `svelte.config.{js,ts,cjs,mjs,mts}` file.
+    /// Loads configuration from a `vite.config` or `svelte.config` file.
+    ///
+    /// Precedence mirrors upstream language-tools (commit 5b13da15, #3031):
+    /// `vite.config.{js,mjs,ts,cjs,mts,cts}` is probed first and preferred when
+    /// it yields any Svelte plugin options; otherwise we fall through to
+    /// `svelte.config.{js,ts,cjs,mjs,mts}`.
+    ///
+    /// CRITICAL DIVERGENCE FROM UPSTREAM: upstream runs `vite.resolveConfig(...)`
+    /// at RUNTIME and reads the resolved plugin's `api.options` (the
+    /// `vite-plugin-sveltekit-setup` or `vite-plugin-svelte:config` plugin).
+    /// svelte-check-rs parses STATICALLY with SWC and cannot execute vite, so
+    /// `parse_vite_config` is a best-effort static approximation that handles the
+    /// common literal case (`svelte({...})` / `sveltekit({...})` inside a
+    /// `plugins: [...]` array). Dynamic/computed plugin options (spreads,
+    /// conditionals, function-returned options, options imported from other
+    /// modules) are not statically extractable and correctly fall through to
+    /// `svelte.config` or defaults — the same static-parse tradeoff already used
+    /// for `svelte.config` (#3009).
     pub fn load(project_root: &Utf8Path) -> Self {
+        // Probe vite.config first (upstream VITE_CONFIG_EXTENSIONS order:
+        // js -> mjs -> ts -> cjs -> mts -> cts); first existing file wins.
+        let vite_config_files = [
+            "vite.config.js",
+            "vite.config.mjs",
+            "vite.config.ts",
+            "vite.config.cjs",
+            "vite.config.mts",
+            "vite.config.cts",
+        ];
+
+        for vite_config_file in vite_config_files {
+            let config_path = project_root.join(vite_config_file);
+            if config_path.exists() {
+                match Self::parse_vite_config(&config_path) {
+                    // vite.config yielded svelte/sveltekit plugin options: prefer it.
+                    Ok(Some(config)) => return config,
+                    // vite.config present but no usable plugin options (e.g. a
+                    // bare `sveltekit()` with no args): fall through to
+                    // svelte.config, matching upstream's vite-then-svelte
+                    // precedence.
+                    Ok(None) => {}
+                    // Parse error: warn and fall through to svelte.config
+                    // (mirrors the svelte.config error handling, but does NOT
+                    // abort to default() — svelte.config may still be valid).
+                    Err(e) => {
+                        eprintln!("Warning: Failed to parse {}: {}", config_path, e);
+                    }
+                }
+                break;
+            }
+        }
+
         // Try multiple config file names. Order mirrors upstream language-tools
         // (js -> ts -> cjs -> mjs -> mts); first match wins.
         //
@@ -208,6 +258,218 @@ impl SvelteConfig {
         }
 
         Ok(config)
+    }
+
+    /// Parses a `vite.config.{js,mjs,ts,cjs,mts,cts}` file using SWC and
+    /// statically extracts Svelte plugin options.
+    ///
+    /// STATIC APPROXIMATION (see `SvelteConfig::load` for the full divergence
+    /// note): upstream runs `vite.resolveConfig(...)` at runtime and reads the
+    /// resolved plugin's `api.options`. We cannot execute vite, so we resolve the
+    /// default-export (or CommonJS `module.exports`) object, unwrap a
+    /// `defineConfig(...)` wrapper, find the `plugins` array, scan it for a
+    /// `svelte({...})` or `sveltekit({...})` call, and feed the call's first
+    /// argument object literal through the existing `extract_config_from_object`
+    /// helper (so `compilerOptions.runes`, `compilerOptions.experimental.async`,
+    /// `extensions`, and `kit` are honored).
+    ///
+    /// Fall-through contract:
+    ///   - `Ok(Some(cfg))` when a `svelte`/`sveltekit` call supplied an options
+    ///     object — `load()` prefers this and does NOT consult `svelte.config`
+    ///     (faithful to upstream's all-or-nothing precedence; no merge).
+    ///   - `Ok(None)` when no `svelte`/`sveltekit` plugin call had an options
+    ///     object (the common bare `sveltekit()` case) — `load()` then falls
+    ///     through to `svelte.config`. This is essential: fixtures like
+    ///     `sveltekit-bundler` use a bare `sveltekit()` in vite.config but keep
+    ///     their real config (including `experimental.async`) in svelte.config.js.
+    ///   - `Err(..)` on parse failure — `load()` warns and falls through to
+    ///     `svelte.config` (it does NOT abort to `default()`).
+    fn parse_vite_config(path: &Utf8Path) -> Result<Option<Self>, String> {
+        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+
+        let cm: Arc<SourceMap> = Default::default();
+        let fm = cm.new_source_file(
+            swc_common::FileName::Custom(path.to_string()).into(),
+            content,
+        );
+
+        // TypeScript syntax for .ts/.mts/.cts, ES for .js/.cjs/.mjs.
+        // Note: `.mts`/`.cts` do not end with `.ts`, so they must be matched
+        // explicitly or they would wrongly select the ES branch.
+        let p = path.as_str();
+        let syntax = if p.ends_with(".ts") || p.ends_with(".mts") || p.ends_with(".cts") {
+            Syntax::Typescript(TsSyntax {
+                tsx: false,
+                ..Default::default()
+            })
+        } else {
+            Syntax::Es(EsSyntax {
+                jsx: false,
+                ..Default::default()
+            })
+        };
+
+        let module = parse_file_as_module(
+            &fm,
+            syntax,
+            swc_ecma_ast::EsVersion::Es2022,
+            None,
+            &mut Vec::new(),
+        )
+        .map_err(|e| format!("Parse error: {:?}", e))?;
+
+        let object_by_name = Self::collect_top_level_object_consts(&module.body);
+
+        // Resolve the root config object from `export default ...` or a CommonJS
+        // `module.exports = ...` / `exports = ...` assignment.
+        let mut root_object: Option<&ObjectLit> = None;
+        for item in &module.body {
+            match item {
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(ExportDefaultExpr {
+                    expr,
+                    ..
+                })) => {
+                    if let Some(obj) =
+                        Self::resolve_vite_root_object(expr.as_ref(), &object_by_name)
+                    {
+                        root_object = Some(obj);
+                        break;
+                    }
+                }
+                ModuleItem::Stmt(Stmt::Expr(ExprStmt { expr, .. })) => {
+                    if let Expr::Assign(AssignExpr {
+                        op: AssignOp::Assign,
+                        left,
+                        right,
+                        ..
+                    }) = expr.as_ref()
+                    {
+                        if Self::is_commonjs_exports_target(left) {
+                            if let Some(obj) =
+                                Self::resolve_vite_root_object(right.as_ref(), &object_by_name)
+                            {
+                                root_object = Some(obj);
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(root_object) = root_object else {
+            return Ok(None);
+        };
+
+        // Find the `plugins: [...]` array property.
+        let Some(plugins) = Self::find_plugins_array(root_object) else {
+            return Ok(None);
+        };
+
+        // Scan plugins for a `svelte({...})` / `sveltekit({...})` call and feed
+        // its first-argument options object through the shared extractor.
+        let mut config = SvelteConfig::default();
+        let mut found_options = false;
+        for elem in plugins.elems.iter().flatten() {
+            let Expr::Call(call) = Self::unwrap_ts_assertions(elem.expr.as_ref()) else {
+                continue;
+            };
+            if !Self::is_svelte_plugin_call(call) {
+                continue;
+            }
+            // First argument is the plugin options object.
+            let Some(first_arg) = call.args.first() else {
+                continue;
+            };
+            let inner = Self::unwrap_ts_assertions(first_arg.expr.as_ref());
+            let options_obj = match inner {
+                Expr::Object(obj) => Some(obj),
+                Expr::Ident(ident) => object_by_name.get(ident.sym.as_ref()).copied(),
+                _ => None,
+            };
+            if let Some(options_obj) = options_obj {
+                Self::extract_config_from_object(options_obj, &mut config);
+                found_options = true;
+            }
+        }
+
+        if found_options {
+            Ok(Some(config))
+        } else {
+            // No svelte/sveltekit plugin supplied an options object (e.g. bare
+            // `sveltekit()`): fall through to svelte.config.
+            Ok(None)
+        }
+    }
+
+    /// Resolves a vite config root expression to its object literal.
+    ///
+    /// Handles, in order: a TS-assertion wrapper (peeled first), a
+    /// `defineConfig(<obj>)` / `defineConfig(<ident>)` call wrapper, a direct
+    /// object literal, and an identifier referring to a top-level
+    /// `const = { ... }`. Returns `None` (never panics) for any other shape.
+    fn resolve_vite_root_object<'a>(
+        expr: &'a Expr,
+        object_by_name: &HashMap<&'a str, &'a ObjectLit>,
+    ) -> Option<&'a ObjectLit> {
+        let inner = Self::unwrap_ts_assertions(expr);
+        match inner {
+            Expr::Object(obj) => Some(obj),
+            Expr::Ident(ident) => object_by_name.get(ident.sym.as_ref()).copied(),
+            // `defineConfig({ ... })` / `defineConfig(config)` wrapper.
+            Expr::Call(call) => {
+                if !Self::is_callee_ident(call, "defineConfig") {
+                    return None;
+                }
+                let first_arg = call.args.first()?;
+                let arg_inner = Self::unwrap_ts_assertions(first_arg.expr.as_ref());
+                match arg_inner {
+                    Expr::Object(obj) => Some(obj),
+                    Expr::Ident(ident) => object_by_name.get(ident.sym.as_ref()).copied(),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Finds the `plugins` property of a vite config object when it is an array
+    /// literal.
+    fn find_plugins_array(obj: &ObjectLit) -> Option<&ArrayLit> {
+        for prop in &obj.props {
+            if let PropOrSpread::Prop(prop) = prop {
+                if let Prop::KeyValue(KeyValueProp { key, value }) = prop.as_ref() {
+                    if Self::prop_name_str(key) == Some("plugins") {
+                        if let Expr::Array(arr) = value.as_ref() {
+                            return Some(arr);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns true if `call`'s callee is the bare identifier `svelte` or
+    /// `sveltekit` (the vite-plugin-svelte / SvelteKit plugin factories).
+    ///
+    /// Matching is conservative: only bare identifiers are accepted, so
+    /// member-expr callees (`foo.svelte()`) and unrelated calls are skipped. This
+    /// favors false negatives (fall through to svelte.config) over false
+    /// positives.
+    fn is_svelte_plugin_call(call: &CallExpr) -> bool {
+        Self::is_callee_ident(call, "svelte") || Self::is_callee_ident(call, "sveltekit")
+    }
+
+    /// Returns true if `call`'s callee is the bare identifier `name`.
+    fn is_callee_ident(call: &CallExpr, name: &str) -> bool {
+        match &call.callee {
+            Callee::Expr(expr) => {
+                matches!(expr.as_ref(), Expr::Ident(ident) if ident.sym.as_ref() == name)
+            }
+            Callee::Super(_) | Callee::Import(_) => false,
+        }
     }
 
     /// Returns true if `target` is the CommonJS exports object, i.e. either
@@ -988,6 +1250,164 @@ mod tests {
             "expected the .cjs fixture's kit.alias.$lib to be parsed"
         );
         assert_eq!(config.compiler_options.runes, Some(true));
+    }
+
+    #[test]
+    fn test_parse_vite_config_runes_and_alias() {
+        // Issue #3031: a plain Svelte+Vite app whose Svelte config lives ONLY in
+        // vite.config.ts (no svelte.config.*) must be honored. The static
+        // approximation resolves the `svelte({...})` plugin options.
+        let path = Utf8Path::new("../../test-fixtures/projects/vite-config-svelte");
+        let config = SvelteConfig::load(path);
+
+        assert_eq!(
+            config.compiler_options.runes,
+            Some(true),
+            "expected compilerOptions.runes from vite.config.ts svelte() plugin"
+        );
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./src/lib".to_string()),
+            "expected kit.alias.$lib from vite.config.ts svelte() plugin"
+        );
+        assert!(
+            config.extensions.contains(&".svelte".to_string()),
+            "expected extensions from vite.config.ts svelte() plugin"
+        );
+    }
+
+    #[test]
+    fn test_parse_vite_config_experimental_async() {
+        // Issue #3031: `compilerOptions.experimental.async` declared in the
+        // vite.config svelte() plugin must be extracted (it flows through the
+        // existing extract_config_from_object path).
+        let config_content = r#"
+            import { defineConfig } from 'vite';
+            import { svelte } from '@sveltejs/vite-plugin-svelte';
+
+            export default defineConfig({
+                plugins: [
+                    svelte({
+                        compilerOptions: {
+                            experimental: {
+                                async: true
+                            }
+                        }
+                    })
+                ]
+            });
+        "#;
+
+        let temp_dir = std::env::temp_dir().join("svelte_check_rs_vite_async_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("vite.config.ts");
+        std::fs::write(&config_path, config_content).unwrap();
+
+        let utf8_path = Utf8PathBuf::try_from(temp_dir.clone()).unwrap();
+        let config = SvelteConfig::load(&utf8_path);
+
+        assert_eq!(
+            config.compiler_options.experimental_async,
+            Some(true),
+            "expected experimental.async from vite.config.ts svelte() plugin"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_parse_vite_config_defineconfig_wrapper() {
+        // Issue #3031: the `defineConfig(<obj>)` call wrapper must be unwrapped
+        // to its first object argument before scanning `plugins`.
+        let config_content = r#"
+            import { defineConfig } from 'vite';
+            import { sveltekit } from '@sveltejs/kit/vite';
+
+            export default defineConfig({
+                plugins: [sveltekit({ compilerOptions: { runes: true } })]
+            });
+        "#;
+
+        let temp_dir = std::env::temp_dir().join("svelte_check_rs_vite_defineconfig_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("vite.config.ts");
+        std::fs::write(&config_path, config_content).unwrap();
+
+        let utf8_path = Utf8PathBuf::try_from(temp_dir.clone()).unwrap();
+        let config = SvelteConfig::load(&utf8_path);
+
+        assert_eq!(
+            config.compiler_options.runes,
+            Some(true),
+            "expected runes from sveltekit({{...}}) inside defineConfig(...)"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_vite_config_precedence_over_svelte_config() {
+        // Issue #3031: when BOTH a vite.config (with options) and a svelte.config
+        // exist, vite.config wins (all-or-nothing precedence, no merge).
+        let path = Utf8Path::new("../../test-fixtures/projects/vite-config-precedence");
+        let config = SvelteConfig::load(path);
+
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./from-vite".to_string()),
+            "expected vite.config.ts alias to win over svelte.config.js"
+        );
+    }
+
+    #[test]
+    fn test_vite_config_bare_sveltekit_falls_through() {
+        // Issue #3031 CRITICAL: a bare `sveltekit()` (no options object) yields
+        // no plugin options, so parse_vite_config returns Ok(None) and load()
+        // MUST fall through to svelte.config.js. This guards the existing
+        // sveltekit-bundler/nodenext/svelte-modules fixtures, which all pair a
+        // bare `sveltekit()` vite.config with a real svelte.config.js.
+        let vite_content = r#"
+            import { sveltekit } from '@sveltejs/kit/vite';
+            import { defineConfig } from 'vite';
+
+            export default defineConfig({
+                plugins: [sveltekit()]
+            });
+        "#;
+        let svelte_content = r#"
+            export default {
+                kit: {
+                    alias: {
+                        '$lib': './src/lib'
+                    }
+                }
+            };
+        "#;
+
+        let temp_dir = std::env::temp_dir().join("svelte_check_rs_vite_bare_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let vite_path = temp_dir.join("vite.config.ts");
+        let svelte_path = temp_dir.join("svelte.config.js");
+        std::fs::write(&vite_path, vite_content).unwrap();
+        std::fs::write(&svelte_path, svelte_content).unwrap();
+
+        let utf8_path = Utf8PathBuf::try_from(temp_dir.clone()).unwrap();
+        let config = SvelteConfig::load(&utf8_path);
+
+        assert_eq!(
+            config.kit.alias.get("$lib"),
+            Some(&"./src/lib".to_string()),
+            "expected fall-through to svelte.config.js when vite has only bare sveltekit()"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&vite_path).ok();
+        std::fs::remove_file(&svelte_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
     }
 
     #[test]

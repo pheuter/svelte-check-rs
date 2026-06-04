@@ -1,9 +1,16 @@
-//! Integration tests for `svelte.config.{ts,mts,cjs}` discovery (issue #3009).
+//! Integration tests for `svelte.config.{ts,mts,cjs}` discovery (issue #3009)
+//! and `vite.config.*` Svelte-config reading (issue #3031).
 //!
 //! Upstream commit f53efb39 widens the config-file extension set from
 //! `{js,cjs,mjs}` to `{js,ts,cjs,mjs,mts}`. svelte-check-rs parses configs
 //! statically with SWC, so the full set is adopted unconditionally (no
 //! `process.features.typescript` strip-types gate).
+//!
+//! Upstream commit 5b13da15 (#3031) additionally reads Svelte config options
+//! from `vite.config.{js,mjs,ts,cjs,mts,cts}`, preferring it over svelte.config
+//! when it yields plugin options. Upstream runs `vite.resolveConfig` at runtime;
+//! svelte-check-rs parses the vite config STATICALLY with SWC (best-effort
+//! literal-case approximation) and falls through to svelte.config otherwise.
 //!
 //! Each test builds a self-contained project on disk under `target/test-tmp/`
 //! and runs the CLI with `--show-config --skip-tsgo`. `--show-config` exits
@@ -229,5 +236,122 @@ fn test_svelte_config_js_commonjs_alias_is_honored() {
     assert!(
         stderr.contains("kit.alias:") && stderr.contains("$lib") && stderr.contains("./src/lib"),
         "expected $lib alias from CommonJS svelte.config.js in --show-config output, got stderr:\n{stderr}"
+    );
+}
+
+/// Issue #3031: a `vite.config.ts` declaring `svelte({ kit: { alias } })` (and
+/// NO svelte.config.*) must be discovered and its `$lib` alias honored. This is
+/// the static approximation; upstream runs vite.resolveConfig at runtime.
+#[test]
+fn test_vite_config_ts_alias_is_honored() {
+    let project = make_project("vite_config_ts");
+    write(
+        &project.join("vite.config.ts"),
+        r#"import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+
+export default defineConfig({
+	plugins: [
+		svelte({
+			kit: {
+				alias: {
+					'$lib': './src/lib'
+				}
+			}
+		})
+	]
+});
+"#,
+    );
+    write_minimal_tsconfig(&project);
+    write(&project.join("src/App.svelte"), "<p>hi</p>\n");
+
+    let RunOutput {
+        exit_code, stderr, ..
+    } = run_show_config(&project);
+
+    assert_eq!(exit_code, 0, "exit code should be 0, stderr: {stderr}");
+    assert!(
+        stderr.contains("kit.alias:") && stderr.contains("$lib") && stderr.contains("./src/lib"),
+        "expected $lib alias from vite.config.ts svelte() plugin in --show-config output, got stderr:\n{stderr}"
+    );
+}
+
+/// Issue #3031: when BOTH a vite.config.ts (with options) and a svelte.config.js
+/// exist, the vite.config options win (vite-preferred precedence, no merge).
+#[test]
+fn test_vite_config_wins_over_svelte_config() {
+    let project = make_project("vite_config_precedence");
+    write(
+        &project.join("vite.config.ts"),
+        r#"import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+
+export default defineConfig({
+	plugins: [
+		svelte({
+			kit: {
+				alias: {
+					'$lib': './from-vite'
+				}
+			}
+		})
+	]
+});
+"#,
+    );
+    write(
+        &project.join("svelte.config.js"),
+        "export default { kit: { alias: { '$lib': './from-svelte' } } };\n",
+    );
+    write_minimal_tsconfig(&project);
+    write(&project.join("src/App.svelte"), "<p>hi</p>\n");
+
+    let RunOutput {
+        exit_code, stderr, ..
+    } = run_show_config(&project);
+
+    assert_eq!(exit_code, 0, "exit code should be 0, stderr: {stderr}");
+    assert!(
+        stderr.contains("kit.alias:") && stderr.contains("$lib") && stderr.contains("./from-vite"),
+        "expected vite.config alias (./from-vite) to win, got stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("./from-svelte"),
+        "svelte.config alias (./from-svelte) must NOT appear when vite.config yields options, got stderr:\n{stderr}"
+    );
+}
+
+/// Issue #3031 regression: a bare `sveltekit()` vite.config (no options object)
+/// yields nothing, so load() must fall through to svelte.config.js. This guards
+/// the existing sveltekit-bundler/nodenext/svelte-modules fixtures.
+#[test]
+fn test_bare_sveltekit_vite_config_falls_through_to_svelte_config() {
+    let project = make_project("vite_config_bare_sveltekit");
+    write(
+        &project.join("vite.config.ts"),
+        r#"import { defineConfig } from 'vite';
+import { sveltekit } from '@sveltejs/kit/vite';
+
+export default defineConfig({
+	plugins: [sveltekit()]
+});
+"#,
+    );
+    write(
+        &project.join("svelte.config.js"),
+        "export default { kit: { alias: { '$lib': './src/lib' } } };\n",
+    );
+    write_minimal_tsconfig(&project);
+    write(&project.join("src/App.svelte"), "<p>hi</p>\n");
+
+    let RunOutput {
+        exit_code, stderr, ..
+    } = run_show_config(&project);
+
+    assert_eq!(exit_code, 0, "exit code should be 0, stderr: {stderr}");
+    assert!(
+        stderr.contains("kit.alias:") && stderr.contains("$lib") && stderr.contains("./src/lib"),
+        "expected fall-through to svelte.config.js $lib alias when vite has only bare sveltekit(), got stderr:\n{stderr}"
     );
 }

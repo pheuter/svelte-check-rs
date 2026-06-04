@@ -647,6 +647,14 @@ impl TsgoRunner {
             "svelte.config.mjs",
             "svelte.config.ts",
             "svelte.config.mts",
+            // vite.config can now supply Svelte config options (#3031), so edits
+            // to it must also invalidate the sveltekit-sync skip manifest.
+            "vite.config.js",
+            "vite.config.mjs",
+            "vite.config.ts",
+            "vite.config.cjs",
+            "vite.config.mts",
+            "vite.config.cts",
         ];
         for name in config_candidates {
             let path = project_root.join(name);
@@ -2650,6 +2658,28 @@ mod tests {
         assert!(
             manifest.files.contains_key("svelte.config.mts"),
             "expected manifest to track svelte.config.mts, got keys: {:?}",
+            manifest.files.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_compute_sveltekit_sync_manifest_tracks_vite_config() {
+        // Issue #3031: a `vite.config.ts` can now supply Svelte config options,
+        // so it must be tracked by the sveltekit-sync skip manifest — editing it
+        // invalidates the manifest, consistent with the svelte.config.* entries.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let project_root =
+            Utf8PathBuf::try_from(temp_dir.path().to_path_buf()).expect("utf8 temp path");
+
+        let vite_config = project_root.join("vite.config.ts");
+        std::fs::write(&vite_config, b"export default {};\n").expect("vite config");
+
+        let manifest =
+            TsgoRunner::compute_sveltekit_sync_manifest(&project_root).expect("manifest");
+
+        assert!(
+            manifest.files.contains_key("vite.config.ts"),
+            "expected manifest to track vite.config.ts, got keys: {:?}",
             manifest.files.keys().collect::<Vec<_>>()
         );
     }
