@@ -51,6 +51,7 @@ type __SvelteCallableComponent<T> =
     : T;
 
 type __SvelteEachItem<T> =
+  0 extends (1 & T) ? any :
   T extends ArrayLike<infer U> ? U :
   T extends Iterable<infer U> ? U :
   never;
@@ -58,6 +59,9 @@ type __SvelteEachItem<T> =
 declare function __svelte_each_indexed<
   T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
 >(arr: T): [number, __SvelteEachItem<T>][];
+declare function __svelte_each<
+  T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+>(arr: T): __SvelteEachItem<NonNullable<T>>[];
 declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
 // Helper to get store value type from store subscription ($store syntax)
@@ -191,7 +195,7 @@ async function __svelte_render() {
 
 // === TEMPLATE TYPE-CHECK ===
   const __each_0 = data.filter((itm) => itm.value !== undefined);
-  for (const { title, value, unit, fmt = default_fmt } of __each_0) {
+  for (const { title, value, unit, fmt = default_fmt } of __svelte_each(__each_0)) {
     title + value + unit;
     title;
     fmt(value);
@@ -207,4 +211,4 @@ declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __
 export default __SvelteComponent_Test_;
 
 
-=== Source Map Mappings: 6 ===
+=== Source Map Mappings: 7 ===

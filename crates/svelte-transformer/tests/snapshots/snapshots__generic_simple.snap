@@ -45,6 +45,7 @@ type __SvelteCallableComponent<T> =
     : T;
 
 type __SvelteEachItem<T> =
+  0 extends (1 & T) ? any :
   T extends ArrayLike<infer U> ? U :
   T extends Iterable<infer U> ? U :
   never;
@@ -52,6 +53,9 @@ type __SvelteEachItem<T> =
 declare function __svelte_each_indexed<
   T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
 >(arr: T): [number, __SvelteEachItem<T>][];
+declare function __svelte_each<
+  T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined
+>(arr: T): __SvelteEachItem<NonNullable<T>>[];
 declare function __svelte_is_empty<T extends ArrayLike<unknown> | Iterable<unknown> | null | undefined>(arr: T): boolean;
 
 // Helper to get store value type from store subscription ($store syntax)
@@ -174,10 +178,11 @@ async function __svelte_render<T extends { id: string; label: string }>() {
         selected?: T;
     }>);
 
+;selected;
 
 // === TEMPLATE TYPE-CHECK ===
   const __each_0 = options;
-  for (const option of __each_0) {
+  for (const option of __svelte_each(__each_0)) {
     __svelte_create_element("button", {}, {
       onclick: () => selected = option,
     });
@@ -200,4 +205,4 @@ z_$$bindings?: any;
 export default __SvelteComponent_Select_;
 
 
-=== Source Map Mappings: 9 ===
+=== Source Map Mappings: 10 ===

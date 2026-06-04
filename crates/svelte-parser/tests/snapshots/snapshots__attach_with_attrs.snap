@@ -39,6 +39,8 @@ SvelteDocument {
                                         value: "container",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Attach(
@@ -52,6 +54,8 @@ SvelteDocument {
                                     end: 44,
                                 },
                                 expression: "myAttachment",
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Normal(
@@ -70,6 +74,8 @@ SvelteDocument {
                                         value: "main",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 24
 expression: output
 ---
 Source:
@@ -54,6 +55,8 @@ SvelteDocument {
                                                     is_quoted: false,
                                                 },
                                             ),
+                                            leading_comments: [],
+                                            trailing_comments: [],
                                         },
                                     ),
                                 ],

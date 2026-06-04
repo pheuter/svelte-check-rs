@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
+assertion_line: 9
 expression: output
 ---
 Source:
@@ -39,6 +40,8 @@ SvelteDocument {
                                         value: "https://example.com/foo",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],
@@ -81,6 +84,8 @@ SvelteDocument {
                                         value: "/",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

@@ -1,6 +1,6 @@
 ---
 source: crates/svelte-parser/tests/snapshots.rs
-assertion_line: 11
+assertion_line: 9
 expression: output
 ---
 Source:
@@ -73,6 +73,12 @@ SvelteDocument {
                             },
                             value: Some(
                                 "data",
+                            ),
+                            value_span: Some(
+                                Span {
+                                    start: 46,
+                                    end: 50,
+                                },
                             ),
                             body: Fragment {
                                 nodes: [

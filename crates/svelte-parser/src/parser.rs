@@ -20,6 +20,22 @@ fn is_void_element(name: &str) -> bool {
     HTML_VOID_ELEMENTS.contains(&name.to_lowercase().as_str())
 }
 
+/// Narrows a span to its non-whitespace content. `raw` is the original text the
+/// span covers; the returned span drops leading/trailing whitespace so a
+/// diagnostic maps to the trimmed token (e.g. the `value` of `{:then value}`).
+fn trim_span_to_content(raw: &str, span: Span) -> Span {
+    let leading = raw.len() - raw.trim_start().len();
+    let trailing = raw.len() - raw.trim_end().len();
+    let start = u32::from(span.start) + leading as u32;
+    let end = u32::from(span.end).saturating_sub(trailing as u32);
+    // Guard against degenerate spans (all whitespace): fall back to the original.
+    if start <= end {
+        Span::new(TextSize::from(start), TextSize::from(end))
+    } else {
+        span
+    }
+}
+
 /// Returns true if `parent` should be implicitly closed when an opening tag
 /// `<child>` is encountered. Mirrors HTML5 optional-end-tag rules.
 fn implicit_close_on_open(parent: &str, child: &str) -> bool {
@@ -1108,6 +1124,8 @@ impl<'src> Parser<'src> {
                     span: Span::new(attr_start, attr_end),
                     name,
                     value,
+                    leading_comments: Vec::new(),
+                    trailing_comments: Vec::new(),
                 }));
             } else {
                 // Unknown token inside the opening tag — skip it so we don't bail
@@ -1210,6 +1228,8 @@ impl<'src> Parser<'src> {
                     span: Span::new(attr_start, attr_end),
                     name,
                     value,
+                    leading_comments: Vec::new(),
+                    trailing_comments: Vec::new(),
                 }));
             } else {
                 // Unknown token inside the opening tag — skip it so we don't bail
@@ -1502,12 +1522,23 @@ impl<'src> Parser<'src> {
     }
 
     /// Parses element attributes.
+    ///
+    /// In-tag `// line` and `/* block */` comments are collected (instead of
+    /// discarded) and attached to the adjacent attribute as either leading
+    /// comments (the comment is followed by only whitespace before the next
+    /// attribute) or, for the final batch before the closing `>`, trailing
+    /// comments of the last attribute. This mirrors upstream svelte2tsx
+    /// `Comment.ts` so in-tag `// @ts-ignore` / `// eslint-disable` directives
+    /// can be re-emitted by the transformer and actually suppress diagnostics.
     fn parse_attributes(&mut self) -> Vec<Attribute> {
-        let mut attributes = Vec::new();
+        let mut attributes: Vec<Attribute> = Vec::new();
+        // Comments seen since the last attribute; become leading comments of the
+        // next attribute, or trailing comments of the last attribute at the end.
+        let mut pending: Vec<TagComment> = Vec::new();
 
         loop {
             self.skip_whitespace();
-            self.skip_tag_comments();
+            pending.extend(self.collect_tag_comments());
 
             if self.check(TokenKind::RAngle)
                 || self.check(TokenKind::SlashRAngle)
@@ -1516,48 +1547,87 @@ impl<'src> Parser<'src> {
                 break;
             }
 
-            if let Some(attr) = self.parse_attribute() {
+            if let Some(mut attr) = self.parse_attribute() {
+                if !pending.is_empty() {
+                    attr.set_leading_comments(std::mem::take(&mut pending));
+                }
                 attributes.push(attr);
             } else {
                 break;
             }
         }
 
+        // Any comments remaining after the last attribute and before the closing
+        // `>`/`/>` are trailing comments of the last attribute. Mirrors upstream
+        // `handleTrailingEndComment`, which drops them when there is no previous
+        // attribute to attach to.
+        if !pending.is_empty() {
+            if let Some(last) = attributes.last_mut() {
+                last.set_trailing_comments(pending);
+            }
+        }
+
         attributes
     }
 
-    /// Skips `// line` and `/* block */` comments that may appear between
-    /// attributes inside an element opening tag.
-    fn skip_tag_comments(&mut self) {
+    /// Collects consecutive `// line` and `/* block */` comments that may appear
+    /// between attributes inside an element opening tag, returning them (and the
+    /// any interleaved whitespace skipped along the way is consumed too).
+    ///
+    /// Previously these comments were silently discarded; now they are captured
+    /// so the transformer can re-emit them.
+    fn collect_tag_comments(&mut self) -> Vec<TagComment> {
+        let mut comments = Vec::new();
         loop {
             let offset = u32::from(self.current().span.start) as usize;
             let bytes = self.source.as_bytes();
             if offset + 1 >= bytes.len() || bytes[offset] != b'/' {
-                return;
+                return comments;
             }
-            let end_offset = match bytes[offset + 1] {
-                b'/' => {
-                    // Line comment: consume to next newline (exclusive).
-                    let mut e = offset + 2;
-                    while e < bytes.len() && bytes[e] != b'\n' {
-                        e += 1;
-                    }
-                    e
-                }
-                b'*' => {
-                    // Block comment: consume to closing `*/`.
-                    let mut e = offset + 2;
-                    while e + 1 < bytes.len() && !(bytes[e] == b'*' && bytes[e + 1] == b'/') {
-                        e += 1;
-                    }
-                    if e + 1 < bytes.len() {
-                        e + 2
-                    } else {
-                        bytes.len()
-                    }
-                }
-                _ => return,
+            let is_line = match bytes[offset + 1] {
+                b'/' => true,
+                b'*' => false,
+                _ => return comments,
             };
+            let end_offset = if is_line {
+                // Line comment: consume to next newline (exclusive).
+                let mut e = offset + 2;
+                while e < bytes.len() && bytes[e] != b'\n' {
+                    e += 1;
+                }
+                e
+            } else {
+                // Block comment: consume to closing `*/`.
+                let mut e = offset + 2;
+                while e + 1 < bytes.len() && !(bytes[e] == b'*' && bytes[e + 1] == b'/') {
+                    e += 1;
+                }
+                if e + 1 < bytes.len() {
+                    e + 2
+                } else {
+                    bytes.len()
+                }
+            };
+
+            // Determine whether only whitespace ending in a newline precedes the
+            // comment (upstream's `newline` flag).
+            let preceding = &self.source[..offset];
+            let has_newline_before = {
+                let trimmed = preceding.trim_end_matches([' ', '\t']);
+                trimmed.ends_with('\n') || trimmed.ends_with('\r')
+            };
+
+            let text = self.source[offset..end_offset].to_string();
+            comments.push(TagComment {
+                span: Span::new(
+                    TextSize::from(offset as u32),
+                    TextSize::from(end_offset as u32),
+                ),
+                text,
+                is_line,
+                has_newline_before,
+            });
+
             let end = TextSize::from(end_offset as u32);
             while !self.check(TokenKind::Eof) && self.current().span.end <= end {
                 self.advance();
@@ -1633,6 +1703,8 @@ impl<'src> Parser<'src> {
                         name: SmolStr::new(&full_name[2..]), // Strip the leading --
                         value,
                         span: Span::new(start, end),
+                        leading_comments: Vec::new(),
+                        trailing_comments: Vec::new(),
                     });
                 }
             }
@@ -1915,6 +1987,8 @@ impl<'src> Parser<'src> {
                 name: SmolStr::new(remaining),
                 modifiers,
                 expression,
+                leading_comments: Vec::new(),
+                trailing_comments: Vec::new(),
             }));
         }
 
@@ -1936,6 +2010,8 @@ impl<'src> Parser<'src> {
             span: Span::new(start, end),
             name,
             value,
+            leading_comments: Vec::new(),
+            trailing_comments: Vec::new(),
         }))
     }
 
@@ -2201,11 +2277,15 @@ impl<'src> Parser<'src> {
                 span: Span::new(start, end),
                 expression_span: expr_span,
                 expression: spread_expr.to_string(),
+                leading_comments: Vec::new(),
+                trailing_comments: Vec::new(),
             }))
         } else {
             Some(Attribute::Shorthand(ShorthandAttribute {
                 span: Span::new(start, end),
                 name: SmolStr::new(expr.trim()),
+                leading_comments: Vec::new(),
+                trailing_comments: Vec::new(),
             }))
         }
     }
@@ -2244,6 +2324,8 @@ impl<'src> Parser<'src> {
             span: Span::new(start, end),
             expression_span: expr_span,
             expression: expr,
+            leading_comments: Vec::new(),
+            trailing_comments: Vec::new(),
         }))
     }
 
@@ -2758,99 +2840,117 @@ impl<'src> Parser<'src> {
                     expr_start,
                     TextSize::from(u32::from(expr_start) + then_pos as u32),
                 );
-                let then_value = full_expr[then_pos + 6..].trim().to_string(); // " then " is 6 chars
-                (expr, expr_span, Some(then_value))
+                // " then " is 6 chars; span of the raw value substring (untrimmed)
+                // so trim_span_to_content can recover the exact binding span.
+                let value_raw = full_expr[then_pos + 6..].to_string();
+                let value_raw_span = Span::new(
+                    TextSize::from(u32::from(expr_start) + (then_pos + 6) as u32),
+                    TextSize::from(u32::from(expr_start) + full_expr.len() as u32),
+                );
+                (expr, expr_span, Some((value_raw, value_raw_span)))
             } else {
                 (full_expr.trim().to_string(), full_span, None)
             };
 
         // Parse pending content or body
-        let (pending, then, catch) = if let Some(then_value) = immediate_then {
-            let then_start = self.current().span.start;
-            let body = self.parse_block_children(&["{:catch", "{/await"]);
-            let then_end = self.current().span.start;
-
-            let catch_block = if self.check_source("{:catch") {
-                let catch_start = self.current().span.start;
-                self.eat(TokenKind::LBraceColon); // {:
-                self.eat(TokenKind::Catch); // catch
-                let (error_name, _) = self.read_expression_until('}');
-                self.eat(TokenKind::RBrace);
-                let catch_body = self.parse_block_children(&["{/await"]);
-                let catch_end = self.current().span.start;
-                Some(AwaitCatch {
-                    span: Span::new(catch_start, catch_end),
-                    error: if error_name.trim().is_empty() {
-                        None
-                    } else {
-                        Some(SmolStr::new(error_name.trim()))
-                    },
-                    body: catch_body,
-                })
-            } else {
-                None
-            };
-
-            (
-                None,
-                Some(AwaitThen {
-                    span: Span::new(then_start, then_end),
-                    value: if then_value.is_empty() {
-                        None
-                    } else {
-                        Some(SmolStr::new(then_value))
-                    },
-                    body,
-                }),
-                catch_block,
-            )
-        } else {
-            let pending = self.parse_block_children(&["{:then", "{:catch", "{/await"]);
-
-            let then_block = if self.check_source("{:then") {
+        let (pending, then, catch) =
+            if let Some((then_value_raw, then_value_raw_span)) = immediate_then {
+                let then_value = then_value_raw.trim().to_string();
                 let then_start = self.current().span.start;
-                self.eat(TokenKind::LBraceColon); // {:
-                self.eat(TokenKind::Then); // then
-                let (value_name, _) = self.read_expression_until('}');
-                self.eat(TokenKind::RBrace);
-                let then_body = self.parse_block_children(&["{:catch", "{/await"]);
+                let body = self.parse_block_children(&["{:catch", "{/await"]);
                 let then_end = self.current().span.start;
-                Some(AwaitThen {
-                    span: Span::new(then_start, then_end),
-                    value: if value_name.trim().is_empty() {
-                        None
-                    } else {
-                        Some(SmolStr::new(value_name.trim()))
-                    },
-                    body: then_body,
-                })
-            } else {
-                None
-            };
 
-            let catch_block = if self.check_source("{:catch") {
-                let catch_start = self.current().span.start;
-                self.eat(TokenKind::LBraceColon); // {:
-                self.eat(TokenKind::Catch); // catch
-                let (error_name, _) = self.read_expression_until('}');
-                self.eat(TokenKind::RBrace);
-                let catch_body = self.parse_block_children(&["{/await"]);
-                let catch_end = self.current().span.start;
-                Some(AwaitCatch {
-                    span: Span::new(catch_start, catch_end),
-                    error: if error_name.trim().is_empty() {
-                        None
-                    } else {
-                        Some(SmolStr::new(error_name.trim()))
-                    },
-                    body: catch_body,
-                })
-            } else {
-                None
-            };
+                let catch_block = if self.check_source("{:catch") {
+                    let catch_start = self.current().span.start;
+                    self.eat(TokenKind::LBraceColon); // {:
+                    self.eat(TokenKind::Catch); // catch
+                    let (error_name, _) = self.read_expression_until('}');
+                    self.eat(TokenKind::RBrace);
+                    let catch_body = self.parse_block_children(&["{/await"]);
+                    let catch_end = self.current().span.start;
+                    Some(AwaitCatch {
+                        span: Span::new(catch_start, catch_end),
+                        error: if error_name.trim().is_empty() {
+                            None
+                        } else {
+                            Some(SmolStr::new(error_name.trim()))
+                        },
+                        body: catch_body,
+                    })
+                } else {
+                    None
+                };
 
-            (Some(pending), then_block, catch_block)
-        };
+                (
+                    None,
+                    Some(AwaitThen {
+                        span: Span::new(then_start, then_end),
+                        value: if then_value.is_empty() {
+                            None
+                        } else {
+                            Some(SmolStr::new(&then_value))
+                        },
+                        value_span: if then_value.is_empty() {
+                            None
+                        } else {
+                            Some(trim_span_to_content(&then_value_raw, then_value_raw_span))
+                        },
+                        body,
+                    }),
+                    catch_block,
+                )
+            } else {
+                let pending = self.parse_block_children(&["{:then", "{:catch", "{/await"]);
+
+                let then_block = if self.check_source("{:then") {
+                    let then_start = self.current().span.start;
+                    self.eat(TokenKind::LBraceColon); // {:
+                    self.eat(TokenKind::Then); // then
+                    let (value_name, value_raw_span) = self.read_expression_until('}');
+                    self.eat(TokenKind::RBrace);
+                    let then_body = self.parse_block_children(&["{:catch", "{/await"]);
+                    let then_end = self.current().span.start;
+                    let (value, value_span) = if value_name.trim().is_empty() {
+                        (None, None)
+                    } else {
+                        (
+                            Some(SmolStr::new(value_name.trim())),
+                            Some(trim_span_to_content(&value_name, value_raw_span)),
+                        )
+                    };
+                    Some(AwaitThen {
+                        span: Span::new(then_start, then_end),
+                        value,
+                        value_span,
+                        body: then_body,
+                    })
+                } else {
+                    None
+                };
+
+                let catch_block = if self.check_source("{:catch") {
+                    let catch_start = self.current().span.start;
+                    self.eat(TokenKind::LBraceColon); // {:
+                    self.eat(TokenKind::Catch); // catch
+                    let (error_name, _) = self.read_expression_until('}');
+                    self.eat(TokenKind::RBrace);
+                    let catch_body = self.parse_block_children(&["{/await"]);
+                    let catch_end = self.current().span.start;
+                    Some(AwaitCatch {
+                        span: Span::new(catch_start, catch_end),
+                        error: if error_name.trim().is_empty() {
+                            None
+                        } else {
+                            Some(SmolStr::new(error_name.trim()))
+                        },
+                        body: catch_body,
+                    })
+                } else {
+                    None
+                };
+
+                (Some(pending), then_block, catch_block)
+            };
 
         // Expect {/await}
         self.eat(TokenKind::LBraceSlash);

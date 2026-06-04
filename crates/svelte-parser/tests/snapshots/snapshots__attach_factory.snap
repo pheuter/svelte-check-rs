@@ -34,6 +34,8 @@ SvelteDocument {
                                     end: 55,
                                 },
                                 expression: "tooltip(content, { placement: 'top' })",
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

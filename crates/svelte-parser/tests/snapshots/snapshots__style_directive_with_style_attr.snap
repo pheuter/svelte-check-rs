@@ -39,6 +39,8 @@ SvelteDocument {
                                         value: "font-size: 16px",
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Directive(
@@ -64,6 +66,8 @@ SvelteDocument {
                                         is_quoted: true,
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Directive(
@@ -89,6 +93,8 @@ SvelteDocument {
                                         is_quoted: false,
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

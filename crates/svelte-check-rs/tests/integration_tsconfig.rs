@@ -429,6 +429,16 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2322",
             message_contains: "not assignable",
         },
+        // Issue #2942 source-map drift fixture: an out-of-root import that grows
+        // when rewritten, followed by a deliberate TS2322 on a later line. The
+        // diagnostic must map to the correct line/column (see
+        // integration_external_imports::test_external_import_drift_maps_correct_column).
+        ExpectedError {
+            filename: "src/routes/issue-2942-drift/+page.svelte",
+            line: 13,
+            code: "TS2322",
+            message_contains: "not assignable",
+        },
         // Route-group path diagnostic parser regression (intentional negative case)
         ExpectedError {
             filename: "src/routes/(issue-tsgo-parentheses)/route/+page.svelte",
@@ -527,6 +537,127 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             line: 13,
             code: "TS2322",
             message_contains: "null",
+        },
+        // Parity fixture: SvelteKit zero-types JSDoc transform helpers must
+        // emit JSDoc (`@param {PageLoadEvent}`) rather than TS type
+        // annotations in checked `.js` route files. The injected JSDoc
+        // resolves to the *real* `PageLoadEvent`, so reading the
+        // non-existent `event.bogus` surfaces a genuine TS2339 (proving the
+        // type was not silently widened to `any`) — see upstream b914d010.
+        ExpectedError {
+            filename: "src/routes/issue-parity-jsdoc/+page.js",
+            line: 20,
+            code: "TS2339",
+            message_contains: "bogus",
+        },
+        // Parity fixture #2946 (upstream d69eb726): a checked `.js` `load`
+        // const already carrying a leading JSDoc `@satisfies {PageLoad}` tag.
+        // The route transform must detect the existing tag and skip injecting
+        // a duplicate `@param`/`@satisfies`, so the user's `@satisfies`
+        // resolves the inferred `event` to the real `PageLoadEvent`. Reading
+        // the non-existent `event.bogus` therefore surfaces a genuine TS2339
+        // (proving the type was not widened to `any` and no duplicate
+        // injection broke checking).
+        ExpectedError {
+            filename: "src/routes/issue-2946-jsdoc-satisfies/+page.js",
+            line: 18,
+            code: "TS2339",
+            message_contains: "bogus",
+        },
+        // Parity fixture #2946 server companion: the same checked `.js` JSDoc
+        // `@satisfies` detection applies to `+page.server.js`. The user's leading
+        // `@satisfies {Actions}` is left untouched, so the default action's
+        // `event` is contextually the real `RequestEvent`. Reading the
+        // non-existent `event.bogus` surfaces a genuine TS2339 — proving the
+        // retained tag resolves to real Kit types, not `any`, and that no
+        // duplicate injection broke checking.
+        ExpectedError {
+            filename: "src/routes/issue-2946-jsdoc-satisfies/+page.server.js",
+            line: 23,
+            code: "TS2339",
+            message_contains: "bogus",
+        },
+        // Issue #2863 NEGATIVE / lock-in: loosening `{#each}` to accept
+        // `null`/`undefined` (upstream 7468286a) must NOT swallow a genuine
+        // non-iterable. A plain `number` still violates the
+        // `__svelte_each`/`__svelte_each_indexed` constraint, so each block must
+        // still surface TS2345 — mapped back to the iterable expression.
+        // Line 13: `{#each n as x}` (non-indexed → __svelte_each).
+        ExpectedError {
+            filename: "src/routes/issue-2863-each-noniterable/+page.svelte",
+            line: 13,
+            code: "TS2345",
+            message_contains: "ArrayLike",
+        },
+        // Line 19: `{#each n as y, i (i)}` (indexed + keyed → __svelte_each_indexed).
+        ExpectedError {
+            filename: "src/routes/issue-2863-each-noniterable/+page.svelte",
+            line: 19,
+            code: "TS2345",
+            message_contains: "ArrayLike",
+        },
+        // Issue #2895 NEGATIVE / lock-in: a `{:then}` binding annotation that
+        // disagrees with the resolved type is preserved and type-checked, not
+        // erased. The promise resolves to `number` but `{:then v: string}`
+        // annotates `string`, so TS2322 must surface — mapped back to the
+        // `{:then ...}` source binding.
+        ExpectedError {
+            filename: "src/routes/issue-2895-await-wrong-annotation/+page.svelte",
+            line: 13,
+            code: "TS2322",
+            message_contains: "not assignable",
+        },
+        // Issue #2950 control case: an in-tag `// @ts-ignore` must suppress the
+        // diagnostic only on the attribute it precedes. This second `<div>` has
+        // the identical `dir={x}` mismatch (boolean assigned to a string-union
+        // attribute) WITHOUT the comment, so it must still surface TS2322 —
+        // proving the suppression is targeted, not blanket.
+        ExpectedError {
+            filename: "src/routes/issue-2950-ts-ignore-attribute/+page.svelte",
+            line: 16,
+            code: "TS2322",
+            message_contains: "not assignable",
+        },
+        // Issue #2950 (directives) control cases: each in-tag `// @ts-ignore`
+        // suppresses only the directive/attach/bind:this it precedes. These
+        // three `<div>`s repeat the identical mismatches WITHOUT the comment, so
+        // they must still surface their respective TS errors — proving the
+        // in-tag comment passthrough suppression is targeted, not blanket.
+        // Line 48: `use:badAction` where `badAction` is a number (not callable).
+        ExpectedError {
+            filename: "src/routes/issue-2950-directives/+page.svelte",
+            line: 48,
+            code: "TS2349",
+            message_contains: "not callable",
+        },
+        // Line 49: `{@attach badAttach}` where `badAttach` is a number, not an
+        // attachment function.
+        ExpectedError {
+            filename: "src/routes/issue-2950-directives/+page.svelte",
+            line: 49,
+            code: "TS2345",
+            message_contains: "not assignable",
+        },
+        // Line 50: `bind:this={wrongTypedRef}` where `wrongTypedRef` is typed as
+        // `string`, but the element ref is an `HTMLDivElement`.
+        ExpectedError {
+            filename: "src/routes/issue-2950-directives/+page.svelte",
+            line: 50,
+            code: "TS2322",
+            message_contains: "not assignable",
+        },
+        // Issue #2939 `.js` param-matcher consumer (intentional negative case):
+        // the `.js` matcher in `src/params/restrictedjs.js` narrows `params.slug`
+        // to `"js-a" | "js-b"` via its inferred type predicate. That predicate
+        // must survive the JSDoc `@satisfies {ParamMatcher}` cast the `.js`
+        // transform emits, so assigning the narrow value to the non-overlapping
+        // literal `'nope'` surfaces a genuine TS2322 — proving the predicate is
+        // preserved (not silently widened to `string`).
+        ExpectedError {
+            filename: "src/routes/issue-2939-js-params-matcher/[slug=restrictedjs]/+page.svelte",
+            line: 19,
+            code: "TS2322",
+            message_contains: "is not assignable to type '\"nope\"'",
         },
     ]
 }
@@ -1026,8 +1157,19 @@ fn test_all_configs_have_expected_error_counts() {
         .count();
 
     // Bundler: 10 original + 3 use directive + 2 snippet generic + 1 issue-68
-    // + 1 route-group + 1 issue-74 + 3 parity (matcher + +server.ts + bind) = 21
-    assert_eq!(bundler_errors, 21, "Bundler should have exactly 21 errors");
+    // + 1 route-group + 1 issue-74
+    // + 5 parity (matcher + +server.ts + bind + jsdoc zero-types
+    //   + #2946 jsdoc-satisfies)
+    // + 1 issue-2950 attribute control case (in-tag @ts-ignore suppression is targeted)
+    // + 3 issue-2950 directive control cases (use:/{@attach}/bind:this targeted)
+    // + 1 issue-2942-drift (TS2322 after a grown out-of-root import, source-map
+    //   drift fixture)
+    // + 1 issue-2939 `.js` param-matcher consumer (TS2322 negative case proving the
+    //   matcher's inferred predicate survives the JSDoc @satisfies cast)
+    // + 1 #2946 server companion (+page.server.js event.bogus TS2339)
+    // + 2 #2863 each non-iterable lock-in (TS2345 non-indexed + indexed/keyed)
+    // + 1 #2895 await wrong-annotation lock-in (TS2322) = 33
+    assert_eq!(bundler_errors, 33, "Bundler should have exactly 33 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"
@@ -1579,4 +1721,149 @@ fn test_bundler_extends_array_matches_single_string_errors() {
     // `"./.svelte-kit/tsconfig.json"` that the rest of the suite asserts on.
     assert_exact_errors(&diagnostics, &bundler_expected_errors());
     assert_ne!(exit_code, 0, "Expected non-zero exit code due to errors");
+}
+
+// ============================================================================
+// tsconfig.json DIAGNOSTICS (#3005)
+// ============================================================================
+//
+// `tsconfig.badlib.json` lives next to `tsconfig.json` in the sveltekit-bundler
+// fixture and sets `compilerOptions.lib` to an invalid value (`["NOT_A_LIB"]`).
+// tsc emits a *positionless* `error TS2318: Cannot find global type 'X'.` for
+// every missing global plus a positioned `tsconfig.json(...): error TS6046`
+// options diagnostic. Before #3005, the positionless lines were silently
+// dropped (the parser only recognized `file(line,col):` prefixes). Now they are
+// attributed to the resolved tsconfig path and — in normal mode — downgraded
+// from Error to Warning so config diagnostics surface without breaking exit
+// codes (parity with upstream's "TODO: enable as error in svelte-check v5").
+
+#[test]
+#[serial]
+fn test_bundler_tsconfig_badlib_reports_lib_error_and_global_warnings() {
+    let (exit_code, diagnostics, _stderr) = run_check_json_with_args(
+        "sveltekit-bundler",
+        false,
+        &["--tsconfig", "tsconfig.badlib.json"],
+    );
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // Scope to the tsconfig itself; the broken `lib` may also affect source
+    // files, so we only assert on diagnostics attributed to the config file.
+    let config_diagnostics: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| d.filename == "tsconfig.badlib.json")
+        .collect();
+
+    assert!(
+        !config_diagnostics.is_empty(),
+        "Expected tsconfig diagnostics to be surfaced (was silently dropped before #3005).\nActual ts diagnostics:\n{:#?}",
+        ts_diagnostics
+    );
+
+    // The `--lib` value error (TS6046) is produced while *parsing* the config
+    // (it lands in `parsedCommandLine.errors`), so upstream keeps it an Error.
+    let lib_error = config_diagnostics
+        .iter()
+        .find(|d| d.code == "TS6046")
+        .unwrap_or_else(|| {
+            panic!(
+                "Expected the invalid `--lib` diagnostic (TS6046) on the tsconfig.\nActual config diagnostics:\n{:#?}",
+                config_diagnostics
+            )
+        });
+    assert_eq!(
+        lib_error.diagnostic_type, "Error",
+        "the invalid-`lib` config-parse diagnostic (TS6046) must stay an Error (got {})",
+        lib_error.diagnostic_type
+    );
+
+    // The positionless global-type error (TS2318) is a program global
+    // diagnostic, so it must be downgraded to a Warning, not an Error.
+    let global = config_diagnostics
+        .iter()
+        .find(|d| d.code == "TS2318")
+        .unwrap_or_else(|| {
+            panic!(
+                "Expected a positionless TS2318 diagnostic on the tsconfig.\nActual config diagnostics:\n{:#?}",
+                config_diagnostics
+            )
+        });
+    assert_eq!(
+        global.diagnostic_type, "Warning",
+        "tsconfig global-type diagnostic (TS2318) must be downgraded to Warning (got {})",
+        global.diagnostic_type
+    );
+
+    // Per upstream's Error/Warning split: TS6046 (configError) stays an Error,
+    // every other tsconfig-attributed diagnostic (the TS2318 globals) is a
+    // downgraded Warning.
+    for d in &config_diagnostics {
+        let expected = if d.code == "TS6046" {
+            "Error"
+        } else {
+            "Warning"
+        };
+        assert_eq!(
+            d.diagnostic_type, expected,
+            "tsconfig diagnostic {} must be a {}, got {}",
+            d.code, expected, d.diagnostic_type
+        );
+    }
+
+    // A fatal `--lib` config error must fail the check with a non-zero exit.
+    assert_ne!(
+        exit_code, 0,
+        "Expected non-zero exit code when the tsconfig has a fatal `--lib` error"
+    );
+}
+
+// `tsconfig.fatalconfig.json` lives next to `tsconfig.json` in the
+// sveltekit-bundler fixture and `extends` a nonexistent file
+// (`./does-not-exist.json`). This is a GENUINELY FATAL tsconfig-parse error:
+// tsc/tsgo emit a positionless `error TS5083: Cannot read file '...'`.
+//
+// Upstream svelte-check (commit a5539632, #3005) splits config diagnostics:
+// fatal `configErrors` (the parse errors that surface via reportConfigError —
+// e.g. an unreadable `extends` target TS5083, no-inputs TS18003, or the
+// invalid-`lib` value error TS6046) stay ERRORS and fail the check, while only
+// program global/options diagnostics (the invalid-lib global type error
+// TS2318) are downgraded to Warning. Before this fix,
+// `downgrade_and_dedup_tsconfig_diagnostics` downgraded EVERY tsconfig-attributed
+// diagnostic to Warning, so under the default `error` threshold a fatal
+// misconfiguration was filtered out entirely and the check passed with exit 0.
+//
+// This test asserts the TS5083 diagnostic stays an Error and the run exits
+// non-zero, matching upstream's Error/Warning split.
+#[test]
+#[serial]
+fn test_bundler_tsconfig_fatal_extends_reports_error() {
+    let (exit_code, diagnostics, _stderr) = run_check_json_with_args(
+        "sveltekit-bundler",
+        false,
+        &["--tsconfig", "tsconfig.fatalconfig.json"],
+    );
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // The fatal missing-`extends`-target diagnostic must be present, attributed
+    // to the tsconfig file, and reported as an Error (NOT downgraded).
+    let fatal = ts_diagnostics
+        .iter()
+        .find(|d| d.code == "TS5083" && d.filename == "tsconfig.fatalconfig.json")
+        .unwrap_or_else(|| {
+            panic!(
+                "Expected a fatal TS5083 diagnostic on tsconfig.fatalconfig.json.\nActual ts diagnostics:\n{:#?}",
+                ts_diagnostics
+            )
+        });
+    assert_eq!(
+        fatal.diagnostic_type, "Error",
+        "fatal tsconfig parse error (TS5083) must stay an Error, got {}",
+        fatal.diagnostic_type
+    );
+
+    // A fatal misconfiguration must fail the check with a non-zero exit code.
+    assert_ne!(
+        exit_code, 0,
+        "Expected non-zero exit code for a fatal tsconfig error"
+    );
 }

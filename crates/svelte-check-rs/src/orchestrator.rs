@@ -7,7 +7,7 @@ use bun_runner::{
     BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunExperimentalOptions, BunInput,
     BunRunner,
 };
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
 use source_map::LineIndex;
@@ -266,6 +266,42 @@ pub enum OrchestratorError {
     CompilerConfigError(String),
 }
 
+/// Lexically normalizes a path: drops `.` components and resolves `..` against
+/// preceding normal components, without touching the filesystem.
+///
+/// `current_dir().join("./apps/foo")` yields a path with an embedded `/./`
+/// segment, while the cache/`generated_path` is clean. The out-of-root import
+/// rewrite (#2942) compares these paths, so an un-normalized `.`/`..` in the
+/// workspace root makes in-workspace imports look "outside" and get mangled
+/// (regression seen on monorepo apps invoked with `--workspace ./apps/...`).
+/// Normalizing the workspace root once keeps every downstream path consistent.
+fn normalize_lexical(path: &Utf8Path) -> Utf8PathBuf {
+    let mut out = Utf8PathBuf::new();
+    let mut normal_depth = 0usize;
+    for comp in path.components() {
+        match comp {
+            Utf8Component::CurDir => {}
+            Utf8Component::ParentDir => {
+                if normal_depth > 0 {
+                    out.pop();
+                    normal_depth -= 1;
+                } else if out.as_str().is_empty() {
+                    out.push("..");
+                }
+            }
+            Utf8Component::Normal(segment) => {
+                out.push(segment);
+                normal_depth += 1;
+            }
+            root_or_prefix => out.push(root_or_prefix.as_str()),
+        }
+    }
+    if out.as_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
 /// Runs the check on all files.
 pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     let workspace = if args.workspace.is_relative() {
@@ -276,6 +312,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     } else {
         args.workspace.clone()
     };
+    let workspace = normalize_lexical(&workspace);
 
     // Load configuration
     let svelte_config = SvelteConfig::load(&workspace);
@@ -542,6 +579,14 @@ async fn run_single_check(
 
     let svelte_start = Instant::now();
 
+    // Resolve the cache root once so each transform can compute the eventual
+    // generated `.svelte.ts` path. This lets the transformer rewrite relative
+    // imports reaching outside the workspace so they resolve from the generated
+    // cache location (issue #2942). Falls back to `None` (no rewrite) if the
+    // cache root can't be resolved (e.g. node_modules not found).
+    let cache_root: Option<Utf8PathBuf> = TsgoRunner::project_cache_root(workspace).ok();
+    let workspace_path_str = workspace.to_string();
+
     // Process component files (.svelte) in parallel: parse, run Svelte diagnostics, and transform
     let component_results: Vec<FileResult> = component_files
         .par_iter()
@@ -604,11 +649,20 @@ async fn run_single_check(
             if should_transform {
                 let virtual_path = virtual_path_for(file_path, workspace, true);
                 let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
+                // Absolute path the transformed file will eventually be written
+                // to in the cache (matches `cache_root.join(virtual_path)` in
+                // TsgoRunner::check). Used to rewrite out-of-root imports.
+                let generated_path = cache_root
+                    .as_ref()
+                    .map(|root| root.join(&virtual_path).to_string());
+                let workspace_path = generated_path.as_ref().map(|_| workspace_path_str.clone());
                 let transform_options = TransformOptions {
                     filename: Some(file_path.to_string()),
                     source_maps: true,
                     use_nodenext_imports,
                     helpers_import_path: Some(helpers_import),
+                    workspace_path,
+                    generated_path,
                 };
 
                 let transform_result = transform(&parse_result.document, transform_options);
@@ -727,8 +781,19 @@ async fn run_single_check(
             // Transform module file (runes only, no template/styles)
             let virtual_path = virtual_path_for(file_path, workspace, false);
             let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
-            let transform_result =
-                transform_module(&source, Some(file_path.as_str()), Some(helpers_import));
+            // (workspace_path, generated_path) for out-of-root import rewriting.
+            let external_imports = cache_root.as_ref().map(|root| {
+                (
+                    workspace_path_str.clone(),
+                    root.join(&virtual_path).to_string(),
+                )
+            });
+            let transform_result = transform_module(
+                &source,
+                Some(file_path.as_str()),
+                Some(helpers_import),
+                external_imports,
+            );
 
             // Collect any errors from invalid rune usage (e.g., $props in module files)
             let mut all_diagnostics: Vec<svelte_diagnostics::Diagnostic> = Vec::new();
@@ -1222,6 +1287,13 @@ fn bun_worker_count() -> usize {
 }
 
 /// Formats TypeScript diagnostics for output.
+///
+/// Positionless tsconfig diagnostics (`position_unknown`, e.g. options/global
+/// errors like `error TS2318`) carry a zero line/column and an absolute
+/// tsconfig path; they are intentionally printed at `line/col 0` with no source
+/// snippet (this formatter never renders snippets), which is the scr analog of
+/// upstream's `writers.ts` `positionUnknown` suppression. The absolute tsconfig
+/// path is stripped to a workspace-relative path below (e.g. `tsconfig.json`).
 fn format_ts_diagnostics(
     diagnostics: &[TsgoDiagnostic],
     workspace: &Utf8Path,
@@ -1812,6 +1884,28 @@ mod tests {
         let file = workspace.join("src/lib/Foo.svelte.ts");
         let key = virtual_path_for(&file, &workspace, false);
         assert_eq!(key.as_str(), "src/lib/Foo.svelte.ts");
+    }
+
+    #[test]
+    fn test_normalize_lexical_strips_dot_and_dotdot() {
+        // Regression (careswitch monorepo): `--workspace ./apps/x` becomes
+        // `current_dir()/./apps/x` with an embedded `/./`. The cache path is
+        // clean, so the #2942 import rewrite compared mismatched paths and
+        // mangled in-workspace imports. The workspace root must be normalized.
+        //
+        // Compare in forward-slash form so the assertions hold on Windows too
+        // (camino joins with `\` there; the `.`/`..` collapsing is what matters).
+        let norm = |p: &str| {
+            normalize_lexical(Utf8Path::new(p))
+                .as_str()
+                .replace('\\', "/")
+        };
+        assert_eq!(norm("/repo/./apps/x"), "/repo/apps/x");
+        assert_eq!(norm("/a/b/../c"), "/a/c");
+        assert_eq!(norm("/a/./b/./c"), "/a/b/c");
+        assert_eq!(norm("a/../b"), "b");
+        // A clean absolute path is unchanged.
+        assert_eq!(norm("/Users/x/apps/web"), "/Users/x/apps/web");
     }
 
     #[test]

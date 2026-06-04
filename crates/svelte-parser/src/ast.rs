@@ -230,6 +230,30 @@ pub struct Comment {
     pub data: String,
 }
 
+/// A JS-style comment (`// line` or `/* block */`) that appears between
+/// attributes inside an element/component opening tag.
+///
+/// Mirrors upstream svelte2tsx `Comment.ts`: these are captured during
+/// attribute parsing and attached to the adjacent attribute as either a
+/// leading or trailing comment so the transformer can emit them into the
+/// generated TypeScript. That makes in-tag `// @ts-ignore` /
+/// `// eslint-disable-next-line` directives actually suppress diagnostics on
+/// the attribute they annotate.
+#[derive(Debug, Clone)]
+pub struct TagComment {
+    /// The span of the comment, including the `//` or `/* */` delimiters.
+    pub span: Span,
+    /// The raw source text of the comment, including delimiters. For line
+    /// comments this does NOT include the trailing newline.
+    pub text: String,
+    /// `true` for a `// line` comment, `false` for a `/* block */` comment.
+    pub is_line: bool,
+    /// Whether only whitespace ending in a newline precedes the comment
+    /// (mirrors upstream's `newline` flag). Used to decide a newline vs. space
+    /// separator when emitting trailing comments.
+    pub has_newline_before: bool,
+}
+
 /// An expression tag `{expr}`.
 #[derive(Debug, Clone)]
 pub struct ExpressionTag {
@@ -385,6 +409,9 @@ pub struct AwaitThen {
     pub span: Span,
     /// The value variable name.
     pub value: Option<SmolStr>,
+    /// The span of the value binding (including any `: Type` annotation), used to
+    /// map a type-mismatch on the binding back to the `{:then ...}` source.
+    pub value_span: Option<Span>,
     /// The content.
     pub body: Fragment,
 }
@@ -449,6 +476,11 @@ pub enum Attribute {
         value: Option<AttributeValue>,
         /// The span of the entire attribute.
         span: Span,
+        /// In-tag comments immediately preceding this attribute.
+        leading_comments: Vec<TagComment>,
+        /// In-tag comments immediately following this attribute (when it is the
+        /// last attribute before `>`).
+        trailing_comments: Vec<TagComment>,
     },
 }
 
@@ -464,6 +496,63 @@ impl Attribute {
             Attribute::CssCustomProperty { span, .. } => *span,
         }
     }
+
+    /// Returns the in-tag comments that immediately precede this attribute.
+    pub fn leading_comments(&self) -> &[TagComment] {
+        match self {
+            Attribute::Normal(a) => &a.leading_comments,
+            Attribute::Spread(a) => &a.leading_comments,
+            Attribute::Directive(a) => &a.leading_comments,
+            Attribute::Shorthand(a) => &a.leading_comments,
+            Attribute::Attach(a) => &a.leading_comments,
+            Attribute::CssCustomProperty {
+                leading_comments, ..
+            } => leading_comments,
+        }
+    }
+
+    /// Returns the in-tag comments that immediately follow this attribute (when
+    /// it is the last attribute before the closing `>`).
+    pub fn trailing_comments(&self) -> &[TagComment] {
+        match self {
+            Attribute::Normal(a) => &a.trailing_comments,
+            Attribute::Spread(a) => &a.trailing_comments,
+            Attribute::Directive(a) => &a.trailing_comments,
+            Attribute::Shorthand(a) => &a.trailing_comments,
+            Attribute::Attach(a) => &a.trailing_comments,
+            Attribute::CssCustomProperty {
+                trailing_comments, ..
+            } => trailing_comments,
+        }
+    }
+
+    /// Replaces this attribute's leading comments.
+    pub fn set_leading_comments(&mut self, comments: Vec<TagComment>) {
+        match self {
+            Attribute::Normal(a) => a.leading_comments = comments,
+            Attribute::Spread(a) => a.leading_comments = comments,
+            Attribute::Directive(a) => a.leading_comments = comments,
+            Attribute::Shorthand(a) => a.leading_comments = comments,
+            Attribute::Attach(a) => a.leading_comments = comments,
+            Attribute::CssCustomProperty {
+                leading_comments, ..
+            } => *leading_comments = comments,
+        }
+    }
+
+    /// Replaces this attribute's trailing comments.
+    pub fn set_trailing_comments(&mut self, comments: Vec<TagComment>) {
+        match self {
+            Attribute::Normal(a) => a.trailing_comments = comments,
+            Attribute::Spread(a) => a.trailing_comments = comments,
+            Attribute::Directive(a) => a.trailing_comments = comments,
+            Attribute::Shorthand(a) => a.trailing_comments = comments,
+            Attribute::Attach(a) => a.trailing_comments = comments,
+            Attribute::CssCustomProperty {
+                trailing_comments, ..
+            } => *trailing_comments = comments,
+        }
+    }
 }
 
 /// A normal attribute.
@@ -475,6 +564,11 @@ pub struct NormalAttribute {
     pub name: SmolStr,
     /// The attribute value.
     pub value: AttributeValue,
+    /// In-tag comments immediately preceding this attribute.
+    pub leading_comments: Vec<TagComment>,
+    /// In-tag comments immediately following this attribute (when it is the
+    /// last attribute before `>`).
+    pub trailing_comments: Vec<TagComment>,
 }
 
 /// An attribute value.
@@ -531,6 +625,11 @@ pub struct SpreadAttribute {
     pub expression_span: Span,
     /// The expression being spread.
     pub expression: String,
+    /// In-tag comments immediately preceding this attribute.
+    pub leading_comments: Vec<TagComment>,
+    /// In-tag comments immediately following this attribute (when it is the
+    /// last attribute before `>`).
+    pub trailing_comments: Vec<TagComment>,
 }
 
 /// An attach attribute `{@attach expr}`.
@@ -542,6 +641,11 @@ pub struct AttachAttribute {
     pub expression_span: Span,
     /// The attachment expression.
     pub expression: String,
+    /// In-tag comments immediately preceding this attribute.
+    pub leading_comments: Vec<TagComment>,
+    /// In-tag comments immediately following this attribute (when it is the
+    /// last attribute before `>`).
+    pub trailing_comments: Vec<TagComment>,
 }
 
 /// A shorthand attribute `{value}`.
@@ -551,6 +655,11 @@ pub struct ShorthandAttribute {
     pub span: Span,
     /// The name (and expression).
     pub name: SmolStr,
+    /// In-tag comments immediately preceding this attribute.
+    pub leading_comments: Vec<TagComment>,
+    /// In-tag comments immediately following this attribute (when it is the
+    /// last attribute before `>`).
+    pub trailing_comments: Vec<TagComment>,
 }
 
 /// A directive.
@@ -566,6 +675,11 @@ pub struct Directive {
     pub modifiers: Vec<SmolStr>,
     /// The expression value.
     pub expression: Option<ExpressionValue>,
+    /// In-tag comments immediately preceding this directive.
+    pub leading_comments: Vec<TagComment>,
+    /// In-tag comments immediately following this directive (when it is the
+    /// last attribute before `>`).
+    pub trailing_comments: Vec<TagComment>,
 }
 
 /// The kind of directive.

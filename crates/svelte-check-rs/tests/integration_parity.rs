@@ -23,6 +23,13 @@
 //!      assignment-incompatible type (e.g. `string | null` → `string |
 //!      undefined`) surfaces as TS2322.
 //!
+//!   7. **JS param-matcher: no TS-only `satisfies` operator** — the params
+//!      transform appended a trailing `satisfies ParamMatcher` reference
+//!      unconditionally, leaking TS-only syntax into checked `.js` files
+//!      (false-positive TS8010/TS8037).  Now the `.js` path uses a JSDoc
+//!      `@satisfies` cast, which preserves the inferred predicate (TS2322
+//!      still surfaces at the consumer) while staying valid JavaScript.
+//!
 //! These tests reuse the existing `sveltekit-bundler` fixture so they share
 //! its bun install and `svelte-kit sync`.  They live in their own file (not
 //! `integration_issues.rs`) so a future shake-up of the issues file doesn't
@@ -355,5 +362,311 @@ fn test_bind_value_with_mismatched_type_surfaces_error() {
             .any(|d| d.message.contains("string | null") || d.message.contains("null")),
         "expected error to mention `null` / `string | null`, got:\n{:#?}",
         matching
+    );
+}
+
+// =============================================================================
+// 4. SvelteKit zero-types: JSDoc transform helpers for `.js` route/server
+// =============================================================================
+
+/// `src/routes/issue-parity-jsdoc/+page.js` and `.../api/+server.js` are
+/// *checked* `.js` files (`allowJs` + `checkJs`).  The route transform used
+/// to inject TypeScript type-annotation syntax (`load(event: PageLoadEvent)`,
+/// `export const prerender: boolean`, `GET(event: RequestEvent)`)
+/// unconditionally, which is illegal in a `.js` file and produces TS8010
+/// ("Type annotation can only be used in TypeScript files").
+///
+/// The fix branches on the file extension and emits JSDoc comments instead.
+/// This test asserts that ZERO TS8010 diagnostics surface anywhere under
+/// `issue-parity-jsdoc/` — the parity-critical assertion mirroring upstream
+/// commit b914d010.
+#[test]
+fn test_jsdoc_zero_types_no_ts8010_on_js_route() {
+    let diagnostics = diagnostics();
+    let offenders: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.filename.contains("issue-parity-jsdoc") && d.code == "TS8010")
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "expected NO TS8010 on issue-parity-jsdoc/*.js (JSDoc transform must \
+         not emit TS type-annotation syntax in checked .js files), got:\n{:#?}",
+        offenders
+    );
+}
+
+/// Proof-of-effectiveness for the JSDoc fix: the injected
+/// `/** @param {import('./$types.js').PageLoadEvent} event */` must resolve
+/// to the *real* `PageLoadEvent` type, not silently widen to `any` (which
+/// would make the no-TS8010 assertion vacuous).  `+page.js`'s `load` reads
+/// `event.bogus`, a property that does not exist on `PageLoadEvent`, so a
+/// TS2339 must surface at line 22 — and it must NOT be a TS8010.
+#[test]
+fn test_jsdoc_zero_types_carries_real_load_event_type() {
+    let diagnostics = diagnostics();
+    let on_file: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("issue-parity-jsdoc/+page.js"))
+        .collect();
+
+    assert!(
+        on_file
+            .iter()
+            .any(|d| d.code == "TS2339" && d.start.line == 20),
+        "expected TS2339 (property does not exist) at issue-parity-jsdoc/+page.js:20, \
+         proving the JSDoc @param resolved to a real PageLoadEvent.\nAll diagnostics in file:\n{:#?}",
+        on_file
+    );
+    assert!(
+        !on_file.iter().any(|d| d.code == "TS8010"),
+        "the JSDoc-typed load must not produce TS8010 in a .js file:\n{:#?}",
+        on_file
+    );
+}
+
+// =============================================================================
+// 5. Existing JSDoc @satisfies de-dup (upstream #2946 / commit d69eb726)
+// =============================================================================
+
+/// `src/routes/issue-2946-jsdoc-satisfies/+page.js` and `+page.server.js` are
+/// *checked* `.js` files whose `load`/`actions` exports the user already typed
+/// with a leading `/** @satisfies {...} */` JSDoc tag.  swc strips comments,
+/// so the tag never lands in any AST node span — the `expr_contains_satisfies`
+/// operator guard can't see it.  Before the fix the route transform injected a
+/// *second* `@satisfies` wrap (or a function-like `@param`), producing
+/// duplicate-injection syntax/type clashes on the file.
+///
+/// The fix detects the leading JSDoc `@satisfies` (mirroring upstream's shared
+/// `!isTsFile && getJSDocTags(...).some(@satisfies)` `hasTypeDefinition` gate)
+/// and leaves the user's source untouched.  This test asserts NO TS8010 and no
+/// syntax-level duplicate-injection diagnostics surface anywhere under the
+/// route.
+#[test]
+fn test_jsdoc_satisfies_dedup_no_duplicate_injection() {
+    let diagnostics = diagnostics();
+    let offenders: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename.contains("issue-2946-jsdoc-satisfies")
+                // TS8010: TS annotation syntax leaked into a .js file.
+                // TS1005/TS1109/TS1128/TS1136: parse errors a duplicated
+                // `@satisfies` wrap would produce.
+                && matches!(
+                    d.code.as_str(),
+                    "TS8010" | "TS1005" | "TS1109" | "TS1128" | "TS1136"
+                )
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "expected NO TS8010/syntax diagnostics under issue-2946-jsdoc-satisfies \
+         (a leading JSDoc @satisfies must suppress re-injection), got:\n{:#?}",
+        offenders
+    );
+}
+
+/// Proof-of-effectiveness for the #2946 fix: the retained
+/// `/** @satisfies {import('./$types').PageLoad} */` must resolve to the *real*
+/// `PageLoad`/`LoadEvent` type, not silently widen to `any` (which would make
+/// the no-duplicate-injection assertion vacuous).  `+page.js`'s `load` reads
+/// `event.bogus`, a property absent from `LoadEvent`, so a TS2339 must surface
+/// at line 18 — and it must NOT be a TS8010.
+#[test]
+fn test_jsdoc_satisfies_dedup_carries_real_load_type() {
+    let diagnostics = diagnostics();
+    let on_file: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("issue-2946-jsdoc-satisfies/+page.js"))
+        .collect();
+
+    assert!(
+        on_file
+            .iter()
+            .any(|d| d.code == "TS2339" && d.start.line == 18),
+        "expected TS2339 (property does not exist) at \
+         issue-2946-jsdoc-satisfies/+page.js:18, proving the retained JSDoc \
+         @satisfies resolved to a real LoadEvent.\nAll diagnostics in file:\n{:#?}",
+        on_file
+    );
+    assert!(
+        !on_file.iter().any(|d| d.code == "TS8010"),
+        "the JSDoc @satisfies-typed load must not produce TS8010 in a .js file:\n{:#?}",
+        on_file
+    );
+}
+
+// =============================================================================
+// 6. In-tag `@ts-ignore` / `eslint-disable` comments (upstream #2950 / 3a3d6e3a)
+// =============================================================================
+
+/// `src/routes/issue-2950-ts-ignore-attribute/+page.svelte` has a `<div>` whose
+/// `dir={x}` attribute is type-erroring (`x` is a boolean; `dir` expects a
+/// string union → TS2322), but is preceded *inside the tag* by a
+/// `// @ts-ignore` comment.
+///
+/// Before the fix the parser discarded in-tag `//` / `/* */` comments, so the
+/// `// @ts-ignore` never reached the generated TypeScript and the error fired.
+/// Now the comment is captured as a leading comment of the attribute and
+/// re-emitted directly above the attribute's `"dir": x,` line in the generated
+/// object literal, so TypeScript suppresses the diagnostic — exactly like
+/// upstream svelte2tsx.
+#[test]
+fn test_ts_ignore_attribute_suppresses_error() {
+    let diagnostics = diagnostics();
+    // The suppressed `dir={x}` is on line 11 of the fixture.
+    assert_no_diagnostic_at(
+        &diagnostics,
+        "issue-2950-ts-ignore-attribute/+page.svelte",
+        "TS2322",
+        11,
+    );
+}
+
+/// Proof-of-effectiveness / targeting guard for the #2950 fix: an identical
+/// `<div dir={x}>` WITHOUT the leading `// @ts-ignore` (line 16) must still
+/// report TS2322.  This proves the suppression is targeted at the annotated
+/// attribute, not a blanket effect of the change.
+#[test]
+fn test_ts_ignore_attribute_is_targeted() {
+    let diagnostics = diagnostics();
+    assert_diagnostic(
+        &diagnostics,
+        "issue-2950-ts-ignore-attribute/+page.svelte",
+        "TS2322",
+        16,
+        "not assignable to type",
+    );
+}
+
+/// Completion of the #2950 fix to directives / `{@attach}` / `bind:this`
+/// (upstream extended comment passthrough to Action/Transition/Animation/
+/// AttachTag/Binding/EventHandler in commit 3a3d6e3a).  Previously only
+/// element `on:`/`bind:`(non-this) and component prop/spread/bind/attach
+/// attributes preserved in-tag comments; every other directive dropped them.
+///
+/// `src/routes/issue-2950-directives/+page.svelte` has three deliberately
+/// type-erroring directives each preceded *inside the tag* by `// @ts-ignore`:
+///   - `use:badAction`        (line 25) — would be TS2349 (not callable)
+///   - `{@attach badAttach}`  (line 30) — would be TS2345 (wrong attachment)
+///   - `bind:this={wrongTypedRef}` (line 35) — would be TS2322 (ref mismatch)
+///
+/// With the comment re-emitted directly above the generated type-checked
+/// statement, none of them fire.
+#[test]
+fn test_ts_ignore_use_action_suppresses_error() {
+    let diagnostics = diagnostics();
+    assert_no_diagnostic_at(
+        &diagnostics,
+        "issue-2950-directives/+page.svelte",
+        "TS2349",
+        25,
+    );
+}
+
+#[test]
+fn test_ts_ignore_attach_suppresses_error() {
+    let diagnostics = diagnostics();
+    assert_no_diagnostic_at(
+        &diagnostics,
+        "issue-2950-directives/+page.svelte",
+        "TS2345",
+        30,
+    );
+}
+
+#[test]
+fn test_ts_ignore_bind_this_suppresses_error() {
+    let diagnostics = diagnostics();
+    assert_no_diagnostic_at(
+        &diagnostics,
+        "issue-2950-directives/+page.svelte",
+        "TS2322",
+        35,
+    );
+}
+
+/// Targeting guards: the identical mismatches WITHOUT a leading `// @ts-ignore`
+/// (the control `<div>`s on lines 48-50) must still error, proving the
+/// suppression is scoped to the annotated directive and not a blanket effect.
+#[test]
+fn test_ts_ignore_directives_are_targeted() {
+    let diagnostics = diagnostics();
+    assert_diagnostic(
+        &diagnostics,
+        "issue-2950-directives/+page.svelte",
+        "TS2349",
+        48,
+        "not callable",
+    );
+    assert_diagnostic(
+        &diagnostics,
+        "issue-2950-directives/+page.svelte",
+        "TS2345",
+        49,
+        "not assignable to parameter",
+    );
+    assert_diagnostic(
+        &diagnostics,
+        "issue-2950-directives/+page.svelte",
+        "TS2322",
+        50,
+        "not assignable to type",
+    );
+}
+
+// =============================================================================
+// 7. JS param-matcher: no TS8010/TS8037 (upstream #2939 / commit b914d010)
+// =============================================================================
+
+/// The params transform appends a trailing `ParamMatcher` constraint to any
+/// params file that exports a `match`.  For `.ts` it uses the bare TS
+/// `satisfies` operator; for a checked `.js` file (allowJs+checkJs) that
+/// operator is TS-only syntax and tsgo reports a false-positive TS8010/TS8037.
+///
+/// `src/params/restrictedjs.js` is the `.js` counterpart of `restricted.ts`.
+/// After the fix the transform emits the JSDoc `@satisfies` cast on the `.js`
+/// path instead, so NO TS8010/TS8037 must surface for the matcher file (nor
+/// for its consumer route).
+#[test]
+fn test_js_params_matcher_no_ts8010_ts8037() {
+    let diagnostics = diagnostics();
+    let leaked: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            (d.filename.contains("params/restrictedjs.js")
+                || d.filename.contains("issue-2939-js-params-matcher"))
+                && matches!(d.code.as_str(), "TS8010" | "TS8037")
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "no TS-only syntax must leak into the checked .js param matcher \
+         (expected zero TS8010/TS8037), got:\n{leaked:#?}"
+    );
+}
+
+/// Proof-of-effectiveness: the JSDoc `@satisfies` cast must preserve the
+/// TS 5.5+ inferred type predicate exactly like the TS operator — otherwise
+/// the no-TS8010 assertion above would be vacuous (a cast that widened to
+/// `string`/`never` would also be TS8010-free).
+///
+/// The consumer assigns `params.slug` (narrowed to `"js-a" | "js-b"`) to a
+/// non-overlapping `'nope'` literal on line 19 — that must error with TS2322.
+/// The matching assignment on line 12 must NOT error.
+#[test]
+fn test_js_params_matcher_predicate_narrows_consumer() {
+    let diagnostics = diagnostics();
+    assert_diagnostic(
+        &diagnostics,
+        "issue-2939-js-params-matcher/[slug=restrictedjs]/+page.svelte",
+        "TS2322",
+        19,
+        "not assignable to type '\"nope\"'",
+    );
+    assert_no_diagnostic_at(
+        &diagnostics,
+        "issue-2939-js-params-matcher/[slug=restrictedjs]/+page.svelte",
+        "TS2322",
+        12,
     );
 }

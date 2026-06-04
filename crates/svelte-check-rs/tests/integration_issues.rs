@@ -2399,3 +2399,162 @@ fn test_mount_accepts_extra_props() {
         mount_errors
     );
 }
+// ============================================================================
+// ISSUE #2895: PRESERVE AWAIT-BLOCK TYPE ANNOTATION
+// ============================================================================
+// A user-supplied type annotation on an await `then`/`catch` binding
+// (`{:then v: T}` / `{:catch e: Error}`) used to be clobbered by a forced
+// annotation appended after the binding, producing syntactically broken TS like
+// `const v: { name: string }: Awaited<...> = ...` and a false positive on typed
+// catch bindings. The transformer now emits a typed intermediate temporary and
+// assigns the user binding from it verbatim, preserving the annotation.
+//
+// Upstream: language-tools commit b6ebbd83 (svelte2tsx AwaitPendingCatchBlock).
+// Fixture: src/routes/issue-2895-await-type/+page.svelte
+#[test]
+fn test_issue_2895_await_type_annotation_no_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+
+    // Typed then/catch bindings must produce no diagnostics from any source
+    // (no parse error, no Svelte error, and crucially no tsgo syntax error /
+    // false positive).
+    assert_no_diagnostics_in_file(&diagnostics, "issue-2895-await-type/+page.svelte");
+}
+
+// ============================================================================
+// ISSUE #2863: ALLOW undefined/null FOR #each IN SVELTE 5
+// ============================================================================
+// A `{#each EXPR as item}` over a nullable/undefined iterable
+// (e.g. `number[] | null | undefined`) used to trigger false-positive
+// TS18047 ("possibly null") / TS18048 ("possibly undefined") because the
+// non-indexed path emitted a native `for (const item of __each_0)` directly
+// over the possibly-null expression. The transformer now routes the
+// non-indexed path through the nullish-tolerant `__svelte_each(...)` helper,
+// matching upstream's loosened `__sveltets_2_ensureArray` shim. svelte-check-rs
+// is Svelte-5-only, so nullish is unconditionally allowed. The element type is
+// still preserved as the non-nullable element (number, not number | undefined).
+//
+// Upstream: language-tools commit 7468286a.
+// Fixture: src/routes/issue-2863-each-nullable/+page.svelte
+#[test]
+fn test_issue_2863_each_nullable_no_ts_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // Specific guard against the false-positive null/undefined error shape.
+    let nullish_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| {
+            d.filename
+                .ends_with("issue-2863-each-nullable/+page.svelte")
+                && (d.code == "TS18047" || d.code == "TS18048")
+        })
+        .collect();
+    assert!(
+        nullish_errors.is_empty(),
+        "Issue #2863: nullable each block produced false-positive null/undefined errors:\n{:#?}",
+        nullish_errors
+    );
+
+    // No other TS errors should land in this fixture either (e.g. element type
+    // must resolve to `number`, so `option.toFixed(2)` type-checks).
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-2863-each-nullable/+page.svelte");
+}
+
+// Regression: the #2863 `__svelte_each` helper must yield `any` items (like a
+// native `for...of`) when the iterable is typed `any`, NOT `unknown`. A
+// `sanity.fetch()`-style `any` array iterated in a non-indexed each previously
+// produced false-positive `TS18046 'item' is of type 'unknown'`. Caught only
+// against the careswitch monorepo; pinned here.
+// Fixture: src/routes/issue-2863-each-any/+page.svelte
+#[test]
+fn test_issue_2863_each_any_yields_any_not_unknown() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    let unknown_errors: Vec<_> = ts_diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("issue-2863-each-any/+page.svelte") && d.code == "TS18046")
+        .collect();
+    assert!(
+        unknown_errors.is_empty(),
+        "Issue #2863: `any` each item resolved to `unknown` (member access fails):\n{:#?}",
+        unknown_errors
+    );
+
+    // `item.foo.bar` only type-checks if `item` stays `any`, so the whole file
+    // must be diagnostic-free.
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-2863-each-any/+page.svelte");
+}
+
+// ============================================================================
+// ISSUE #2863 NEGATIVE: GENUINE NON-ITERABLE IN #each STILL ERRORS
+// ============================================================================
+// Lock-in companion to the nullable case: loosening `{#each}` to accept
+// `null`/`undefined` (upstream 7468286a) must NOT swallow a real non-iterable.
+// A plain `number` still violates the `__svelte_each` /
+// `__svelte_each_indexed` constraint, so each block must still surface TS2345 —
+// and the diagnostic must map back to the iterable expression in the source,
+// not to raw generated coordinates.
+//
+// Fixture: src/routes/issue-2863-each-noniterable/+page.svelte
+#[test]
+fn test_issue_2863_each_noniterable_still_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // Non-indexed each over a `number` (line 13) routes through __svelte_each.
+    assert_diagnostic_present(
+        &ts_diagnostics,
+        &ExpectedDiagnostic {
+            filename: "issue-2863-each-noniterable/+page.svelte",
+            line: 13,
+            code: "TS2345",
+            message_contains: "ArrayLike",
+        },
+    );
+
+    // Indexed + keyed each over a `number` (line 19) routes through
+    // __svelte_each_indexed and must also still error.
+    assert_diagnostic_present(
+        &ts_diagnostics,
+        &ExpectedDiagnostic {
+            filename: "issue-2863-each-noniterable/+page.svelte",
+            line: 19,
+            code: "TS2345",
+            message_contains: "ArrayLike",
+        },
+    );
+}
+
+// ============================================================================
+// ISSUE #2895 NEGATIVE: WRONG {:then} ANNOTATION IS TYPE-CHECKED, NOT ERASED
+// ============================================================================
+// Lock-in companion to the preserved-annotation case: a user `{:then}` type
+// annotation that disagrees with the resolved type must surface a TS error,
+// proving the annotation is checked against the awaited type rather than
+// silently dropped. The promise resolves to `number` but the binding is
+// annotated `string`, so TS2322 must fire — mapped to the `{:then ...}` source.
+//
+// Fixture: src/routes/issue-2895-await-wrong-annotation/+page.svelte
+#[test]
+fn test_issue_2895_await_wrong_annotation_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    // `{:then v: string}` on a `Promise<number>` is on line 13.
+    assert_diagnostic_present(
+        &ts_diagnostics,
+        &ExpectedDiagnostic {
+            filename: "issue-2895-await-wrong-annotation/+page.svelte",
+            line: 13,
+            code: "TS2322",
+            message_contains: "not assignable",
+        },
+    );
+}

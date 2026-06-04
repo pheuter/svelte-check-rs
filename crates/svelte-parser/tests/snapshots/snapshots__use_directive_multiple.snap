@@ -33,6 +33,8 @@ SvelteDocument {
                                 name: "tooltip",
                                 modifiers: [],
                                 expression: None,
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Directive(
@@ -45,6 +47,8 @@ SvelteDocument {
                                 name: "draggable.handle",
                                 modifiers: [],
                                 expression: None,
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Directive(
@@ -70,6 +74,8 @@ SvelteDocument {
                                         is_quoted: false,
                                     },
                                 ),
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

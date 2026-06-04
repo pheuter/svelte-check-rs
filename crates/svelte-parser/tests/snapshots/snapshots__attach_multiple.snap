@@ -34,6 +34,8 @@ SvelteDocument {
                                     end: 19,
                                 },
                                 expression: "first",
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Attach(
@@ -47,6 +49,8 @@ SvelteDocument {
                                     end: 36,
                                 },
                                 expression: "second",
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                         Attach(
@@ -60,6 +64,8 @@ SvelteDocument {
                                     end: 52,
                                 },
                                 expression: "third",
+                                leading_comments: [],
+                                trailing_comments: [],
                             },
                         ),
                     ],

@@ -1,7 +1,7 @@
 //! tsgo output parser.
 
 use crate::runner::{TransformedFiles, TsgoError};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use source_map::LineCol;
 
@@ -20,6 +20,13 @@ pub struct TsgoDiagnostic {
     pub code: String,
     /// The severity.
     pub severity: DiagnosticSeverity,
+    /// Whether this diagnostic has no source position (e.g. tsconfig
+    /// options/global diagnostics like `error TS2318: ...`). When true, the
+    /// diagnostic is attributed to the resolved tsconfig path and printed at
+    /// line/column 0 with no source snippet (parity with upstream
+    /// `writers.ts` `positionUnknown`).
+    #[serde(default)]
+    pub position_unknown: bool,
 }
 
 /// A position in a diagnostic.
@@ -49,16 +56,22 @@ pub struct TsgoOutput {
 }
 
 /// Parses tsgo output into diagnostics.
+///
+/// `tsconfig_path` is the resolved tsconfig used to attribute positionless
+/// diagnostics (options/global errors that tsc prints without a
+/// `file(line,col):` prefix), mirroring upstream's `mapCliDiagnosticsToLsp`
+/// `tsconfigPath` argument.
 pub fn parse_tsgo_output(
     output: &str,
     files: &TransformedFiles,
+    tsconfig_path: &Utf8Path,
 ) -> Result<Vec<TsgoDiagnostic>, TsgoError> {
     let mut diagnostics = Vec::new();
 
     // tsgo outputs diagnostics in the format:
     // file.ts:line:column - error TS1234: message
     for line in output.lines() {
-        if let Some(diag) = parse_diagnostic_line(line, files) {
+        if let Some(diag) = parse_diagnostic_line(line, files, tsconfig_path) {
             diagnostics.push(diag);
         }
     }
@@ -67,13 +80,17 @@ pub fn parse_tsgo_output(
 }
 
 /// Parses a single diagnostic line.
-fn parse_diagnostic_line(line: &str, files: &TransformedFiles) -> Option<TsgoDiagnostic> {
+fn parse_diagnostic_line(
+    line: &str,
+    files: &TransformedFiles,
+    tsconfig_path: &Utf8Path,
+) -> Option<TsgoDiagnostic> {
     // tsgo outputs: file.tsx(line,column): error TS1234: message
     // We need to parse this format
 
     // Find the diagnostic position suffix. Paths can contain parentheses in
     // SvelteKit route groups, e.g. `src/routes/(app)/+page.server.ts(10,5)`.
-    let (paren_start, paren_end) = line.match_indices("):").find_map(|(candidate_end, _)| {
+    let positioned = line.match_indices("):").find_map(|(candidate_end, _)| {
         let rest = line[candidate_end + 2..].trim_start();
         if !(rest.starts_with("error") || rest.starts_with("warning")) {
             return None;
@@ -81,7 +98,14 @@ fn parse_diagnostic_line(line: &str, files: &TransformedFiles) -> Option<TsgoDia
         line[..candidate_end]
             .rfind('(')
             .map(|candidate_start| (candidate_start, candidate_end))
-    })?;
+    });
+
+    // No `file(line,col):` prefix: this may be a positionless options/global
+    // diagnostic (e.g. `error TS2318: Cannot find global type 'Array'.`).
+    let (paren_start, paren_end) = match positioned {
+        Some(pos) => pos,
+        None => return parse_positionless_diagnostic_line(line, tsconfig_path),
+    };
 
     let file_path = &line[..paren_start];
     let position = &line[paren_start + 1..paren_end];
@@ -132,6 +156,57 @@ fn parse_diagnostic_line(line: &str, files: &TransformedFiles) -> Option<TsgoDia
         message,
         code,
         severity,
+        position_unknown: false,
+    })
+}
+
+/// Parses a positionless tsc pretty line of the form
+/// `<error|warning> TS<code>: <message>` (no `file(line,col):` prefix).
+///
+/// These are options/global diagnostics (e.g. `error TS2318: Cannot find
+/// global type 'Array'.` emitted when `lib` is invalid). They are attributed
+/// to the resolved tsconfig path with a zero/unknown position so the
+/// orchestrator can surface them without a source snippet.
+fn parse_positionless_diagnostic_line(
+    line: &str,
+    tsconfig_path: &Utf8Path,
+) -> Option<TsgoDiagnostic> {
+    let trimmed = line.trim();
+
+    let (severity, rest) = if let Some(rest) = trimmed.strip_prefix("error ") {
+        (DiagnosticSeverity::Error, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("warning ") {
+        (DiagnosticSeverity::Warning, rest)
+    } else {
+        return None;
+    };
+
+    // Require a `TS<code>:` token so we don't swallow arbitrary text.
+    let rest = rest.trim_start();
+    let code_end = rest.find(':')?;
+    let code = rest[..code_end].trim();
+    if !code.starts_with("TS") || code.len() < 3 || !code[2..].bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let message = rest[code_end + 1..].trim().to_string();
+    if message.is_empty() {
+        return None;
+    }
+
+    let zero = DiagnosticPosition {
+        line: 0,
+        column: 0,
+        offset: 0,
+    };
+
+    Some(TsgoDiagnostic {
+        file: tsconfig_path.to_owned(),
+        start: zero.clone(),
+        end: zero,
+        message,
+        code: code.to_string(),
+        severity,
+        position_unknown: true,
     })
 }
 
@@ -270,19 +345,22 @@ fn normalize_relative_path(path: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    const DUMMY_TSCONFIG: &str = "/repo/tsconfig.json";
+
     #[test]
     fn test_parse_diagnostic_line() {
         let line =
             "src/App.svelte.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'";
         let files = TransformedFiles::new();
 
-        let diag = parse_diagnostic_line(line, &files).unwrap();
+        let diag = parse_diagnostic_line(line, &files, Utf8Path::new(DUMMY_TSCONFIG)).unwrap();
         assert_eq!(diag.file.as_str(), "src/App.svelte.ts");
         assert_eq!(diag.start.line, 10);
         assert_eq!(diag.start.column, 5);
         assert_eq!(diag.code, "TS2322");
         assert!(diag.message.contains("Type"));
         assert_eq!(diag.severity, DiagnosticSeverity::Error);
+        assert!(!diag.position_unknown);
     }
 
     #[test]
@@ -290,7 +368,7 @@ mod tests {
         let line = "src/routes/(app)/imports/+page.server.ts(87,5): error TS2322: Type 'string' is not assignable to type 'number'";
         let files = TransformedFiles::new();
 
-        let diag = parse_diagnostic_line(line, &files).unwrap();
+        let diag = parse_diagnostic_line(line, &files, Utf8Path::new(DUMMY_TSCONFIG)).unwrap();
         assert_eq!(
             diag.file.as_str(),
             "src/routes/(app)/imports/+page.server.ts"
@@ -300,12 +378,70 @@ mod tests {
         assert_eq!(diag.code, "TS2322");
         assert!(diag.message.contains("Type"));
         assert_eq!(diag.severity, DiagnosticSeverity::Error);
+        assert!(!diag.position_unknown);
+    }
+
+    #[test]
+    fn test_parse_positionless_global_diagnostic() {
+        let line = "error TS2318: Cannot find global type 'Array'.";
+        let files = TransformedFiles::new();
+
+        let diag = parse_diagnostic_line(line, &files, Utf8Path::new(DUMMY_TSCONFIG)).unwrap();
+        assert_eq!(diag.file.as_str(), DUMMY_TSCONFIG);
+        assert_eq!(diag.start.line, 0);
+        assert_eq!(diag.start.column, 0);
+        assert_eq!(diag.end.line, 0);
+        assert_eq!(diag.code, "TS2318");
+        assert!(diag.message.contains("Cannot find global type"));
+        assert_eq!(diag.severity, DiagnosticSeverity::Error);
+        assert!(diag.position_unknown);
+    }
+
+    #[test]
+    fn test_parse_positionless_options_diagnostic() {
+        // The real TS6046 message is enormous; a representative prefix is fine.
+        let line = "error TS6046: Argument for '--lib' option must be: 'es5', 'es6'.";
+        let files = TransformedFiles::new();
+
+        let diag = parse_diagnostic_line(line, &files, Utf8Path::new(DUMMY_TSCONFIG)).unwrap();
+        assert_eq!(diag.file.as_str(), DUMMY_TSCONFIG);
+        assert_eq!(diag.code, "TS6046");
+        assert_eq!(diag.severity, DiagnosticSeverity::Error);
+        assert!(diag.position_unknown);
+    }
+
+    #[test]
+    fn test_parse_positionless_warning_diagnostic() {
+        let line = "warning TS5102: Option 'foo' has been removed.";
+        let files = TransformedFiles::new();
+
+        let diag = parse_diagnostic_line(line, &files, Utf8Path::new(DUMMY_TSCONFIG)).unwrap();
+        assert_eq!(diag.code, "TS5102");
+        assert_eq!(diag.severity, DiagnosticSeverity::Warning);
+        assert!(diag.position_unknown);
+    }
+
+    #[test]
+    fn test_non_diagnostic_line_returns_none() {
+        let files = TransformedFiles::new();
+        // Summary lines and arbitrary text must not be parsed as diagnostics.
+        assert!(
+            parse_diagnostic_line("Found 3 errors.", &files, Utf8Path::new(DUMMY_TSCONFIG))
+                .is_none()
+        );
+        assert!(parse_diagnostic_line(
+            "error something not a code",
+            &files,
+            Utf8Path::new(DUMMY_TSCONFIG)
+        )
+        .is_none());
+        assert!(parse_diagnostic_line("", &files, Utf8Path::new(DUMMY_TSCONFIG)).is_none());
     }
 
     #[test]
     fn test_parse_empty_output() {
         let files = TransformedFiles::new();
-        let diagnostics = parse_tsgo_output("", &files).unwrap();
+        let diagnostics = parse_tsgo_output("", &files, Utf8Path::new(DUMMY_TSCONFIG)).unwrap();
         assert!(diagnostics.is_empty());
     }
 
