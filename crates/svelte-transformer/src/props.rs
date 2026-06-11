@@ -233,7 +233,8 @@ fn parse_destructuring_properties(content: &str, base_offset: u32) -> Vec<PropPr
     let mut in_string = false;
     let mut string_char = ' ';
 
-    for (i, ch) in content.char_indices() {
+    let mut chars = content.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
         // Handle strings
         if !in_string && (ch == '"' || ch == '\'' || ch == '`') {
             in_string = true;
@@ -247,6 +248,37 @@ fn parse_destructuring_properties(content: &str, base_offset: u32) -> Vec<PropPr
                 in_string = false;
             }
             continue;
+        }
+
+        // Skip comments: their text must never be treated as syntax — commas
+        // and colons inside a comment would otherwise split properties or be
+        // misread as renames (issue #157).
+        if ch == '/' {
+            match chars.peek() {
+                Some(&(_, '/')) => {
+                    chars.next();
+                    for (_, c) in chars.by_ref() {
+                        if c == '\n' {
+                            current_prop.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some(&(_, '*')) => {
+                    chars.next();
+                    let mut prev_star = false;
+                    for (_, c) in chars.by_ref() {
+                        if prev_star && c == '/' {
+                            break;
+                        }
+                        prev_star = c == '*';
+                    }
+                    current_prop.push(' ');
+                    continue;
+                }
+                _ => {}
+            }
         }
 
         // Track nesting
@@ -952,6 +984,50 @@ mod tests {
         assert_eq!(info.properties[0].name, "class");
         assert_eq!(info.properties[0].local_name, Some("className".to_string()));
         assert!(info.properties[0].is_bindable);
+    }
+
+    #[test]
+    fn test_comment_with_colon_before_bindable_prop() {
+        // A `:` inside a line comment must not be misread as a rename — it
+        // poisoned the local name with comment text (issue #157).
+        let script = "let {\n    // Element remapping: maps original element symbols to new ones\n    element_mapping = $bindable(),\n} = $props();";
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert_eq!(info.properties.len(), 1);
+        assert_eq!(info.properties[0].name, "element_mapping");
+        assert_eq!(
+            info.properties[0].local_name,
+            Some("element_mapping".to_string())
+        );
+        assert!(info.properties[0].is_bindable);
+    }
+
+    #[test]
+    fn test_comment_with_commas_before_bindable_prop() {
+        // Commas inside a line comment must not split the comment into bogus
+        // properties (issue #157).
+        let script = "let {\n    // atom types are mapped to H, He, Li by default\n    element_mapping = $bindable(),\n    cell_type = $bindable(`original`),\n} = $props();";
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert_eq!(info.properties.len(), 2);
+        assert_eq!(info.properties[0].name, "element_mapping");
+        assert_eq!(
+            info.properties[0].local_name,
+            Some("element_mapping".to_string())
+        );
+        assert_eq!(info.properties[1].name, "cell_type");
+        assert_eq!(info.properties[1].local_name, Some("cell_type".to_string()));
+    }
+
+    #[test]
+    fn test_block_comment_inside_destructuring() {
+        let script = "let { /* visible: yes, always */ value = $bindable(0), label } = $props();";
+        let info = extract_props_info(script, script, 0).unwrap();
+
+        assert_eq!(info.properties.len(), 2);
+        assert_eq!(info.properties[0].name, "value");
+        assert!(info.properties[0].is_bindable);
+        assert_eq!(info.properties[1].name, "label");
     }
 
     #[test]

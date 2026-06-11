@@ -2558,3 +2558,26 @@ fn test_issue_2895_await_wrong_annotation_errors() {
         },
     );
 }
+
+// ============================================================================
+// ISSUE #157: COMMENTS IN $props() DESTRUCTURING MUST NOT POISON PROP PARSING
+// ============================================================================
+// Line comments inside the `$props()` destructuring that contain `:` or `,`
+// were treated as syntax: the colon was misread as a `prop: local` rename and
+// the commas split the comment into bogus properties. The comment text then
+// leaked into the generated `;local;` bindable read-markers (upstream #3017),
+// producing invalid TS and false TS1434/TS1435/TS1005 parse errors.
+//
+// Fixture: src/routes/issue-157-props-comments/{CommentedProps.svelte,+page.svelte}
+#[test]
+fn test_issue_157_props_destructuring_comments_no_errors() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let ts_diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    assert_no_diagnostics_in_file(
+        &ts_diagnostics,
+        "issue-157-props-comments/CommentedProps.svelte",
+    );
+    assert_no_diagnostics_in_file(&ts_diagnostics, "issue-157-props-comments/+page.svelte");
+}
