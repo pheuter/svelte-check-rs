@@ -260,6 +260,31 @@ fn test_transform_bindable_renamed_marker() {
 }
 
 #[test]
+fn test_transform_bindable_props_with_comments() {
+    // Comments inside the `$props()` destructuring must not be treated as
+    // syntax: a `:` in a comment was misread as a `prop: local` rename and
+    // commas split the comment into bogus properties, leaking comment text
+    // into the `;local;` bindable read-markers as invalid TS (issue #157).
+    transform_snapshot(
+        "bindable_props_with_comments",
+        r#"<script lang="ts">
+    let {
+        // Element remapping: maps original element symbols to new ones
+        element_mapping = $bindable(),
+        // atom types are mapped to H, He, Li by default
+        cell_type = $bindable(`original`),
+        /* hidden: yes, always */
+        hidden = $bindable(false),
+    }: {
+        element_mapping?: Record<string, string>
+        cell_type?: string
+        hidden?: boolean
+    } = $props();
+</script>"#,
+    );
+}
+
+#[test]
 fn test_transform_inspect_rune() {
     transform_snapshot(
         "inspect_rune",

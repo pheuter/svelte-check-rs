@@ -302,6 +302,22 @@ fn normalize_lexical(path: &Utf8Path) -> Utf8PathBuf {
     out
 }
 
+/// Resolve symlinks in a root path so every derived path (cache dir,
+/// `rootDirs`, `extends`, file lists) is physical and prefix-matches the
+/// paths tsgo resolves on disk. A workspace reached through a symlink (e.g.
+/// macOS `/tmp` -> `/private/tmp`) otherwise breaks the `rootDirs` mapping
+/// between the cache mirror and the real sources, so relative imports from
+/// transformed files stop resolving and surface as false TS2307 errors.
+fn canonicalize_physical(path: &Utf8Path) -> Utf8PathBuf {
+    if cfg!(windows) {
+        // std::fs::canonicalize yields verbatim (`\\?\C:\...`) paths on
+        // Windows, which downstream tooling does not handle; keep the
+        // lexically-normalized path there.
+        return path.to_owned();
+    }
+    path.canonicalize_utf8().unwrap_or_else(|_| path.to_owned())
+}
+
 /// Runs the check on all files.
 pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     let workspace = if args.workspace.is_relative() {
@@ -312,7 +328,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     } else {
         args.workspace.clone()
     };
-    let workspace = normalize_lexical(&workspace);
+    let workspace = canonicalize_physical(&normalize_lexical(&workspace));
 
     // Load configuration
     let svelte_config = SvelteConfig::load(&workspace);
@@ -483,7 +499,10 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         let target = if single_file.is_relative() {
             workspace.join(single_file)
         } else {
-            single_file.clone()
+            // Discovered files derive from the canonicalized workspace root,
+            // so an absolute target given through a symlink must be resolved
+            // the same way to match.
+            canonicalize_physical(single_file)
         };
         let matched: Vec<_> = files.into_iter().filter(|f| f == &target).collect();
         if matched.is_empty() {
