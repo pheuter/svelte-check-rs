@@ -445,6 +445,86 @@ fn test_relative_workspace_does_not_mangle_in_workspace_imports() {
     );
 }
 
+/// Regression (found while fixing #157): a workspace path that traverses a
+/// SYMLINK (e.g. macOS `/tmp` -> `/private/tmp`) was used as-given, so the
+/// generated tsconfig's `rootDirs` entries did not prefix-match the physical
+/// paths tsgo resolves on disk. The rootDirs mapping between the cache mirror
+/// and the real sources then failed, and every relative import from a
+/// transformed file surfaced as a false TS2307. The workspace root must be
+/// canonicalized so all derived paths are physical.
+#[test]
+fn test_symlinked_workspace_resolves_relative_imports() {
+    let bundler = fixtures_dir().join("sveltekit-bundler");
+    let _ = run_check_json(&bundler); // ensure deps + .svelte-kit exist
+
+    let name = "symlinked-workspace";
+    let project = make_temp_project_reusing_bundler(&bundler, name);
+    // The wholesale `node_modules` symlink would put the cache's physical path
+    // outside the workspace, hiding the bug. Replicate the real-world layout
+    // instead: `node_modules` is a REAL directory inside the project (so the
+    // cache lives physically under the symlinked workspace root), with each
+    // dependency entry symlinked individually.
+    fs::remove_file(project.join("node_modules")).expect("remove node_modules symlink");
+    fs::create_dir_all(project.join("node_modules")).expect("mkdir node_modules");
+    for entry in fs::read_dir(bundler.join("node_modules")).expect("read bundler node_modules") {
+        let entry = entry.expect("node_modules entry");
+        if entry.file_name() == ".cache" {
+            continue;
+        }
+        std::os::unix::fs::symlink(
+            entry.path(),
+            project.join("node_modules").join(entry.file_name()),
+        )
+        .expect("symlink node_modules entry");
+    }
+    // Likewise `.svelte-kit` must be a real directory inside the project; the
+    // check run regenerates it via `svelte-kit sync`.
+    fs::remove_file(project.join(".svelte-kit")).expect("remove .svelte-kit symlink");
+    // An in-workspace sibling import that only resolves if rootDirs maps the
+    // cache mirror back onto the real source directory.
+    fs::create_dir_all(project.join("src/lib/components")).expect("mkdir components");
+    write_file(
+        &project.join("src/lib/util.ts"),
+        "export const helper = 41;\n",
+    );
+    write_file(
+        &project.join("src/lib/components/Comp.svelte"),
+        "<script lang=\"ts\">\n\timport { helper } from '../util';\n\tconst n = helper + 1;\n</script>\n<p>{n}</p>\n",
+    );
+    // Comp must be IMPORTED by another file: tsgo realpaths every
+    // import-resolved module, so the imported cache-mirror Comp.svelte.ts is
+    // tracked under its physical path, from which its own `../util` no longer
+    // prefix-matches the symlink-based rootDirs. A file only reachable via the
+    // tsconfig `files` list keeps its as-given path and would not reproduce.
+    fs::create_dir_all(project.join("src/routes/symlink-comp")).expect("mkdir route");
+    write_file(
+        &project.join("src/routes/symlink-comp/+page.svelte"),
+        "<script lang=\"ts\">\n\timport Comp from '$lib/components/Comp.svelte';\n</script>\n<Comp />\n",
+    );
+
+    // Drive the binary through a symlink to the project.
+    let link = project
+        .parent()
+        .expect("temp parent")
+        .join("symlinked-workspace-link");
+    if link.exists() || fs::symlink_metadata(&link).is_ok() {
+        fs::remove_file(&link).expect("remove stale symlink");
+    }
+    std::os::unix::fs::symlink(&project, &link).expect("symlink workspace");
+
+    let (_exit_code, diagnostics) = run_check_json_for_temp(&link);
+
+    let ts2307: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == "TS2307" || d.code == "TS2882")
+        .collect();
+    assert!(
+        ts2307.is_empty(),
+        "symlinked workspace broke relative-import resolution:\n{:#?}",
+        ts2307
+    );
+}
+
 fn run_check_json_for_temp(project: &Path) -> (i32, Vec<JsonDiagnostic>) {
     ensure_binary_built();
     let _lock = lock_fixture("sveltekit-bundler");
