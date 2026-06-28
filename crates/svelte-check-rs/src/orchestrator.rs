@@ -222,6 +222,25 @@ fn normalize_tsconfig_pattern(pattern: &str) -> String {
     }
 }
 
+/// Normalizes the user-supplied `--ignore` patterns into globset patterns.
+///
+/// `--ignore` mirrors svelte-check's comma-separated syntax
+/// (e.g. `--ignore "dist,build"`) and may also be passed multiple times. Each
+/// resulting piece is normalized like a tsconfig `exclude` entry so that a bare
+/// directory (`src/foo`, `./src/foo`, `dist`) ignores everything beneath it,
+/// while explicit globs (`**/*.test.ts`) pass through unchanged. Without the
+/// comma split, the whole `"dist,build"` string was treated as a single literal
+/// glob that matched nothing, so the flag appeared to do nothing (#159).
+fn normalize_ignore_patterns(patterns: &[String]) -> Vec<String> {
+    patterns
+        .iter()
+        .flat_map(|raw| raw.split(','))
+        .map(str::trim)
+        .filter(|piece| !piece.is_empty())
+        .map(normalize_tsconfig_pattern)
+        .collect()
+}
+
 fn is_ignored_dir(ignore_set: &globset::GlobSet, relative: &Utf8Path) -> bool {
     // globset patterns use '/' as the segment separator regardless of OS.
     // `relative` comes from `WalkDir` and carries native separators on
@@ -405,8 +424,9 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
 
     // Build ignore glob set
     let mut ignore_builder = GlobSetBuilder::new();
-    for pattern in &args.ignore {
-        let glob = Glob::new(pattern).map_err(|e| OrchestratorError::InvalidGlob(e.to_string()))?;
+    for normalized in normalize_ignore_patterns(&args.ignore) {
+        let glob =
+            Glob::new(&normalized).map_err(|e| OrchestratorError::InvalidGlob(e.to_string()))?;
         ignore_builder.add(glob);
     }
 
@@ -1947,6 +1967,43 @@ mod tests {
 
         let forward_path = Utf8PathBuf::from("src/excluded/nested");
         assert!(is_ignored_dir(&set, &forward_path));
+    }
+
+    #[test]
+    fn test_normalize_ignore_patterns_splits_and_normalizes() {
+        // svelte-check's documented syntax is a single comma-separated string.
+        // It must split into per-directory patterns, each expanded to match
+        // everything beneath the directory (#159).
+        let out = normalize_ignore_patterns(&["src/excluded,build".to_string()]);
+        assert_eq!(out, vec!["src/excluded/**", "build/**"]);
+
+        // Whitespace around pieces, leading `./`, and empty pieces (trailing
+        // commas / repeated flags) are all handled; explicit globs pass through.
+        let out = normalize_ignore_patterns(&[
+            " ./src/excluded , ".to_string(),
+            "**/*.test.ts".to_string(),
+            String::new(),
+        ]);
+        assert_eq!(out, vec!["src/excluded/**", "**/*.test.ts"]);
+    }
+
+    #[test]
+    fn test_comma_separated_ignore_excludes_dirs() {
+        // End-to-end at the unit level: the normalized patterns, once compiled
+        // into a globset, must actually prune the ignored directories.
+        let mut builder = globset::GlobSetBuilder::new();
+        for pattern in normalize_ignore_patterns(&["src/excluded,build".to_string()]) {
+            builder.add(globset::Glob::new(&pattern).expect("glob"));
+        }
+        let set = builder.build().expect("globset");
+
+        assert!(is_ignored_dir(&set, Utf8Path::new("src/excluded")));
+        assert!(is_ignored_dir(&set, Utf8Path::new("build")));
+        assert!(set.is_match("src/excluded/Excluded.svelte"));
+        assert!(set.is_match("build/Built.svelte"));
+        // A sibling directory that wasn't ignored stays in.
+        assert!(!is_ignored_dir(&set, Utf8Path::new("src/keep")));
+        assert!(!set.is_match("src/keep/Keep.svelte"));
     }
 
     #[test]
