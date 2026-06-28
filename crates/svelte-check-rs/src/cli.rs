@@ -40,7 +40,9 @@ pub struct Args {
     #[arg(long = "compiler-warnings")]
     pub compiler_warnings: Option<String>,
 
-    /// Glob patterns to ignore
+    /// Files/folders to ignore, relative to the workspace root. Comma-separated
+    /// (e.g. --ignore "dist,build"); may also be passed multiple times. Bare
+    /// directories ignore everything beneath them; globs (**/*.test.ts) also work.
     #[arg(long)]
     pub ignore: Vec<String>,
 
