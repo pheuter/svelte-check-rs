@@ -1,0 +1,8 @@
+{
+  "name": "workspace-stubs-app",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fixture/ui": "workspace:*"
+  }
+}

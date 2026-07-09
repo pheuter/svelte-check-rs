@@ -8,7 +8,7 @@ use bun_runner::{
     BunRunner,
 };
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
-use globset::{Glob, GlobSetBuilder};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use rayon::prelude::*;
 use source_map::LineIndex;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -256,6 +256,148 @@ fn is_ignored_dir(ignore_set: &globset::GlobSet, relative: &Utf8Path) -> bool {
     ignore_set.is_match(&rel_slash)
 }
 
+fn path_starts_with(path: &Utf8Path, base: &Utf8Path) -> bool {
+    let path = to_forward_slash(path).to_ascii_lowercase();
+    let base = to_forward_slash(base).to_ascii_lowercase();
+    path == base || path.starts_with(&format!("{base}/"))
+}
+
+fn package_json_has_workspaces(path: &Utf8Path) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    json.get("workspaces").is_some()
+}
+
+fn find_package_workspace_root(workspace: &Utf8Path) -> Option<Utf8PathBuf> {
+    let mut current = Some(workspace);
+    while let Some(dir) = current {
+        if package_json_has_workspaces(&dir.join("package.json")) {
+            return Some(dir.to_owned());
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn virtual_base_for<'a>(
+    file_path: &Utf8Path,
+    workspace: &'a Utf8Path,
+    monorepo_root: Option<&'a Utf8Path>,
+) -> &'a Utf8Path {
+    if path_starts_with(file_path, workspace) {
+        workspace
+    } else {
+        monorepo_root.unwrap_or(workspace)
+    }
+}
+
+fn external_declaration_content(scripts: &[&str]) -> String {
+    let mut out = String::new();
+    for script in scripts {
+        for line in script.lines() {
+            let trimmed = line.trim_start();
+            if let Some(name) = exported_name_after(trimmed, "export type ") {
+                out.push_str(&format!("export type {name} = any;\n"));
+            } else if let Some(name) = exported_name_after(trimmed, "export interface ") {
+                out.push_str(&format!("export type {name} = any;\n"));
+            } else if let Some(name) = exported_name_after(trimmed, "export function ") {
+                out.push_str(&format!("export declare const {name}: any;\n"));
+            } else if let Some(name) = exported_name_after(trimmed, "export const ") {
+                out.push_str(&format!("export declare const {name}: any;\n"));
+            } else if let Some(name) = exported_name_after(trimmed, "export let ") {
+                out.push_str(&format!("export declare const {name}: any;\n"));
+            } else if let Some(name) = exported_name_after(trimmed, "export var ") {
+                out.push_str(&format!("export declare const {name}: any;\n"));
+            } else if let Some(name) = exported_name_after(trimmed, "export class ") {
+                out.push_str(&format!("export declare const {name}: any;\n"));
+            } else if let Some(names) = exported_names_in_braces(trimmed, "export type {") {
+                for name in names {
+                    out.push_str(&format!("export type {name} = any;\n"));
+                }
+            } else if let Some(names) = exported_names_in_braces(trimmed, "export {") {
+                for name in names {
+                    out.push_str(&format!("export declare const {name}: any;\n"));
+                }
+            }
+        }
+    }
+    out.push_str("declare const _default: any;\nexport default _default;\n");
+    out
+}
+
+fn exported_names_in_braces(line: &str, prefix: &str) -> Option<Vec<String>> {
+    let rest = line.strip_prefix(prefix)?;
+    let body = rest.split('}').next()?;
+    let names: Vec<String> = body
+        .split(',')
+        .filter_map(|part| {
+            let part = part.trim().strip_prefix("type ").unwrap_or(part.trim());
+            let name = part
+                .rsplit_once(" as ")
+                .map(|(_, exported)| exported)
+                .unwrap_or(part);
+            let name: String = name
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            (!name.is_empty()).then_some(name)
+        })
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+fn exported_name_after(line: &str, prefix: &str) -> Option<String> {
+    let rest = line.strip_prefix(prefix)?.trim_start();
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+fn discover_svelte_files(
+    scan_root: &Utf8Path,
+    ignore_root: &Utf8Path,
+    ignore_set: &GlobSet,
+    extensions: &[&str],
+    seen_files: &mut HashSet<Utf8PathBuf>,
+) -> Vec<Utf8PathBuf> {
+    WalkDir::new(scan_root)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if !entry.file_type().is_dir() {
+                return true;
+            }
+            let path = match Utf8Path::from_path(entry.path()) {
+                Some(path) => path,
+                None => return true,
+            };
+            let relative = path.strip_prefix(ignore_root).unwrap_or(path);
+            !is_ignored_dir(ignore_set, relative)
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| Utf8PathBuf::try_from(e.into_path()).ok())
+        .filter(|p| {
+            let file_name = p.file_name().unwrap_or("");
+            extensions.iter().any(|ext| file_name.ends_with(ext))
+        })
+        .filter(|p| {
+            let relative = p.strip_prefix(ignore_root).unwrap_or(p);
+            !ignore_set.is_match(to_forward_slash(relative).as_str())
+        })
+        .filter(|p| seen_files.insert(p.clone()))
+        .collect()
+}
+
 /// Orchestration errors.
 #[derive(Debug, Error)]
 pub enum OrchestratorError {
@@ -461,37 +603,30 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         .build()
         .map_err(|e| OrchestratorError::InvalidGlob(e.to_string()))?;
 
-    // Find Svelte files
+    // Find Svelte files. When checking a package inside a package-manager
+    // workspace, also discover sibling workspace package Svelte files so
+    // TypeScript imports can resolve their declaration stubs.
     let scan_start = Instant::now();
     let extensions = svelte_config.file_extensions();
-    let files: Vec<Utf8PathBuf> = WalkDir::new(&workspace)
-        .into_iter()
-        .filter_entry(|entry| {
-            if entry.depth() == 0 {
-                return true;
-            }
-            if !entry.file_type().is_dir() {
-                return true;
-            }
-            let path = match Utf8Path::from_path(entry.path()) {
-                Some(path) => path,
-                None => return true,
-            };
-            let relative = path.strip_prefix(&workspace).unwrap_or(path);
-            !is_ignored_dir(&ignore_set, relative)
-        })
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| Utf8PathBuf::try_from(e.into_path()).ok())
-        .filter(|p| {
-            let file_name = p.file_name().unwrap_or("");
-            extensions.iter().any(|ext| file_name.ends_with(ext))
-        })
-        .filter(|p| {
-            let relative = p.strip_prefix(&workspace).unwrap_or(p);
-            !ignore_set.is_match(to_forward_slash(relative).as_str())
-        })
-        .collect();
+    let mut seen_files = HashSet::new();
+    let mut files = discover_svelte_files(
+        &workspace,
+        &workspace,
+        &ignore_set,
+        &extensions,
+        &mut seen_files,
+    );
+    if let Some(monorepo_root) = find_package_workspace_root(&workspace) {
+        if monorepo_root != workspace {
+            files.extend(discover_svelte_files(
+                &monorepo_root,
+                &monorepo_root,
+                &ignore_set,
+                &extensions,
+                &mut seen_files,
+            ));
+        }
+    }
     let file_scan_time = if timings_enabled {
         Some(scan_start.elapsed())
     } else {
@@ -612,10 +747,25 @@ async fn run_single_check(
     }
 
     // Separate files by kind: components (.svelte) vs modules (.svelte.ts/.svelte.js)
-    let (component_files, module_files): (Vec<_>, Vec<_>) = files
+    let (component_files, mut module_files): (Vec<_>, Vec<_>) = files
         .into_iter()
         .partition(|f| SvelteFileKind::from_path(f) == Some(SvelteFileKind::Component));
+    let component_file_set: HashSet<Utf8PathBuf> = component_files.iter().cloned().collect();
+    module_files.retain(|path| {
+        if path_starts_with(path, workspace) {
+            return true;
+        }
+        let path_str = path.as_str();
+        if let Some(component_path) = path_str.strip_suffix(".ts") {
+            return !component_file_set.contains(Utf8Path::new(component_path));
+        }
+        if let Some(component_path) = path_str.strip_suffix(".js") {
+            return !component_file_set.contains(Utf8Path::new(component_path));
+        }
+        true
+    });
 
+    let monorepo_root = find_package_workspace_root(workspace);
     let svelte_start = Instant::now();
 
     // Resolve the cache root once so each transform can compute the eventual
@@ -686,7 +836,8 @@ async fn run_single_check(
             let mut transformed = None;
             let should_transform = !args.skip_tsgo || args.emit_ts || args.emit_source_map;
             if should_transform {
-                let virtual_path = virtual_path_for(file_path, workspace, true);
+                let virtual_base = virtual_base_for(file_path, workspace, monorepo_root.as_deref());
+                let virtual_path = virtual_path_for(file_path, virtual_base, true);
                 let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
                 // Absolute path the transformed file will eventually be written
                 // to in the cache (matches `cache_root.join(virtual_path)` in
@@ -739,13 +890,27 @@ async fn run_single_check(
                 // Only add to transformed files collection if we're going to run tsgo
                 if !args.skip_tsgo {
                     // Create the virtual path (original.svelte -> original.svelte.ts)
-                    let virtual_path = virtual_path_for(file_path, workspace, true);
+                    let virtual_base =
+                        virtual_base_for(file_path, workspace, monorepo_root.as_deref());
+                    let virtual_path = virtual_path_for(file_path, virtual_base, true);
 
                     let tsx_code = transform_result.tsx_code;
+                    let is_external = !path_starts_with(file_path, workspace);
+                    let declaration_content = is_external.then(|| {
+                        let mut scripts = Vec::new();
+                        if let Some(script) = &parse_result.document.module_script {
+                            scripts.push(script.content.as_str());
+                        }
+                        if let Some(script) = &parse_result.document.instance_script {
+                            scripts.push(script.content.as_str());
+                        }
+                        external_declaration_content(&scripts)
+                    });
                     let transformed_file = TransformedFile {
                         original_path: file_path.clone(),
                         generated_line_index: LineIndex::new(&tsx_code),
                         tsx_content: tsx_code,
+                        declaration_content,
                         source_map: transform_result.source_map,
                         original_line_index: LineIndex::new(&source),
                     };
@@ -785,7 +950,10 @@ async fn run_single_check(
                 })
             };
 
-            let compiler_input = Some(BunInput {
+            // External workspace package files only provide declarations for
+            // imports. Keep compiler diagnostics scoped to the requested
+            // workspace.
+            let compiler_input = path_starts_with(file_path, workspace).then(|| BunInput {
                 filename: file_path.clone(),
                 source: source.clone(),
                 options: compiler_bun_options.clone(),
@@ -818,7 +986,8 @@ async fn run_single_check(
             };
 
             // Transform module file (runes only, no template/styles)
-            let virtual_path = virtual_path_for(file_path, workspace, false);
+            let virtual_base = virtual_base_for(file_path, workspace, monorepo_root.as_deref());
+            let virtual_path = virtual_path_for(file_path, virtual_base, false);
             let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
             // (workspace_path, generated_path) for out-of-root import rewriting.
             let external_imports = cache_root.as_ref().map(|root| {
@@ -862,13 +1031,18 @@ async fn run_single_check(
 
                 // For module files, we keep the same relative path (they're already .ts/.js)
                 // But we need to write transformed content to the cache
-                let virtual_path = virtual_path_for(file_path, workspace, false);
+                let virtual_base = virtual_base_for(file_path, workspace, monorepo_root.as_deref());
+                let virtual_path = virtual_path_for(file_path, virtual_base, false);
 
                 let tsx_code = transform_result.code;
+                let is_external = !path_starts_with(file_path, workspace);
+                let declaration_content =
+                    is_external.then(|| external_declaration_content(&[source.as_str()]));
                 let transformed_file = TransformedFile {
                     original_path: file_path.clone(),
                     generated_line_index: LineIndex::new(&tsx_code),
                     tsx_content: tsx_code,
+                    declaration_content,
                     source_map: transform_result.source_map,
                     original_line_index: LineIndex::new(&source),
                 };

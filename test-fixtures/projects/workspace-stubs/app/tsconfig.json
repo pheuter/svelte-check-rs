@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "ESNext",
+    "target": "ES2022",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "@fixture/ui/fancy": ["../ui/src/Fancy.svelte"]
+    }
+  },
+  "include": ["src/**/*"]
+}

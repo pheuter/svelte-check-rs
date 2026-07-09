@@ -358,6 +358,7 @@ struct TsconfigOverlayOptions<'a> {
     kit_include: Option<&'a Utf8Path>,
     patched_sources: &'a [Utf8PathBuf],
     extra_files: &'a [Utf8PathBuf],
+    extra_root_dir: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -978,8 +979,11 @@ impl TsgoRunner {
         root_dirs.retain(|dir| dir != &project_root && dir != &temp_root);
         let mut ordered_root_dirs = Vec::new();
         // Prefer cached files over project sources when both exist.
-        ordered_root_dirs.push(temp_root);
+        ordered_root_dirs.push(temp_root.clone());
         ordered_root_dirs.push(project_root);
+        if let Some(extra_root_dir) = &options.extra_root_dir {
+            ordered_root_dirs.push(to_forward_slash(extra_root_dir));
+        }
         ordered_root_dirs.extend(root_dirs);
         root_dirs = ordered_root_dirs;
         if let Some(kit_path) = options.kit_include {
@@ -1036,6 +1040,15 @@ impl TsgoRunner {
                             to_forward_slash(&clean_path(&options.temp_root.join(relative)));
                         if seen.insert(cached.clone()) {
                             resolved_values.push(Value::String(cached));
+                        }
+                    } else if let Some(extra_root_dir) = &options.extra_root_dir {
+                        if let Ok(relative) = Utf8Path::new(&resolved).strip_prefix(extra_root_dir)
+                        {
+                            let cached =
+                                to_forward_slash(&clean_path(&options.temp_root.join(relative)));
+                            if seen.insert(cached.clone()) {
+                                resolved_values.push(Value::String(cached));
+                            }
                         }
                     }
                     if seen.insert(resolved.clone()) {
@@ -1383,21 +1396,25 @@ impl TsgoRunner {
                     }
                 }
             }
-            let wrote = write_if_changed(&full_path, file.tsx_content.as_bytes(), "write tsx")?;
-            if wrote {
-                stats.cache.tsx_written += 1;
-            } else {
-                stats.cache.tsx_skipped += 1;
+            if file.declaration_content.is_none() {
+                let wrote = write_if_changed(&full_path, file.tsx_content.as_bytes(), "write tsx")?;
+                if wrote {
+                    stats.cache.tsx_written += 1;
+                } else {
+                    stats.cache.tsx_skipped += 1;
+                }
+                cache_files.insert(full_path.clone());
+                tsconfig_files.push(full_path.clone());
             }
-            cache_files.insert(full_path.clone());
-            tsconfig_files.push(full_path.clone());
 
             if let Some(file_name) = full_path.file_name() {
                 let stub_path = full_path.with_extension("d.ts");
-                let stub_content = format!(
-                    "export * from \"./{}\";\nexport {{ default }} from \"./{}\";\n",
-                    file_name, file_name
-                );
+                let stub_content = file.declaration_content.clone().unwrap_or_else(|| {
+                    format!(
+                        "export * from \"./{}\";\nexport {{ default }} from \"./{}\";\n",
+                        file_name, file_name
+                    )
+                });
                 let wrote = write_if_changed(&stub_path, stub_content.as_bytes(), "write stub")?;
                 if wrote {
                     stats.cache.stub_written += 1;
@@ -1487,6 +1504,7 @@ impl TsgoRunner {
 
         // Generate a standalone tsconfig overlay with rootDirs and absolute paths.
         let project_tsconfig = self.resolve_tsconfig_path()?;
+        let extra_root_dir = common_external_root_dir(&self.project_root, files);
         let tsconfig_start = Instant::now();
         let overlay_options = TsconfigOverlayOptions {
             temp_root: temp_path.as_path(),
@@ -1495,6 +1513,7 @@ impl TsgoRunner {
             kit_include: kit_include.as_deref(),
             patched_sources: &patched_sources,
             extra_files: &tsconfig_files,
+            extra_root_dir,
         };
         let temp_tsconfig = self.prepare_tsconfig_overlay(&overlay_options, &mut stats.cache)?;
         stats.timings.tsconfig_time = tsconfig_start.elapsed();
@@ -1730,6 +1749,33 @@ fn to_forward_slash(path: &Utf8Path) -> String {
     } else {
         s.to_string()
     }
+}
+
+fn common_external_root_dir(
+    project_root: &Utf8Path,
+    files: &TransformedFiles,
+) -> Option<Utf8PathBuf> {
+    let mut common = clean_path(project_root);
+    let mut saw_external = false;
+    for file in files.files.values() {
+        if file.original_path.starts_with(project_root) {
+            continue;
+        }
+        saw_external = true;
+        common = common_path_prefix(&common, &clean_path(&file.original_path));
+    }
+    saw_external.then_some(common)
+}
+
+fn common_path_prefix(a: &Utf8Path, b: &Utf8Path) -> Utf8PathBuf {
+    let mut out = Utf8PathBuf::new();
+    for (left, right) in a.components().zip(b.components()) {
+        if left != right {
+            break;
+        }
+        out.push(left.as_str());
+    }
+    out
 }
 
 fn clean_path(path: &Utf8Path) -> Utf8PathBuf {
@@ -2196,6 +2242,8 @@ pub struct TransformedFile {
     pub original_path: Utf8PathBuf,
     /// The generated TSX content.
     pub tsx_content: String,
+    /// Optional declaration content to write instead of generated TSX.
+    pub declaration_content: Option<String>,
     /// Line index for the generated content (for fast source mapping).
     pub generated_line_index: source_map::LineIndex,
     /// The source map for position mapping.
@@ -2403,6 +2451,7 @@ mod tests {
             TransformedFile {
                 original_path: Utf8PathBuf::from("src/App.svelte"),
                 tsx_content: "// generated".to_string(),
+                declaration_content: None,
                 generated_line_index: LineIndex::new("// generated"),
                 source_map: SourceMap::new(),
                 original_line_index: LineIndex::new(original_source),
