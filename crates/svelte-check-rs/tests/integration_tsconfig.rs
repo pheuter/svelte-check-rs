@@ -130,10 +130,10 @@ fn ensure_fixture_ready(fixture_name: &str, ready: &'static OnceLock<()>) {
         let cache_path = cache_root(&fixture_path);
         let _ = std::fs::remove_dir_all(&cache_path);
 
-        // Check if node_modules and tsgo exist
+        // Check if node_modules and the typescript binary exist
         let node_modules = fixture_path.join("node_modules");
-        let tsgo_bin = node_modules.join(".bin/tsgo");
-        if !node_modules.exists() || !tsgo_bin.exists() {
+        let tsc_bin = node_modules.join(".bin/tsc");
+        if !node_modules.exists() || !tsc_bin.exists() {
             eprintln!("Installing dependencies for {}...", fixture_name);
 
             let bun_path = bun_path_for(&fixture_path);

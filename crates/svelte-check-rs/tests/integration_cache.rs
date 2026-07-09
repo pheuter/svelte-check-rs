@@ -99,8 +99,8 @@ fn cache_root(fixture_path: &std::path::Path) -> PathBuf {
 /// Ensures dependencies are installed for a fixture.
 fn ensure_fixture_deps(fixture_path: &PathBuf) {
     let node_modules = fixture_path.join("node_modules");
-    let tsgo_bin = node_modules.join(".bin/tsgo");
-    if !node_modules.exists() || !tsgo_bin.exists() {
+    let tsc_bin = node_modules.join(".bin/tsc");
+    if !node_modules.exists() || !tsc_bin.exists() {
         let bun_path = bun_path_for(fixture_path);
         let output = Command::new(bun_path.as_std_path())
             .arg("install")

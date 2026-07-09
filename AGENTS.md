@@ -28,9 +28,9 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 6. **Type-check**: Send all transformed files to `tsgo` subprocess, map errors back via source maps
 
 **tsgo Integration** (tsgo-runner crate):
-- External TypeScript type-checker (Go-based, faster than tsc)
+- External TypeScript type-checker from `typescript@^7`
 - Resolved from workspace `node_modules/.bin` (walks up from `--workspace`)
-- Requires `@typescript/native-preview` to be installed in the workspace (peer dependency range: `>=7.0.0-dev.0`)
+- Requires `typescript` to be installed in the workspace (peer dependency range: `>=7.0.0`)
 - Communication: JSON over stdin/stdout
 - Incremental builds via `node_modules/.cache/svelte-check-rs/tsgo.tsbuildinfo`
 

@@ -18,6 +18,8 @@ use walkdir::WalkDir;
 const SHARED_HELPERS_FILENAME: &str = "__svelte_check_rs_helpers.d.ts";
 const DEP_CACHE_MANIFEST_FILENAME: &str = "deps.manifest.json";
 const DEP_CACHE_MANIFEST_VERSION: u32 = 1;
+const TYPESCRIPT_PACKAGE_NAME: &str = "typescript";
+const TYPESCRIPT_PACKAGE_RANGE: &str = ">=7.0.0";
 const SHARED_HELPERS_DTS: &str = r#"import type { Component as SvelteComponentType, ComponentInternals as SvelteComponentInternals, Snippet as SvelteSnippet, SvelteComponent as SvelteLegacyComponent } from "svelte";
 import type { SvelteHTMLElements as SvelteHTMLElements, HTMLAttributes as SvelteHTMLAttributes } from "svelte/elements";
 
@@ -216,7 +218,9 @@ pub enum TsgoError {
 
     /// tsgo not installed in node_modules.
     #[error(
-        "tsgo not found in node_modules starting at {0}. Install @typescript/native-preview in your workspace (some package managers may auto-install peer dependencies)."
+        "typescript not found in node_modules starting at {0}. Install {package}@\"{range}\" in your workspace (some package managers may auto-install peer dependencies).",
+        package = TYPESCRIPT_PACKAGE_NAME,
+        range = TYPESCRIPT_PACKAGE_RANGE
     )]
     TsgoNotInstalled(Utf8PathBuf),
 
@@ -443,17 +447,22 @@ impl TsgoRunner {
             .to_string()
     }
 
-    /// Resolves tsgo from node_modules/.bin by walking up from the workspace root.
+    /// Resolves the typescript package binary from node_modules/.bin by walking up
+    /// from the workspace root.
     ///
     /// On Windows, `Command::new` cannot execute the extensionless Unix shell
     /// shim that npm/pnpm/yarn install alongside `.cmd`/`.exe`; CreateProcess
     /// rejects it with `%1 is not a valid Win32 application` (os error 193).
     /// Probe only platform-executable extensions on Windows.
     pub fn resolve_tsgo(workspace_root: &Utf8Path) -> Result<Utf8PathBuf, TsgoError> {
+        // Prefer typescript@^7's tsc shim; keep tsgo as a compatibility
+        // fallback for workspaces still using @typescript/native-preview.
         const SHIM_CANDIDATES: &[&str] = if cfg!(windows) {
-            &["tsgo.exe", "tsgo.cmd", "tsgo.bat"]
+            &[
+                "tsc.exe", "tsc.cmd", "tsc.bat", "tsgo.exe", "tsgo.cmd", "tsgo.bat",
+            ]
         } else {
-            &["tsgo"]
+            &["tsc", "tsgo"]
         };
 
         let mut current = Some(workspace_root);

@@ -69,10 +69,10 @@ svelte-check-rs --output human-verbose
 
 ## Requirements
 
-`svelte-check-rs` expects `tsgo` to be available from your workspace `node_modules`. Install it via:
+`svelte-check-rs` expects `typescript@^7` to be available from your workspace `node_modules`. Install it via:
 
 ```bash
-npm install -D @typescript/native-preview
+npm install -D typescript@^7
 ```
 
 Some package managers (for example, bun) may auto-install peer dependencies, but explicit installation is always supported.

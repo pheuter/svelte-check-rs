@@ -122,13 +122,13 @@ fn print_debug_paths(workspace: &Utf8Path) {
     println!("Workspace: {}", workspace);
     println!();
 
-    // tsgo binary
-    println!("tsgo:");
+    // typescript package binary
+    println!("typescript:");
     match TsgoRunner::resolve_tsgo(&workspace) {
         Ok(path) => println!("  resolved: {}", path),
         Err(_) => {
             println!(
-                "  resolved: (not found - install @typescript/native-preview in your workspace)"
+                "  resolved: (not found - install typescript@^7 in your workspace)"
             );
         }
     }
