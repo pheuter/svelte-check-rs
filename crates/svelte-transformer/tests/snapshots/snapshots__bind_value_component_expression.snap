@@ -176,7 +176,7 @@ async function __svelte_render() {
   { const __component_0 = __svelte_ensure_component(Combobox); __component_0(__svelte_any(), {
     value: value as string | null,
   }); }
-  value as string | null;
+  void (value as string | null);
 return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, events: {} };
 }
 

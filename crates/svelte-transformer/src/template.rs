@@ -1516,8 +1516,22 @@ impl TemplateContext {
                     self.output.push_str(&setter);
                     self.output.push_str("];\n");
                 } else {
-                    // For bindings, check the variable
-                    self.emit_expression(&expr.expression, expr.expression_span, context);
+                    // For bindings, check the expression as an expression, not
+                    // as a bare statement. Type assertions such as
+                    // `bind:value={value as never}` are valid expressions but
+                    // invalid expression statements in TypeScript.
+                    let transformed = self.transform_expr(&expr.expression);
+                    self.expressions.push(TemplateExpression {
+                        expression: transformed.clone(),
+                        span: expr.expression_span,
+                        context,
+                    });
+                    let indent_str = self.indent_str();
+                    self.output.push_str(&indent_str);
+                    self.output.push_str("void (");
+                    self.record_mapping_at_current_pos(&transformed, expr.expression_span);
+                    self.output.push_str(&transformed);
+                    self.output.push_str(");\n");
                 }
             } else {
                 // For style directives and other directives, emit the expression
