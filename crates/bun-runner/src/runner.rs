@@ -17,17 +17,29 @@ const BUN_SCRIPT_SOURCE: &str = r#"import { createInterface } from 'node:readlin
 import { stdin, stdout } from 'node:process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { dirname } from 'node:path';
 
-let compile = null;
-try {
-  const require = createRequire(pathToFileURL(process.cwd() + '/'));
-  const compilerPath = require.resolve('svelte/compiler');
-  const mod = await import(pathToFileURL(compilerPath).href);
-  compile = mod.compile;
-} catch (err) {
-  const message = err && err.message ? err.message : String(err);
-  console.error(`svelte-check-rs bun runner failed to load svelte/compiler: ${message}`);
-  process.exit(2);
+const compilerCache = new Map();
+
+async function loadCompiler(filename) {
+  const base = filename ? dirname(filename) : process.cwd();
+  if (compilerCache.has(base)) return compilerCache.get(base);
+
+  const attempts = [];
+  for (const requireBase of [base, process.cwd()]) {
+    try {
+      const require = createRequire(pathToFileURL(requireBase + '/'));
+      const compilerPath = require.resolve('svelte/compiler');
+      const mod = await import(pathToFileURL(compilerPath).href);
+      compilerCache.set(base, mod.compile);
+      return mod.compile;
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      attempts.push(`${requireBase}: ${message}`);
+    }
+  }
+
+  throw new Error(attempts.join('\n'));
 }
 
 stdout.write(JSON.stringify({ ready: true }) + '\n');
@@ -65,6 +77,7 @@ for await (const line of rl) {
   let diagnostics = [];
 
   try {
+    const compile = await loadCompiler(filename);
     const result = compile(source, compileOptions);
     if (result && Array.isArray(result.warnings)) {
       diagnostics = result.warnings.map((warning) => ({
