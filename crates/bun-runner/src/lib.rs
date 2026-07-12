@@ -4,5 +4,5 @@ mod runner;
 
 pub use runner::{
     BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunError, BunExperimentalOptions,
-    BunInput, BunPosition, BunRunner,
+    BunInput, BunPosition, BunPreprocessError, BunPreprocessPosition, BunPreprocessed, BunRunner,
 };

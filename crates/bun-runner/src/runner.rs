@@ -19,11 +19,13 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 let compile = null;
+let preprocess = null;
 try {
   const require = createRequire(pathToFileURL(process.cwd() + '/'));
   const compilerPath = require.resolve('svelte/compiler');
   const mod = await import(pathToFileURL(compilerPath).href);
   compile = mod.compile;
+  preprocess = mod.preprocess;
 } catch (err) {
   const message = err && err.message ? err.message : String(err);
   console.error(`svelte-check-rs bun runner failed to load svelte/compiler: ${message}`);
@@ -31,6 +33,30 @@ try {
 }
 
 stdout.write(JSON.stringify({ ready: true }) + '\n');
+
+const loadedConfigs = new Map();
+
+async function loadConfig(configPath) {
+  if (!configPath) return null;
+  if (!loadedConfigs.has(configPath)) {
+    const mod = await import(pathToFileURL(configPath).href);
+    const config = mod?.default;
+    if (!config) {
+      throw new Error(
+        'Missing exports in the config. Make sure to include "export default config" or "module.exports = config"'
+      );
+    }
+    loadedConfigs.set(configPath, config);
+  }
+  return loadedConfigs.get(configPath);
+}
+
+function serializeSourceMap(map) {
+  if (!map) return null;
+  if (typeof map === 'string') return map;
+  if (map.version) return JSON.stringify(map);
+  return String(map);
+}
 
 const rl = createInterface({ input: stdin, crlfDelay: Infinity });
 
@@ -50,6 +76,35 @@ for await (const line of rl) {
   const filename = req.filename;
   const source = req.source;
   const options = req.options || {};
+
+  if (req.operation === 'preprocess') {
+    try {
+      const config = await loadConfig(req.configPath);
+      const result = config && config.preprocess
+        ? await preprocess(source, config.preprocess, { filename })
+        : { code: source, map: null, dependencies: [] };
+      stdout.write(JSON.stringify({
+        id,
+        code: result.code,
+        map: serializeSourceMap(result.map),
+        dependencies: result.dependencies || []
+      }) + '\n');
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      const location = err && err.location
+        ? err.location
+        : err && err.start
+          ? { start: err.start, end: err.end || err.start }
+          : null;
+      stdout.write(JSON.stringify({
+        id,
+        error: message,
+        errorStart: location && location.start ? location.start : null,
+        errorEnd: location && location.end ? location.end : null
+      }) + '\n');
+    }
+    continue;
+  }
 
   const compileOptions = {
     filename,
@@ -148,6 +203,38 @@ pub struct BunInput {
     pub options: BunCompileOptions,
 }
 
+/// A component after its configured Svelte preprocessors have run.
+#[derive(Debug, Clone)]
+pub struct BunPreprocessed {
+    pub filename: Utf8PathBuf,
+    pub source: String,
+    pub source_map: Option<String>,
+    pub dependencies: Vec<Utf8PathBuf>,
+    pub error: Option<BunPreprocessError>,
+}
+
+/// A per-component failure from a configured Svelte preprocessor.
+#[derive(Debug, Clone)]
+pub struct BunPreprocessError {
+    /// Human-readable error message supplied by the preprocessor.
+    pub message: String,
+    /// Optional start position in the original component.
+    pub start: Option<BunPreprocessPosition>,
+    /// Optional end position in the original component.
+    pub end: Option<BunPreprocessPosition>,
+}
+
+/// A position supplied by a configured preprocessor error.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct BunPreprocessPosition {
+    /// One-indexed line number, when supplied by the preprocessor.
+    pub line: Option<u32>,
+    /// Zero-indexed UTF-16 column, when supplied by the preprocessor.
+    pub column: Option<u32>,
+    /// Zero-indexed UTF-16 code-unit offset, when supplied by the preprocessor.
+    pub offset: Option<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BunDiagnosticSeverity {
     Error,
@@ -170,19 +257,37 @@ pub struct BunDiagnostic {
     pub end: BunPosition,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum BunOperation {
+    Compile,
+    Preprocess,
+}
+
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BunRequest {
     id: u64,
+    operation: BunOperation,
     filename: String,
     source: String,
     options: BunCompileOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct BunResponse {
     id: Option<u64>,
     diagnostics: Option<Vec<BunJsDiagnostic>>,
+    code: Option<String>,
+    map: Option<String>,
+    dependencies: Option<Vec<String>>,
     error: Option<String>,
+    #[serde(rename = "errorStart")]
+    error_start: Option<BunPreprocessPosition>,
+    #[serde(rename = "errorEnd")]
+    error_end: Option<BunPreprocessPosition>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -418,6 +523,45 @@ impl BunRunner {
         Err(BunError::InstallFailed(
             "bun binary not found after install (expected at ~/.bun/bin/bun)".into(),
         ))
+    }
+
+    /// Runs the configured Svelte preprocessors on input files.
+    pub async fn preprocess_files(
+        &self,
+        inputs: Vec<BunInput>,
+        config_path: Option<&Utf8Path>,
+    ) -> Result<Vec<BunPreprocessed>, BunError> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let worker_count = self.worker_count.min(inputs.len()).max(1);
+        let mut chunks: Vec<Vec<BunInput>> = vec![Vec::new(); worker_count];
+        for (idx, input) in inputs.into_iter().enumerate() {
+            chunks[idx % worker_count].push(input);
+        }
+
+        let mut handles = Vec::new();
+        for chunk in chunks.into_iter().filter(|chunk| !chunk.is_empty()) {
+            let bun_path = self.bun_path.clone();
+            let workspace_root = self.workspace_root.clone();
+            let script_path = self.script_path.clone();
+            let config_path = config_path.map(Utf8Path::to_owned);
+            handles.push(tokio::spawn(async move {
+                let mut worker = BunWorker::spawn(bun_path, workspace_root, script_path).await?;
+                worker.preprocess_batch(chunk, config_path.as_deref()).await
+            }));
+        }
+
+        let mut processed = Vec::new();
+        for handle in handles {
+            processed.extend(
+                handle
+                    .await
+                    .map_err(|e| BunError::ProtocolError(format!("join error: {e}")))??,
+            );
+        }
+        Ok(processed)
     }
 
     /// Runs Svelte compiler diagnostics on input files.
@@ -760,15 +904,113 @@ impl BunWorker {
         })
     }
 
+    async fn preprocess_batch(
+        &mut self,
+        inputs: Vec<BunInput>,
+        config_path: Option<&Utf8Path>,
+    ) -> Result<Vec<BunPreprocessed>, BunError> {
+        let mut pending = HashMap::new();
+
+        for (id, input) in (1u64..).zip(inputs.iter()) {
+            let request = BunRequest {
+                id,
+                operation: BunOperation::Preprocess,
+                filename: input.filename.to_string(),
+                source: input.source.clone(),
+                options: input.options.clone(),
+                config_path: config_path.map(Utf8Path::to_string),
+            };
+
+            let line = serde_json::to_string(&request).map_err(|e| {
+                BunError::ProtocolError(format!("failed to serialize request: {e}"))
+            })?;
+            self.stdin.write_all(line.as_bytes()).await.map_err(|e| {
+                BunError::ProtocolError(format!("failed to write to bun stdin: {e}"))
+            })?;
+            self.stdin
+                .write_all(b"\n")
+                .await
+                .map_err(|e| BunError::ProtocolError(format!("failed to write newline: {e}")))?;
+
+            pending.insert(id, input.clone());
+        }
+
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| BunError::ProtocolError(format!("failed to flush bun stdin: {e}")))?;
+
+        let mut processed = Vec::new();
+        while !pending.is_empty() {
+            let line = self.stdout.next_line().await.map_err(|e| {
+                BunError::ProtocolError(format!("failed to read bun response: {e}"))
+            })?;
+            let Some(line) = line else {
+                let stderr = match self.stderr_task.take() {
+                    Some(handle) => handle.await.unwrap_or_default(),
+                    None => String::new(),
+                };
+                let status = self.child.wait().await.map_err(BunError::SpawnFailed)?;
+                return Err(BunError::ProcessFailed {
+                    code: status.code().unwrap_or(-1),
+                    stderr,
+                });
+            };
+
+            let response: BunResponse = serde_json::from_str(&line)
+                .map_err(|e| BunError::ParseError(format!("invalid response: {e} ({line})")))?;
+            let id = response
+                .id
+                .ok_or_else(|| BunError::ProtocolError(format!("missing response id: {line}")))?;
+            let input = pending
+                .remove(&id)
+                .ok_or_else(|| BunError::ProtocolError(format!("unexpected response id {id}")))?;
+            if let Some(error) = response.error {
+                processed.push(BunPreprocessed {
+                    filename: input.filename,
+                    source: input.source,
+                    source_map: None,
+                    dependencies: Vec::new(),
+                    error: Some(BunPreprocessError {
+                        message: error,
+                        start: response.error_start,
+                        end: response.error_end,
+                    }),
+                });
+                continue;
+            }
+            let source = response.code.ok_or_else(|| {
+                BunError::ProtocolError(format!("missing preprocessed code: {line}"))
+            })?;
+
+            processed.push(BunPreprocessed {
+                filename: input.filename,
+                source,
+                source_map: response.map,
+                dependencies: response
+                    .dependencies
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Utf8PathBuf::from)
+                    .collect(),
+                error: None,
+            });
+        }
+
+        Ok(processed)
+    }
+
     async fn check_batch(&mut self, inputs: Vec<BunInput>) -> Result<Vec<BunDiagnostic>, BunError> {
         let mut pending = HashMap::new();
 
         for (id, input) in (1u64..).zip(inputs.iter()) {
             let request = BunRequest {
                 id,
+                operation: BunOperation::Compile,
                 filename: input.filename.to_string(),
                 source: input.source.clone(),
                 options: input.options.clone(),
+                config_path: None,
             };
 
             let line = serde_json::to_string(&request).map_err(|e| {

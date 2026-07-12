@@ -74,6 +74,8 @@ pub enum DiagnosticCode {
     // === Parse Codes ===
     /// `parse-error`: Syntax error during parsing
     ParseError,
+    /// `preprocess-error`: Configured preprocessor failure
+    PreprocessError,
 }
 
 impl DiagnosticCode {
@@ -83,6 +85,7 @@ impl DiagnosticCode {
             DiagnosticCode::InvalidRuneUsage => Severity::Error,
             DiagnosticCode::MissingDeclaration => Severity::Error,
             DiagnosticCode::ParseError => Severity::Error,
+            DiagnosticCode::PreprocessError => Severity::Error,
 
             DiagnosticCode::A11yStructure => Severity::Warning,
         }
@@ -95,6 +98,7 @@ impl DiagnosticCode {
             DiagnosticCode::MissingDeclaration => "missing-declaration",
             DiagnosticCode::InvalidRuneUsage => "invalid-rune-usage",
             DiagnosticCode::ParseError => "parse-error",
+            DiagnosticCode::PreprocessError => "preprocess-error",
         }
     }
 }

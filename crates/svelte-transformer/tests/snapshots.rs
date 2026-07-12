@@ -830,6 +830,20 @@ fn test_bind_this_getter_setter_pair() {
 }
 
 #[test]
+fn test_bind_this_dynamic_svelte_element() {
+    transform_snapshot(
+        "bind_this_dynamic_svelte_element",
+        r#"<script lang="ts">
+    type ElementRef = HTMLAnchorElement | HTMLButtonElement;
+    let tag: "a" | "button" = "button";
+    let element: ElementRef;
+</script>
+
+<svelte:element this={tag} bind:this={element} />"#,
+    );
+}
+
+#[test]
 fn test_class_shorthand_element() {
     transform_snapshot(
         "class_shorthand_element",

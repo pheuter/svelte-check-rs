@@ -5,12 +5,12 @@ use crate::config::{SvelteConfig, SvelteFileKind, TsConfig};
 use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
 use bun_runner::{
     BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunExperimentalOptions, BunInput,
-    BunRunner,
+    BunPreprocessError, BunPreprocessed, BunRunner,
 };
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
 use rayon::prelude::*;
-use source_map::LineIndex;
+use source_map::{LineCol, LineIndex, PreprocessorMap, Span};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -551,6 +551,11 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         });
     }
 
+    let svelte_run_config = SvelteRunConfig {
+        compiler_options: compiler_bun_options,
+        config_path: svelte_config.preprocess_config_path.as_deref(),
+    };
+
     if args.watch {
         run_watch_mode(
             &args,
@@ -558,7 +563,7 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
-            compiler_bun_options,
+            &svelte_run_config,
             &extra_paths,
         )
         .await
@@ -569,11 +574,16 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
-            compiler_bun_options,
+            &svelte_run_config,
             &extra_paths,
         )
         .await
     }
+}
+
+struct SvelteRunConfig<'a> {
+    compiler_options: BunCompileOptions,
+    config_path: Option<&'a Utf8Path>,
 }
 
 /// Runs a single check pass.
@@ -583,7 +593,7 @@ async fn run_single_check(
     files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
-    compiler_bun_options: BunCompileOptions,
+    svelte_run_config: &SvelteRunConfig<'_>,
     extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     let total_start = Instant::now();
@@ -611,10 +621,99 @@ async fn run_single_check(
         compiler_input: Option<BunInput>,
     }
 
+    struct ComponentSource {
+        file_path: Utf8PathBuf,
+        original: String,
+        processed: String,
+        source_map: Option<PreprocessorMap>,
+        preprocess_error: Option<BunPreprocessError>,
+    }
+
     // Separate files by kind: components (.svelte) vs modules (.svelte.ts/.svelte.js)
     let (component_files, module_files): (Vec<_>, Vec<_>) = files
         .into_iter()
         .partition(|f| SvelteFileKind::from_path(f) == Some(SvelteFileKind::Component));
+
+    let preprocess_start = Instant::now();
+    let mut original_sources = HashMap::new();
+    let mut preprocess_inputs = Vec::new();
+    for file_path in &component_files {
+        match fs::read_to_string(file_path) {
+            Ok(source) => {
+                original_sources.insert(file_path.clone(), source.clone());
+                preprocess_inputs.push(BunInput {
+                    filename: file_path.clone(),
+                    source,
+                    options: svelte_run_config.compiler_options.clone(),
+                });
+            }
+            Err(e) => eprintln!("Failed to read {}: {}", file_path, e),
+        }
+    }
+
+    let processed_sources = if svelte_run_config.config_path.is_some() {
+        run_bun_preprocess(workspace, preprocess_inputs, svelte_run_config.config_path).await?
+    } else {
+        preprocess_inputs
+            .into_iter()
+            .map(|input| BunPreprocessed {
+                filename: input.filename,
+                source: input.source,
+                source_map: None,
+                dependencies: Vec::new(),
+                error: None,
+            })
+            .collect()
+    };
+
+    let mut component_sources = Vec::with_capacity(processed_sources.len());
+    for processed in processed_sources {
+        let BunPreprocessed {
+            filename,
+            source,
+            source_map: raw_source_map,
+            error,
+            ..
+        } = processed;
+        let Some(original) = original_sources.remove(&filename) else {
+            continue;
+        };
+        let mut preprocess_error = error;
+        let source_map = match raw_source_map.as_deref().map(PreprocessorMap::parse) {
+            Some(Ok(map)) => Some(map),
+            Some(Err(message)) => {
+                preprocess_error = Some(BunPreprocessError {
+                    message: format!("Invalid preprocessor source map: {message}"),
+                    start: None,
+                    end: None,
+                });
+                None
+            }
+            None => None,
+        };
+        component_sources.push(ComponentSource {
+            file_path: filename,
+            original,
+            processed: source,
+            source_map,
+            preprocess_error,
+        });
+    }
+
+    let preprocessor_maps: HashMap<Utf8PathBuf, PreprocessorMap> = component_sources
+        .iter()
+        .filter_map(|component| {
+            component
+                .source_map
+                .clone()
+                .map(|map| (component.file_path.clone(), map))
+        })
+        .collect();
+    let original_component_sources: HashMap<Utf8PathBuf, String> = component_sources
+        .iter()
+        .map(|component| (component.file_path.clone(), component.original.clone()))
+        .collect();
+    let preprocess_time = preprocess_start.elapsed();
 
     let svelte_start = Instant::now();
 
@@ -627,24 +726,15 @@ async fn run_single_check(
     let workspace_path_str = workspace.to_string();
 
     // Process component files (.svelte) in parallel: parse, run Svelte diagnostics, and transform
-    let component_results: Vec<FileResult> = component_files
+    let component_results: Vec<FileResult> = component_sources
         .par_iter()
-        .map(|file_path| {
-            let source = match fs::read_to_string(file_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Failed to read {}: {}", file_path, e);
-                    return FileResult {
-                        file_path: file_path.clone(),
-                        output: None,
-                        transformed: None,
-                        compiler_input: None,
-                    };
-                }
-            };
+        .map(|component| {
+            let file_path = &component.file_path;
+            let source = &component.processed;
+            let original_source = &component.original;
 
             // Parse the file
-            let parse_result = parse(&source);
+            let parse_result = parse(source);
 
             // If emit_ast is enabled, print parsed AST for each file
             if args.emit_ast {
@@ -672,6 +762,15 @@ async fn run_single_check(
                 ));
             }
 
+            if let Some(error) = &component.preprocess_error {
+                let span = preprocess_error_span(error, source);
+                all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
+                    svelte_diagnostics::DiagnosticCode::PreprocessError,
+                    &error.message,
+                    span,
+                ));
+            }
+
             // Run Svelte diagnostics with filename for component checks
             let file_diag_options = base_diag_options
                 .clone()
@@ -681,10 +780,20 @@ async fn run_single_check(
 
             all_diagnostics.retain(|diag| include_svelte_severity(diag.severity, args.threshold));
 
+            if let Some(preprocessor_map) = &component.source_map {
+                map_svelte_diagnostics(
+                    &mut all_diagnostics,
+                    preprocessor_map,
+                    source,
+                    original_source,
+                );
+            }
+
             // Transform for TypeScript checking (if JS diagnostics enabled and not skipping tsgo)
             // Also transform if emit_ts or emit_source_map is enabled (for debugging)
             let mut transformed = None;
-            let should_transform = !args.skip_tsgo || args.emit_ts || args.emit_source_map;
+            let should_transform = component.preprocess_error.is_none()
+                && (!args.skip_tsgo || args.emit_ts || args.emit_source_map);
             if should_transform {
                 let virtual_path = virtual_path_for(file_path, workspace, true);
                 let helpers_import = helpers_import_path_for(&virtual_path, use_nodenext_imports);
@@ -747,7 +856,8 @@ async fn run_single_check(
                         generated_line_index: LineIndex::new(&tsx_code),
                         tsx_content: tsx_code,
                         source_map: transform_result.source_map,
-                        original_line_index: LineIndex::new(&source),
+                        processed_line_index: LineIndex::new(source),
+                        preprocessor_map: component.source_map.clone(),
                     };
 
                     transformed = Some((virtual_path, transformed_file));
@@ -775,20 +885,24 @@ async fn run_single_check(
                     text: if output_json {
                         None
                     } else {
-                        Some(formatter.format(&all_diagnostics, relative_path, &source))
+                        Some(formatter.format(&all_diagnostics, relative_path, original_source))
                     },
                     json: if output_json {
-                        Formatter::format_json_diagnostics(&all_diagnostics, relative_path, &source)
+                        Formatter::format_json_diagnostics(
+                            &all_diagnostics,
+                            relative_path,
+                            original_source,
+                        )
                     } else {
                         Vec::new()
                     },
                 })
             };
 
-            let compiler_input = Some(BunInput {
+            let compiler_input = component.preprocess_error.is_none().then(|| BunInput {
                 filename: file_path.clone(),
                 source: source.clone(),
-                options: compiler_bun_options.clone(),
+                options: svelte_run_config.compiler_options.clone(),
             });
 
             FileResult {
@@ -870,7 +984,8 @@ async fn run_single_check(
                     generated_line_index: LineIndex::new(&tsx_code),
                     tsx_content: tsx_code,
                     source_map: transform_result.source_map,
-                    original_line_index: LineIndex::new(&source),
+                    processed_line_index: LineIndex::new(&source),
+                    preprocessor_map: None,
                 };
 
                 if !args.skip_tsgo {
@@ -939,7 +1054,11 @@ async fn run_single_check(
             // `compiler_sources` to attach source snippets. The human formatter
             // does not, so skip the clone to keep peak memory low for large repos.
             if output_json {
-                compiler_sources.insert(input.filename.clone(), input.source.clone());
+                let source = original_component_sources
+                    .get(&input.filename)
+                    .unwrap_or(&input.source)
+                    .clone();
+                compiler_sources.insert(input.filename.clone(), source);
             }
             compiler_inputs.push(input);
         }
@@ -1042,6 +1161,7 @@ async fn run_single_check(
         compiler_total_time = Some(run.elapsed);
         match run.result {
             Ok(mut diagnostics) => {
+                map_compiler_diagnostics(&mut diagnostics, &preprocessor_maps);
                 apply_compiler_warning_settings(&mut diagnostics, &compiler_warning_settings);
                 diagnostics.retain(|diag| include_compiler_severity(diag.severity, args.threshold));
 
@@ -1135,6 +1255,7 @@ async fn run_single_check(
             TimingFormat::Json => {
                 let json = timings_json(
                     file_scan_time,
+                    preprocess_time,
                     svelte_time,
                     total_file_count,
                     transformed_count,
@@ -1152,6 +1273,7 @@ async fn run_single_check(
                 if let Some(scan_time) = file_scan_time {
                     eprintln!("file scan: {:?} ({} files)", scan_time, total_file_count);
                 }
+                eprintln!("preprocess: {:?}", preprocess_time);
                 eprintln!(
                     "svelte phase: {:?} ({} files, {} transformed)",
                     svelte_time, total_file_count, transformed_count
@@ -1288,6 +1410,134 @@ async fn run_tsgo_check(
         .check(files, emit_diagnostics)
         .await
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))
+}
+
+/// Runs configured Svelte preprocessors using the existing bun worker bridge.
+async fn run_bun_preprocess(
+    workspace: &Utf8Path,
+    inputs: Vec<BunInput>,
+    config_path: Option<&Utf8Path>,
+) -> Result<Vec<BunPreprocessed>, OrchestratorError> {
+    let bun_path = BunRunner::ensure_bun(Some(workspace))
+        .await
+        .map_err(|e| OrchestratorError::BunError(e.to_string()))?;
+
+    let worker_count = bun_worker_count();
+    let runner = BunRunner::new(bun_path, workspace.to_owned(), worker_count)
+        .map_err(|e| OrchestratorError::BunError(e.to_string()))?;
+
+    runner
+        .preprocess_files(inputs, config_path)
+        .await
+        .map_err(|e| OrchestratorError::BunError(e.to_string()))
+}
+
+fn map_preprocessed_span(
+    span: Span,
+    map: &PreprocessorMap,
+    processed_index: &LineIndex,
+    original_index: &LineIndex,
+) -> Span {
+    let map_offset = |offset| {
+        processed_index
+            .utf16_line_col(offset)
+            .and_then(|position| map.original_position(position))
+            .and_then(|position| original_index.offset_utf16(position))
+    };
+
+    match (map_offset(span.start), map_offset(span.end)) {
+        (Some(start), Some(end)) if end >= start => Span::new(start, end),
+        (Some(start), _) => Span::empty(start),
+        _ => span,
+    }
+}
+
+fn preprocess_error_span(error: &BunPreprocessError, source: &str) -> Span {
+    let index = LineIndex::new(source);
+    let source_len = source.len() as u32;
+    let position_offset = |position: Option<bun_runner::BunPreprocessPosition>| {
+        position.and_then(|position| {
+            position
+                .line
+                .zip(position.column)
+                .and_then(|(line, column)| {
+                    index.offset_utf16(LineCol {
+                        line: line.saturating_sub(1),
+                        col: column,
+                    })
+                })
+                .map(u32::from)
+                .or_else(|| {
+                    position
+                        .offset
+                        .and_then(|offset| utf16_offset_to_byte(source, offset))
+                })
+        })
+    };
+
+    let start = position_offset(error.start).unwrap_or(0).min(source_len);
+    let end = position_offset(error.end)
+        .unwrap_or(start)
+        .clamp(start, source_len);
+    Span::new(start, end)
+}
+
+fn utf16_offset_to_byte(source: &str, target: u32) -> Option<u32> {
+    let mut utf16_offset = 0u32;
+    for (byte_offset, character) in source.char_indices() {
+        if utf16_offset == target {
+            return Some(byte_offset as u32);
+        }
+        utf16_offset += character.len_utf16() as u32;
+        if utf16_offset > target {
+            return None;
+        }
+    }
+
+    (utf16_offset == target).then_some(source.len() as u32)
+}
+
+fn map_svelte_diagnostics(
+    diagnostics: &mut [svelte_diagnostics::Diagnostic],
+    map: &PreprocessorMap,
+    processed_source: &str,
+    original_source: &str,
+) {
+    let processed_index = LineIndex::new(processed_source);
+    let original_index = LineIndex::new(original_source);
+
+    for diagnostic in diagnostics {
+        diagnostic.span =
+            map_preprocessed_span(diagnostic.span, map, &processed_index, &original_index);
+        for suggestion in &mut diagnostic.suggestions {
+            suggestion.span =
+                map_preprocessed_span(suggestion.span, map, &processed_index, &original_index);
+        }
+    }
+}
+
+fn map_compiler_diagnostics(
+    diagnostics: &mut [BunDiagnostic],
+    maps: &HashMap<Utf8PathBuf, PreprocessorMap>,
+) {
+    for diagnostic in diagnostics {
+        let Some(map) = maps.get(&diagnostic.file) else {
+            continue;
+        };
+        let map_position = |position: bun_runner::BunPosition| {
+            map.original_position(LineCol {
+                line: position.line.saturating_sub(1),
+                col: position.column,
+            })
+            .map(|original| bun_runner::BunPosition {
+                line: original.line + 1,
+                column: original.col,
+            })
+            .unwrap_or(position)
+        };
+        diagnostic.start = map_position(diagnostic.start);
+        diagnostic.end = map_position(diagnostic.end);
+    }
 }
 
 /// Runs Svelte compiler diagnostics using bun.
@@ -1624,6 +1874,7 @@ fn duration_ms(duration: std::time::Duration) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn timings_json(
     file_scan_time: Option<std::time::Duration>,
+    preprocess_time: std::time::Duration,
     svelte_time: std::time::Duration,
     file_count: usize,
     transformed_count: usize,
@@ -1641,6 +1892,10 @@ fn timings_json(
             .map(duration_ms)
             .map(serde_json::Value::from)
             .unwrap_or(serde_json::Value::Null),
+    );
+    root.insert(
+        "preprocess_ms".to_string(),
+        serde_json::Value::from(duration_ms(preprocess_time)),
     );
     root.insert(
         "svelte_ms".to_string(),
@@ -1746,7 +2001,7 @@ async fn run_watch_mode(
     initial_files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
-    compiler_bun_options: BunCompileOptions,
+    svelte_run_config: &SvelteRunConfig<'_>,
     extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -1761,7 +2016,7 @@ async fn run_watch_mode(
         initial_files.clone(),
         file_scan_time,
         use_nodenext_imports,
-        compiler_bun_options.clone(),
+        svelte_run_config,
         extra_paths,
     )
     .await?;
@@ -1793,8 +2048,11 @@ async fn run_watch_mode(
                 || path_str.ends_with(".svelte.ts")
                 || path_str.ends_with(".svelte.js")
         });
+        let preprocessor_config_changed = svelte_run_config
+            .config_path
+            .is_some_and(|config_path| event.paths.iter().any(|path| path == config_path));
 
-        if svelte_changed {
+        if svelte_changed || preprocessor_config_changed {
             if !args.preserve_watch_output {
                 // Clear screen
                 print!("\x1B[2J\x1B[1;1H");
@@ -1809,7 +2067,7 @@ async fn run_watch_mode(
                 initial_files.clone(),
                 file_scan_time,
                 use_nodenext_imports,
-                compiler_bun_options.clone(),
+                svelte_run_config,
                 extra_paths,
             )
             .await;
@@ -2046,6 +2304,44 @@ mod tests {
         assert_eq!(line_column_to_offset(source, 2, 1), 6);
         // Line 3, column 1 = offset 12 ('l')
         assert_eq!(line_column_to_offset(source, 3, 1), 12);
+    }
+
+    #[test]
+    fn test_preprocess_error_span_prefers_component_line_column() {
+        let source = "<script>\n  const broken = ;\n</script>";
+        let error = BunPreprocessError {
+            message: "Expression expected.".to_string(),
+            start: Some(bun_runner::BunPreprocessPosition {
+                line: Some(2),
+                column: Some(17),
+                // Script preprocessors may supply a fragment-relative offset.
+                offset: Some(0),
+            }),
+            end: None,
+        };
+
+        let span = preprocess_error_span(&error, source);
+        let position = LineIndex::new(source)
+            .utf16_line_col(span.start)
+            .expect("mapped position");
+        assert_eq!(position, LineCol::new(1, 17));
+    }
+
+    #[test]
+    fn test_preprocess_error_span_converts_utf16_offset() {
+        let source = "😀 const broken = ;";
+        let error = BunPreprocessError {
+            message: "Expression expected.".to_string(),
+            start: Some(bun_runner::BunPreprocessPosition {
+                line: None,
+                column: None,
+                offset: Some(18),
+            }),
+            end: None,
+        };
+
+        let span = preprocess_error_span(&error, source);
+        assert_eq!(u32::from(span.start), 20);
     }
 
     #[test]

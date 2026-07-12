@@ -8,6 +8,8 @@ description = "Source position tracking and mapping for svelte-check-rs"
 
 [dependencies]
 text-size.workspace = true
+swc_sourcemap.workspace = true
+thiserror.workspace = true
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]

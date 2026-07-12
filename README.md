@@ -9,6 +9,7 @@ A high-performance, Rust-powered diagnostic engine designed as a drop-in replace
 - 🚀 **Fast**: 10-100x faster than `svelte-check` through Rust's zero-cost abstractions and parallel processing
 - ✅ **Accurate**: Matches `svelte-check` diagnostics, including Svelte compiler errors via bun
 - 🔄 **Compatible**: Drop-in CLI replacement, identical output formats
+- 🧩 **Preprocessor-aware**: Runs preprocessors configured in `svelte.config.*` and maps diagnostics back to the original component
 - 🔧 **Maintainable**: Clean separation of concerns, comprehensive test suite
 
 ## Installation

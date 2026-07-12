@@ -1717,7 +1717,9 @@ version = "0.10.2"
 dependencies = [
  "pretty_assertions",
  "serde",
+ "swc_sourcemap",
  "text-size",
+ "thiserror",
 ]
 
 [[package]]

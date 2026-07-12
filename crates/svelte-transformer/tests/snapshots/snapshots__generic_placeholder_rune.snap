@@ -1,6 +1,5 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
-assertion_line: 81
 expression: output
 ---
 === Source (Placeholder.svelte) ===
@@ -183,6 +182,7 @@ __svelte_generic: true;
 element?: typeof HTMLElement;
 z_$$bindings?: any;
 };
+type __SvelteComponent_Placeholder_<T> = Awaited<ReturnType<typeof __svelte_render<T>>>["exports"];
 export default __SvelteComponent_Placeholder_;
 
 

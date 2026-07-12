@@ -274,14 +274,22 @@ fn do_source_mapping(
     column: u32,
 ) -> (String, u32, u32) {
     // Convert line/column to byte offset (tsgo uses 1-indexed)
-    if let Some(generated_offset) = file.generated_line_index.offset(LineCol {
+    if let Some(generated_offset) = file.generated_line_index.offset_char(LineCol {
         line: line.saturating_sub(1),
         col: column.saturating_sub(1),
     }) {
         // Try to map back using source map
         if let Some(original_offset) = file.source_map.original_position(generated_offset) {
-            // Convert original byte offset back to line/column
-            if let Some(original_line_col) = file.original_line_index.line_col(original_offset) {
+            // The transformer's map lands in preprocessed Svelte. Compose it
+            // with the configured preprocessor's standard source map, if any.
+            if let Some(processed_line_col) =
+                file.processed_line_index.utf16_line_col(original_offset)
+            {
+                let original_line_col = file
+                    .preprocessor_map
+                    .as_ref()
+                    .and_then(|map| map.original_position(processed_line_col))
+                    .unwrap_or(processed_line_col);
                 // Return 1-indexed line/column for tsgo format
                 return (
                     file.original_path.to_string(),
@@ -451,6 +459,32 @@ mod tests {
         assert_eq!(
             strip_cache_prefix(path),
             Some("src/App.svelte.ts".to_string())
+        );
+    }
+
+    #[test]
+    fn test_source_mapping_converts_native_ts_columns_to_utf16() {
+        use crate::runner::TransformedFile;
+        use camino::Utf8PathBuf;
+        use source_map::{LineIndex, SourceMapBuilder};
+
+        let source = "😀 answer";
+        let mut builder = SourceMapBuilder::new();
+        builder.add_source(0u32.into(), source);
+        let file = TransformedFile {
+            original_path: Utf8PathBuf::from("src/App.svelte"),
+            tsx_content: source.to_string(),
+            generated_line_index: LineIndex::new(source),
+            source_map: builder.build(),
+            processed_line_index: LineIndex::new(source),
+            preprocessor_map: None,
+        };
+
+        // Native TypeScript reports `answer` at scalar column 3. LSP and
+        // svelte-check output use UTF-16, where it starts at column 4.
+        assert_eq!(
+            do_source_mapping(&file, 1, 3),
+            ("src/App.svelte".to_string(), 1, 4)
         );
     }
 }

@@ -62,6 +62,9 @@ impl SvelteFileKind {
 /// Svelte project configuration.
 #[derive(Debug, Clone, Default)]
 pub struct SvelteConfig {
+    /// Svelte configuration file to execute for configured preprocessors.
+    pub preprocess_config_path: Option<Utf8PathBuf>,
+
     /// File extensions to process.
     pub extensions: Vec<String>,
 
@@ -113,6 +116,22 @@ impl SvelteConfig {
     /// `svelte.config` or defaults — the same static-parse tradeoff already used
     /// for `svelte.config` (#3009).
     pub fn load(project_root: &Utf8Path) -> Self {
+        // This path is independent of where the statically extracted options
+        // below come from. Vite plugin options may take precedence for compiler
+        // settings, while the Bun bridge executes the conventional
+        // svelte.config module directly to obtain its preprocessors.
+        let svelte_config_files = [
+            "svelte.config.js",
+            "svelte.config.ts",
+            "svelte.config.cjs",
+            "svelte.config.mjs",
+            "svelte.config.mts",
+        ];
+        let preprocess_config_path = svelte_config_files
+            .iter()
+            .map(|file| project_root.join(file))
+            .find(|path| path.exists());
+
         // Probe vite.config first (upstream VITE_CONFIG_EXTENSIONS order:
         // js -> mjs -> ts -> cjs -> mts -> cts); first existing file wins.
         let vite_config_files = [
@@ -129,7 +148,10 @@ impl SvelteConfig {
             if config_path.exists() {
                 match Self::parse_vite_config(&config_path) {
                     // vite.config yielded svelte/sveltekit plugin options: prefer it.
-                    Ok(Some(config)) => return config,
+                    Ok(Some(mut config)) => {
+                        config.preprocess_config_path = preprocess_config_path;
+                        return config;
+                    }
                     // vite.config present but no usable plugin options (e.g. a
                     // bare `sveltekit()` with no args): fall through to
                     // svelte.config, matching upstream's vite-then-svelte
@@ -153,23 +175,18 @@ impl SvelteConfig {
         // `.mts`) behind `process.features.typescript`: upstream needs Node to
         // import the config at runtime, whereas svelte-check-rs parses configs
         // statically via SWC, so the full set is always available.
-        let config_files = [
-            "svelte.config.js",
-            "svelte.config.ts",
-            "svelte.config.cjs",
-            "svelte.config.mjs",
-            "svelte.config.mts",
-        ];
-
-        for config_file in config_files {
-            let config_path = project_root.join(config_file);
-            if config_path.exists() {
-                match Self::parse_config(&config_path) {
-                    Ok(config) => return config,
-                    Err(e) => {
-                        eprintln!("Warning: Failed to parse {}: {}", config_path, e);
-                        return Self::default();
-                    }
+        if let Some(config_path) = preprocess_config_path {
+            match Self::parse_config(&config_path) {
+                Ok(mut config) => {
+                    config.preprocess_config_path = Some(config_path);
+                    return config;
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to parse {}: {}", config_path, e);
+                    return Self {
+                        preprocess_config_path: Some(config_path),
+                        ..Self::default()
+                    };
                 }
             }
         }
@@ -1360,6 +1377,14 @@ mod tests {
             config.kit.alias.get("$lib"),
             Some(&"./from-vite".to_string()),
             "expected vite.config.ts alias to win over svelte.config.js"
+        );
+        assert_eq!(
+            config
+                .preprocess_config_path
+                .as_deref()
+                .and_then(Utf8Path::file_name),
+            Some("svelte.config.js"),
+            "preprocessors must still load from svelte.config.js"
         );
     }
 

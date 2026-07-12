@@ -1,0 +1,10 @@
+{
+  "name": "configured-preprocessor",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260224.1",
+    "magic-string": "^0.30.21",
+    "svelte": "^5.45.6"
+  }
+}
