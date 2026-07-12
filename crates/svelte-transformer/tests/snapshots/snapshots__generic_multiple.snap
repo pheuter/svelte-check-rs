@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 81
 expression: output
 ---
 === Source (Combobox.svelte) ===
@@ -258,7 +259,6 @@ __svelte_generic: true;
 element?: typeof HTMLElement;
 z_$$bindings?: any;
 };
-type __SvelteComponent_Combobox_<T extends {label: string; value: string}, TMode extends 'single' | 'multiple'> = Awaited<ReturnType<typeof __svelte_render<T, TMode>>>["exports"];
 export default __SvelteComponent_Combobox_;
 
 

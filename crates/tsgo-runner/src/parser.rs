@@ -141,6 +141,7 @@ fn parse_diagnostic_line(
     let (original_file, original_line, original_column) =
         map_to_original(file_path, line_num, column, files);
 
+    let position_unknown = original_line == 0 || original_column == 0;
     Some(TsgoDiagnostic {
         file: Utf8PathBuf::from(original_file),
         start: DiagnosticPosition {
@@ -148,15 +149,23 @@ fn parse_diagnostic_line(
             column: original_column,
             offset: 0, // Would need full source to calculate
         },
-        end: DiagnosticPosition {
-            line: original_line,
-            column: original_column + 1,
-            offset: 0,
+        end: if position_unknown {
+            DiagnosticPosition {
+                line: 0,
+                column: 0,
+                offset: 0,
+            }
+        } else {
+            DiagnosticPosition {
+                line: original_line,
+                column: original_column + 1,
+                offset: 0,
+            }
         },
         message,
         code,
         severity,
-        position_unknown: false,
+        position_unknown,
     })
 }
 
@@ -274,7 +283,7 @@ fn do_source_mapping(
     column: u32,
 ) -> (String, u32, u32) {
     // Convert line/column to byte offset (tsgo uses 1-indexed)
-    if let Some(generated_offset) = file.generated_line_index.offset_char(LineCol {
+    if let Some(generated_offset) = file.generated_line_index.offset_utf16(LineCol {
         line: line.saturating_sub(1),
         col: column.saturating_sub(1),
     }) {
@@ -285,11 +294,15 @@ fn do_source_mapping(
             if let Some(processed_line_col) =
                 file.processed_line_index.utf16_line_col(original_offset)
             {
-                let original_line_col = file
-                    .preprocessor_map
-                    .as_ref()
-                    .and_then(|map| map.original_position(processed_line_col))
-                    .unwrap_or(processed_line_col);
+                let original_line_col = match &file.preprocessor_map {
+                    Some(map) => {
+                        match map.original_position_in(processed_line_col, &file.original_path) {
+                            Some(position) => position,
+                            None => return (file.original_path.to_string(), 0, 0),
+                        }
+                    }
+                    None => processed_line_col,
+                };
                 // Return 1-indexed line/column for tsgo format
                 return (
                     file.original_path.to_string(),
@@ -300,8 +313,9 @@ fn do_source_mapping(
         }
     }
 
-    // Fallback: return original file but keep generated position
-    (file.original_path.to_string(), line, column)
+    // Generated TSX coordinates must never be presented as original Svelte.
+    // A positionless diagnostic is less precise but remains truthful.
+    (file.original_path.to_string(), 0, 0)
 }
 
 fn strip_cache_prefix(path: &str) -> Option<String> {
@@ -480,11 +494,91 @@ mod tests {
             preprocessor_map: None,
         };
 
-        // Native TypeScript reports `answer` at scalar column 3. LSP and
-        // svelte-check output use UTF-16, where it starts at column 4.
+        // Supported native TypeScript versions report UTF-16 columns.
         assert_eq!(
-            do_source_mapping(&file, 1, 3),
+            do_source_mapping(&file, 1, 4),
             ("src/App.svelte".to_string(), 1, 4)
+        );
+    }
+
+    #[test]
+    fn test_unmapped_preprocessor_position_stays_positionless() {
+        use crate::runner::TransformedFile;
+        use camino::Utf8PathBuf;
+        use source_map::{LineIndex, PreprocessorMap, SourceMapBuilder};
+
+        let source = "first\nsecond";
+        let mut builder = SourceMapBuilder::new();
+        builder.add_source(0u32.into(), source);
+        let file = TransformedFile {
+            original_path: Utf8PathBuf::from("src/App.svelte"),
+            tsx_content: source.to_string(),
+            generated_line_index: LineIndex::new(source),
+            source_map: builder.build(),
+            processed_line_index: LineIndex::new(source),
+            preprocessor_map: Some(
+                PreprocessorMap::parse(
+                    r#"{"version":3,"sources":["App.svelte"],"names":[],"mappings":"AAAA;"}"#,
+                )
+                .expect("preprocessor map"),
+            ),
+        };
+
+        assert_eq!(
+            do_source_mapping(&file, 2, 1),
+            ("src/App.svelte".to_string(), 0, 0)
+        );
+    }
+
+    #[test]
+    fn transformer_map_holes_stay_positionless() {
+        use crate::runner::TransformedFile;
+        use camino::Utf8PathBuf;
+        use source_map::{LineIndex, SourceMapBuilder};
+
+        let source = "generated";
+        let file = TransformedFile {
+            original_path: Utf8PathBuf::from("src/App.svelte"),
+            tsx_content: source.to_string(),
+            generated_line_index: LineIndex::new(source),
+            source_map: SourceMapBuilder::new().build(),
+            processed_line_index: LineIndex::new(source),
+            preprocessor_map: None,
+        };
+
+        assert_eq!(
+            do_source_mapping(&file, 1, 2),
+            ("src/App.svelte".to_string(), 0, 0)
+        );
+    }
+
+    #[test]
+    fn generated_surrogate_interiors_stay_positionless() {
+        use crate::runner::TransformedFile;
+        use camino::Utf8PathBuf;
+        use source_map::{LineIndex, PreprocessorMap, SourceMapBuilder};
+
+        let source = "😀value";
+        let mut builder = SourceMapBuilder::new();
+        builder.add_source(0u32.into(), source);
+        let file = TransformedFile {
+            original_path: Utf8PathBuf::from("src/App.svelte"),
+            tsx_content: source.to_string(),
+            generated_line_index: LineIndex::new(source),
+            source_map: builder.build(),
+            processed_line_index: LineIndex::new(source),
+            preprocessor_map: Some(
+                PreprocessorMap::parse(
+                    r#"{"version":3,"sources":["App.svelte"],"names":[],"mappings":"AAAA"}"#,
+                )
+                .expect("preprocessor map"),
+            ),
+        };
+
+        // Column 2 (one-indexed) lies between the emoji's two UTF-16 units.
+        assert_eq!(
+            do_source_mapping(&file, 1, 2),
+            ("src/App.svelte".to_string(), 0, 0)
         );
     }
 }

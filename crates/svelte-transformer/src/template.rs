@@ -1208,29 +1208,6 @@ impl TemplateContext {
     }
 
     fn generate_element_attributes(&mut self, element_name: &str, attrs: &[Attribute]) {
-        let dynamic_element_tag = if element_name == "svelte:element" {
-            attrs.iter().find_map(|attr| {
-                let Attribute::Normal(attr) = attr else {
-                    return None;
-                };
-                if attr.name != "this" {
-                    return None;
-                }
-                match &attr.value {
-                    AttributeValue::Expression(expr) => Some(self.track_inline_expression(
-                        &expr.expression,
-                        expr.expression_span,
-                        ExpressionContext::Attribute,
-                    )),
-                    AttributeValue::Text(text) => {
-                        Some(format!("\"{}\"", escape_js_string(&text.value)))
-                    }
-                    _ => None,
-                }
-            })
-        } else {
-            None
-        };
         let action_attrs = self.emit_action_attributes(element_name, attrs);
         let action_attrs_type = if action_attrs.is_empty() {
             None
@@ -1271,12 +1248,7 @@ impl TemplateContext {
                     // Event handlers are type-checked in the attribute check object.
                 }
                 Attribute::Directive(d) => {
-                    self.generate_directive(
-                        element_name,
-                        d,
-                        action_attrs_type.as_deref(),
-                        dynamic_element_tag.as_deref(),
-                    );
+                    self.generate_directive(element_name, d, action_attrs_type.as_deref());
                 }
                 Attribute::Shorthand(_) => {
                     // Shorthand values are type-checked in the attribute check object.
@@ -1321,7 +1293,6 @@ impl TemplateContext {
         element_name: &str,
         directive: &Directive,
         action_attrs_type: Option<&str>,
-        dynamic_element_tag: Option<&str>,
     ) {
         // `use:` actions on elements are handled in `emit_action_attributes`
         // (which emits their in-tag comments), and `use:` on components is a
@@ -1348,12 +1319,7 @@ impl TemplateContext {
         if !is_bind_this {
             self.emit_tag_comments(&directive.leading_comments);
         }
-        self.generate_directive_inner(
-            element_name,
-            directive,
-            action_attrs_type,
-            dynamic_element_tag,
-        );
+        self.generate_directive_inner(element_name, directive, action_attrs_type);
         self.emit_tag_comments(&directive.trailing_comments);
     }
 
@@ -1362,7 +1328,6 @@ impl TemplateContext {
         element_name: &str,
         directive: &Directive,
         action_attrs_type: Option<&str>,
-        dynamic_element_tag: Option<&str>,
     ) {
         // Shorthand `bind:foo` / `class:foo` / `style:foo` desugars to
         // `<dir>:foo={foo}`. The parser leaves `expression: None` for the
@@ -1460,14 +1425,6 @@ impl TemplateContext {
             } else if directive.kind == DirectiveKind::Bind {
                 if directive.name == "this" {
                     let bind_type = bind_this_type(element_name);
-                    let bind_initializer = dynamic_element_tag
-                        .map(|tag| {
-                            format!(
-                                "(null as unknown as (<K extends string>(tag: K | undefined | null) => K extends keyof ElementTagNameMap ? ElementTagNameMap[K] : HTMLElement))({})",
-                                tag
-                            )
-                        })
-                        .unwrap_or_else(|| format!("null as unknown as {}", bind_type));
                     if let Some((_getter, setter)) =
                         split_top_level_comma(&expr.expression, expr.expression_span)
                     {
@@ -1490,7 +1447,10 @@ impl TemplateContext {
                             context,
                         });
                         let id = self.next_id();
-                        self.emit(&format!("const __bind_this_{} = {};", id, bind_initializer));
+                        self.emit(&format!(
+                            "const __bind_this_{} = null as unknown as {};",
+                            id, bind_type
+                        ));
                         // Leading comments must sit above the setter-call line —
                         // the type-checked statement — not the harmless cast.
                         self.emit_tag_comments(&directive.leading_comments);
@@ -1508,7 +1468,10 @@ impl TemplateContext {
                             context,
                         });
                         let id = self.next_id();
-                        self.emit(&format!("const __bind_this_{} = {};", id, bind_initializer));
+                        self.emit(&format!(
+                            "const __bind_this_{} = null as unknown as {};",
+                            id, bind_type
+                        ));
                         // Leading comments must sit above the assignment line —
                         // the type-checked statement — not the harmless cast.
                         self.emit_tag_comments(&directive.leading_comments);
@@ -1936,7 +1899,7 @@ impl TemplateContext {
         // Second pass: handle directives separately (bindings, events, etc.)
         for attr in attrs {
             if let Attribute::Directive(d) = attr {
-                self.generate_directive(name, d, None, None);
+                self.generate_directive(name, d, None);
             }
         }
 

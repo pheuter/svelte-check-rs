@@ -3,6 +3,7 @@
 mod runner;
 
 pub use runner::{
-    BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunError, BunExperimentalOptions,
-    BunInput, BunPosition, BunPreprocessError, BunPreprocessPosition, BunPreprocessed, BunRunner,
+    BunCompileOptions, BunConfigSession, BunDiagnostic, BunDiagnosticSeverity, BunError,
+    BunExperimentalOptions, BunInput, BunLoadedConfig, BunPosition, BunPreprocessError,
+    BunPreprocessPhase, BunPreprocessPosition, BunPreprocessed, BunRunner,
 };

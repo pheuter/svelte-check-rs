@@ -1,5 +1,6 @@
 ---
 source: crates/svelte-transformer/tests/snapshots.rs
+assertion_line: 81
 expression: output
 ---
 === Source (Simple.svelte) ===
@@ -180,7 +181,6 @@ return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, 
 type __SvelteProps_Simple_ = Awaited<ReturnType<typeof __svelte_render>>["props"];
 type __SvelteExports_Simple_ = Awaited<ReturnType<typeof __svelte_render>>["exports"];
 declare const __SvelteComponent_Simple_: __SvelteComponent<__SvelteProps_Simple_, __SvelteExports_Simple_>;
-type __SvelteComponent_Simple_ = InstanceType<typeof __SvelteComponent_Simple_>;
 export default __SvelteComponent_Simple_;
 
 

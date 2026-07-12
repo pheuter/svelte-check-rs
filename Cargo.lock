@@ -1715,11 +1715,15 @@ dependencies = [
 name = "source-map"
 version = "0.10.2"
 dependencies = [
+ "camino",
+ "percent-encoding",
  "pretty_assertions",
  "serde",
+ "serde_json",
  "swc_sourcemap",
  "text-size",
  "thiserror",
+ "url",
 ]
 
 [[package]]
@@ -1806,9 +1810,7 @@ dependencies = [
  "svelte-diagnostics",
  "svelte-parser",
  "svelte-transformer",
- "swc_common",
- "swc_ecma_ast",
- "swc_ecma_parser",
+ "tempfile",
  "text-size",
  "thiserror",
  "tokio",

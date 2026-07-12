@@ -1922,7 +1922,7 @@ declare module "svelte" {
         if rune_result.uses_props_accessor {
             let accessor_type = default_props_type.unwrap_or("Record<string, unknown>");
             let decl = format!(
-                "{}declare const $props: Omit<__SveltePropsAccessor<{}>, \"id\"> & {{ id: () => string }};\n",
+                "{}declare const $props: __SveltePropsAccessor<{}>;\n",
                 indent, accessor_type
             );
             output.push_str(&decl);
@@ -2031,7 +2031,7 @@ declare module "svelte" {
                 .or(default_props_type)
                 .unwrap_or("Record<string, unknown>");
             Some(format!(
-                "{}const $props = null as any as Omit<__SveltePropsAccessor<{}>, \"id\"> & {{ id: () => string }};\n",
+                "{}const $props = null as any as __SveltePropsAccessor<{}>;\n",
                 indent, accessor_type
             ))
         } else {
@@ -2240,7 +2240,6 @@ declare const {internal_name}: {{\n\
   element?: typeof HTMLElement;\n\
   z_$$bindings?: any;\n\
 }};\n\
-type {internal_name}{generics_def} = Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"exports\"];\n\
 export default {internal_name};\n",
             props_name = props_name,
             internal_name = internal_name,
@@ -2255,7 +2254,6 @@ export default {internal_name};\n",
             "type {props_name} = Awaited<ReturnType<typeof __svelte_render>>[\"props\"];\n\
 type {exports_name} = Awaited<ReturnType<typeof __svelte_render>>[\"exports\"];\n\
 declare const {internal_name}: __SvelteComponent<{props_name}, {exports_name}>;\n\
-type {internal_name} = InstanceType<typeof {internal_name}>;\n\
 export default {internal_name};\n",
             props_name = props_name,
             exports_name = exports_name,
@@ -2341,7 +2339,7 @@ mod tests {
 
     #[test]
     fn test_transform_with_filename() {
-        let doc = parse("<script>let value = 1;</script>").document;
+        let doc = parse("").document;
         let result = transform(
             &doc,
             TransformOptions {
@@ -2351,9 +2349,6 @@ mod tests {
         );
         // Uses internal name to avoid conflicts with imports
         assert!(result.tsx_code.contains("__SvelteComponent_Counter_"));
-        assert!(result.tsx_code.contains(
-            "type __SvelteComponent_Counter_ = InstanceType<typeof __SvelteComponent_Counter_>"
-        ));
     }
 
     #[test]
@@ -2416,41 +2411,6 @@ mod tests {
         assert!(!result
             .tsx_code
             .contains("// Helper functions for template type-checking"));
-    }
-
-    #[test]
-    fn test_props_id_accessor_is_always_callable() {
-        let source = r#"<script lang="ts">
-interface Props { id?: string }
-const uid = $props.id();
-let { id }: Props = $props();
-</script>"#;
-        let doc = parse(source).document;
-        let result = transform(&doc, TransformOptions::default());
-
-        assert!(result
-            .tsx_code
-            .contains("Omit<__SveltePropsAccessor<Props>, \"id\"> & { id: () => string }"));
-    }
-
-    #[test]
-    fn test_generic_component_exports_generic_instance_type() {
-        let source = r#"<script lang="ts" generics="T extends string">
-export function getValue(): T { return null as T }
-let { value }: { value: T } = $props();
-</script>"#;
-        let doc = parse(source).document;
-        let result = transform(
-            &doc,
-            TransformOptions {
-                filename: Some("GenericChild.svelte".to_string()),
-                ..Default::default()
-            },
-        );
-
-        assert!(result.tsx_code.contains(
-            "type __SvelteComponent_GenericChild_<T extends string> = Awaited<ReturnType<typeof __svelte_render<T>>>[\"exports\"]"
-        ));
     }
 
     /// Regression test for issue #48: `Props & { extended }` pattern should not

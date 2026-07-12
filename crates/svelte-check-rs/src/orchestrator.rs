@@ -1,11 +1,12 @@
 //! Main orchestration logic.
 
 use crate::cli::{Args, TimingFormat};
-use crate::config::{SvelteConfig, SvelteFileKind, TsConfig};
+use crate::config::{KitConfig, SvelteCompilerOptions, SvelteConfig, SvelteFileKind, TsConfig};
 use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
 use bun_runner::{
-    BunCompileOptions, BunDiagnostic, BunDiagnosticSeverity, BunExperimentalOptions, BunInput,
-    BunPreprocessError, BunPreprocessed, BunRunner,
+    BunCompileOptions, BunConfigSession, BunDiagnostic, BunDiagnosticSeverity,
+    BunExperimentalOptions, BunInput, BunLoadedConfig, BunPreprocessError, BunPreprocessed,
+    BunRunner,
 };
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use globset::{Glob, GlobSetBuilder};
@@ -25,6 +26,19 @@ use tsgo_runner::{
 use walkdir::WalkDir;
 
 const SHARED_HELPERS_MODULE: &str = "__svelte_check_rs_helpers";
+const CONFIG_FILENAMES: &[&str] = &[
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.ts",
+    "vite.config.cjs",
+    "vite.config.mts",
+    "vite.config.cts",
+    "svelte.config.js",
+    "svelte.config.cjs",
+    "svelte.config.mjs",
+    "svelte.config.ts",
+    "svelte.config.mts",
+];
 
 /// Returns the extension label (with leading dot) we should display for a
 /// discovered file whose `SvelteFileKind` is unrecognized. Prefers the longest
@@ -337,6 +351,63 @@ fn canonicalize_physical(path: &Utf8Path) -> Utf8PathBuf {
     path.canonicalize_utf8().unwrap_or_else(|_| path.to_owned())
 }
 
+fn normalize_dependency_path(workspace: &Utf8Path, path: &Utf8Path) -> Utf8PathBuf {
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        workspace.join(path)
+    };
+    canonicalize_with_missing_suffix(&normalize_lexical(&path))
+}
+
+fn canonicalize_with_missing_suffix(path: &Utf8Path) -> Utf8PathBuf {
+    let mut ancestor = path.to_owned();
+    let mut suffix = Vec::new();
+    while !ancestor.exists() {
+        let Some(name) = ancestor.file_name() else {
+            return path.to_owned();
+        };
+        suffix.push(name.to_string());
+        if !ancestor.pop() {
+            return path.to_owned();
+        }
+    }
+
+    let mut canonical = ancestor.canonicalize_utf8().unwrap_or(ancestor);
+    #[cfg(windows)]
+    {
+        let value = canonical.as_str().to_string();
+        canonical = if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            Utf8PathBuf::from(format!(r"\\{rest}"))
+        } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+            Utf8PathBuf::from(rest)
+        } else {
+            Utf8PathBuf::from(value)
+        };
+    }
+    for name in suffix.into_iter().rev() {
+        canonical.push(name);
+    }
+    canonical
+}
+
+fn paths_match(left: &Utf8Path, right: &Utf8Path) -> bool {
+    left == right || (cfg!(windows) && left.as_str().eq_ignore_ascii_case(right.as_str()))
+}
+
+async fn run_bun_load_config(
+    workspace: &Utf8Path,
+) -> Result<(BunLoadedConfig, BunConfigSession), OrchestratorError> {
+    let bun_path = BunRunner::ensure_bun(Some(workspace))
+        .await
+        .map_err(|error| OrchestratorError::BunError(error.to_string()))?;
+    BunRunner::new(bun_path, workspace.to_owned(), 1)
+        .map_err(|error| OrchestratorError::BunError(error.to_string()))?
+        .load_config_session()
+        .await
+        .map_err(|error| OrchestratorError::BunError(error.to_string()))
+}
+
 /// Runs the check on all files.
 pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     let workspace = if args.workspace.is_relative() {
@@ -349,8 +420,21 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
     };
     let workspace = canonicalize_physical(&normalize_lexical(&workspace));
 
-    // Load configuration
-    let svelte_config = SvelteConfig::load(&workspace);
+    // Execute the same effective Vite/Svelte configuration source that supplies
+    // preprocessors. This prevents compiler options and preprocessors from
+    // being combined from two unrelated files.
+    let (loaded_config, config_session) = run_bun_load_config(&workspace).await?;
+    let svelte_config = SvelteConfig {
+        extensions: loaded_config.extensions.clone(),
+        exclude: Vec::new(),
+        kit: KitConfig {
+            alias: loaded_config.kit_alias.clone(),
+        },
+        compiler_options: SvelteCompilerOptions {
+            runes: loaded_config.runes,
+            experimental_async: loaded_config.experimental_async,
+        },
+    };
     let extra_paths = svelte_alias_paths(&svelte_config);
     let compiler_bun_options = BunCompileOptions {
         runes: svelte_config.compiler_options.runes,
@@ -551,9 +635,16 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
         });
     }
 
-    let svelte_run_config = SvelteRunConfig {
+    let mut svelte_run_config = SvelteRunConfig {
         compiler_options: compiler_bun_options,
-        config_path: svelte_config.preprocess_config_path.as_deref(),
+        config_path: loaded_config.config_file_path.clone(),
+        config_dependencies: loaded_config
+            .dependencies
+            .iter()
+            .map(|path| normalize_dependency_path(&workspace, path))
+            .collect(),
+        config_error: loaded_config.error.clone(),
+        config_session: loaded_config.has_preprocess.then_some(config_session),
     };
 
     if args.watch {
@@ -563,27 +654,89 @@ pub async fn run(args: Args) -> Result<CheckSummary, OrchestratorError> {
             files,
             file_scan_time,
             use_nodenext_imports,
-            &svelte_run_config,
+            svelte_run_config,
             &extra_paths,
         )
         .await
     } else {
-        run_single_check(
+        Ok(run_single_check(
             &args,
             &workspace,
             files,
             file_scan_time,
             use_nodenext_imports,
-            &svelte_run_config,
+            &mut svelte_run_config,
             &extra_paths,
         )
-        .await
+        .await?
+        .summary)
     }
 }
 
-struct SvelteRunConfig<'a> {
+struct SvelteRunConfig {
     compiler_options: BunCompileOptions,
-    config_path: Option<&'a Utf8Path>,
+    config_path: Option<Utf8PathBuf>,
+    config_dependencies: HashSet<Utf8PathBuf>,
+    config_error: Option<String>,
+    config_session: Option<BunConfigSession>,
+}
+
+fn apply_loaded_config(
+    workspace: &Utf8Path,
+    run_config: &mut SvelteRunConfig,
+    extra_paths: &mut HashMap<String, Vec<String>>,
+    loaded: BunLoadedConfig,
+    session: BunConfigSession,
+) {
+    let dependencies: HashSet<_> = loaded
+        .dependencies
+        .iter()
+        .map(|path| normalize_dependency_path(workspace, path))
+        .collect();
+    if let Some(error) = loaded.error {
+        // Keep last-known imported modules so restoring a broken import still
+        // causes a config reload rather than only a generic source recheck.
+        run_config.config_dependencies.extend(dependencies);
+        run_config.config_path = loaded.config_file_path;
+        run_config.config_error = Some(error);
+        run_config.config_session = None;
+        return;
+    }
+
+    *extra_paths = svelte_alias_paths(&SvelteConfig {
+        extensions: loaded.extensions.clone(),
+        exclude: Vec::new(),
+        kit: KitConfig {
+            alias: loaded.kit_alias.clone(),
+        },
+        compiler_options: SvelteCompilerOptions {
+            runes: loaded.runes,
+            experimental_async: loaded.experimental_async,
+        },
+    });
+    run_config.config_path = loaded
+        .has_preprocess
+        .then_some(loaded.config_file_path)
+        .flatten();
+    run_config.config_dependencies = dependencies;
+    run_config.config_error = None;
+    run_config.compiler_options = BunCompileOptions {
+        runes: loaded.runes,
+        dev: None,
+        generate: None,
+        experimental: loaded
+            .experimental_async
+            .map(|enabled| BunExperimentalOptions {
+                async_: Some(enabled),
+            }),
+    };
+    run_config.config_session = loaded.has_preprocess.then_some(session);
+}
+
+struct CheckRun {
+    summary: CheckSummary,
+    dependencies: HashSet<Utf8PathBuf>,
+    dependencies_complete: bool,
 }
 
 /// Runs a single check pass.
@@ -593,9 +746,9 @@ async fn run_single_check(
     files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
-    svelte_run_config: &SvelteRunConfig<'_>,
+    svelte_run_config: &mut SvelteRunConfig,
     extra_paths: &HashMap<String, Vec<String>>,
-) -> Result<CheckSummary, OrchestratorError> {
+) -> Result<CheckRun, OrchestratorError> {
     let total_start = Instant::now();
     let timings_enabled = args.timings
         || args.timings_format == TimingFormat::Json
@@ -605,6 +758,7 @@ async fn run_single_check(
     let error_count = AtomicUsize::new(0);
     let warning_count = AtomicUsize::new(0);
     let compiler_warning_settings = parse_compiler_warnings(args.compiler_warnings.as_deref())?;
+    let compiler_options = svelte_run_config.compiler_options.clone();
 
     // Base diagnostic options (filename will be set per-file)
     let base_diag_options = DiagnosticOptions::all();
@@ -617,6 +771,7 @@ async fn run_single_check(
     struct FileResult {
         file_path: Utf8PathBuf,
         output: Option<FileOutput>,
+        additional_outputs: Vec<(Utf8PathBuf, FileOutput)>,
         transformed: Option<(Utf8PathBuf, TransformedFile)>,
         compiler_input: Option<BunInput>,
     }
@@ -644,15 +799,37 @@ async fn run_single_check(
                 preprocess_inputs.push(BunInput {
                     filename: file_path.clone(),
                     source,
-                    options: svelte_run_config.compiler_options.clone(),
+                    options: compiler_options.clone(),
                 });
             }
             Err(e) => eprintln!("Failed to read {}: {}", file_path, e),
         }
     }
 
-    let processed_sources = if svelte_run_config.config_path.is_some() {
-        run_bun_preprocess(workspace, preprocess_inputs, svelte_run_config.config_path).await?
+    let mut dependencies_complete = svelte_run_config.config_error.is_none();
+    let processed_sources = if let Some(config_error) = &svelte_run_config.config_error {
+        preprocess_inputs
+            .into_iter()
+            .map(|input| BunPreprocessed {
+                filename: input.filename,
+                source: input.source,
+                source_map: None,
+                dependencies: Vec::new(),
+                error: Some(BunPreprocessError {
+                    message: config_error.clone(),
+                    start: None,
+                    end: None,
+                    phase: None,
+                    fragment_offset: None,
+                    file: svelte_run_config.config_path.clone(),
+                }),
+            })
+            .collect()
+    } else if let Some(session) = &mut svelte_run_config.config_session {
+        session
+            .preprocess_files(preprocess_inputs)
+            .await
+            .map_err(|error| OrchestratorError::BunError(error.to_string()))?
     } else {
         preprocess_inputs
             .into_iter()
@@ -666,26 +843,51 @@ async fn run_single_check(
             .collect()
     };
 
+    let mut dependencies = svelte_run_config.config_dependencies.clone();
     let mut component_sources = Vec::with_capacity(processed_sources.len());
     for processed in processed_sources {
         let BunPreprocessed {
             filename,
             source,
             source_map: raw_source_map,
+            dependencies: processed_dependencies,
             error,
-            ..
         } = processed;
+        dependencies.extend(
+            processed_dependencies
+                .iter()
+                .map(|path| normalize_dependency_path(workspace, path)),
+        );
         let Some(original) = original_sources.remove(&filename) else {
             continue;
         };
         let mut preprocess_error = error;
+        if preprocess_error.is_some() {
+            dependencies_complete = false;
+        }
         let source_map = match raw_source_map.as_deref().map(PreprocessorMap::parse) {
             Some(Ok(map)) => Some(map),
             Some(Err(message)) => {
+                dependencies_complete = false;
                 preprocess_error = Some(BunPreprocessError {
                     message: format!("Invalid preprocessor source map: {message}"),
                     start: None,
                     end: None,
+                    phase: None,
+                    fragment_offset: None,
+                    file: None,
+                });
+                None
+            }
+            None if source != original => {
+                dependencies_complete = false;
+                preprocess_error = Some(BunPreprocessError {
+                    message: "Preprocessor changed the component without returning a source map; diagnostics cannot be mapped safely".to_string(),
+                    start: None,
+                    end: None,
+                    phase: None,
+                    fragment_offset: None,
+                    file: None,
                 });
                 None
             }
@@ -752,31 +954,78 @@ async fn run_single_check(
 
             // Collect parse errors
             let mut all_diagnostics = Vec::new();
-
-            // Convert parse errors to diagnostics
-            for error in &parse_result.errors {
-                all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
-                    svelte_diagnostics::DiagnosticCode::ParseError,
-                    error.to_string(),
-                    error.span,
-                ));
-            }
+            let mut additional_outputs = Vec::new();
 
             if let Some(error) = &component.preprocess_error {
-                let span = preprocess_error_span(error, source);
-                all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
-                    svelte_diagnostics::DiagnosticCode::PreprocessError,
-                    &error.message,
-                    span,
-                ));
-            }
+                let external = error.file.as_ref().and_then(|error_file| {
+                    let path = if error_file.is_absolute() {
+                        error_file.clone()
+                    } else {
+                        file_path.parent().unwrap_or(workspace).join(error_file)
+                    };
+                    let path = canonicalize_physical(&normalize_lexical(&path));
+                    (path != *file_path)
+                        .then(|| fs::read_to_string(&path).ok().map(|text| (path, text)))
+                        .flatten()
+                });
+                if let Some((error_path, error_source)) = external {
+                    let mut external_error = error.clone();
+                    external_error.phase = None;
+                    external_error.fragment_offset = None;
+                    let diagnostic = svelte_diagnostics::Diagnostic::new(
+                        svelte_diagnostics::DiagnosticCode::PreprocessError,
+                        &error.message,
+                        preprocess_error_span(&external_error, &error_source),
+                    );
+                    let relative_path = error_path
+                        .strip_prefix(workspace)
+                        .unwrap_or(&error_path)
+                        .to_owned();
+                    let diagnostics = [diagnostic];
+                    additional_outputs.push((
+                        error_path,
+                        FileOutput {
+                            text: if output_json {
+                                None
+                            } else {
+                                Some(formatter.format(&diagnostics, &relative_path, &error_source))
+                            },
+                            json: if output_json {
+                                Formatter::format_json_diagnostics(
+                                    &diagnostics,
+                                    &relative_path,
+                                    &error_source,
+                                )
+                            } else {
+                                Vec::new()
+                            },
+                        },
+                    ));
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    let span = preprocess_error_span(error, source);
+                    all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
+                        svelte_diagnostics::DiagnosticCode::PreprocessError,
+                        &error.message,
+                        span,
+                    ));
+                }
+            } else {
+                // Only diagnostics from a successfully preprocessed document
+                // have coordinates that can be mapped safely.
+                for error in &parse_result.errors {
+                    all_diagnostics.push(svelte_diagnostics::Diagnostic::new(
+                        svelte_diagnostics::DiagnosticCode::ParseError,
+                        error.to_string(),
+                        error.span,
+                    ));
+                }
 
-            // Run Svelte diagnostics with filename for component checks
-            let file_diag_options = base_diag_options
-                .clone()
-                .with_filename(file_path.to_string());
-            let svelte_diags = check_svelte(&parse_result.document, file_diag_options);
-            all_diagnostics.extend(svelte_diags);
+                let file_diag_options = base_diag_options
+                    .clone()
+                    .with_filename(file_path.to_string());
+                all_diagnostics.extend(check_svelte(&parse_result.document, file_diag_options));
+            }
 
             all_diagnostics.retain(|diag| include_svelte_severity(diag.severity, args.threshold));
 
@@ -784,6 +1033,7 @@ async fn run_single_check(
                 map_svelte_diagnostics(
                     &mut all_diagnostics,
                     preprocessor_map,
+                    file_path,
                     source,
                     original_source,
                 );
@@ -853,7 +1103,7 @@ async fn run_single_check(
                     let tsx_code = transform_result.tsx_code;
                     let transformed_file = TransformedFile {
                         original_path: file_path.clone(),
-                        generated_line_index: LineIndex::new(&tsx_code),
+                        generated_line_index: LineIndex::new_typescript(&tsx_code),
                         tsx_content: tsx_code,
                         source_map: transform_result.source_map,
                         processed_line_index: LineIndex::new(source),
@@ -902,12 +1152,13 @@ async fn run_single_check(
             let compiler_input = component.preprocess_error.is_none().then(|| BunInput {
                 filename: file_path.clone(),
                 source: source.clone(),
-                options: svelte_run_config.compiler_options.clone(),
+                options: compiler_options.clone(),
             });
 
             FileResult {
                 file_path: file_path.clone(),
                 output,
+                additional_outputs,
                 transformed,
                 compiler_input,
             }
@@ -925,6 +1176,7 @@ async fn run_single_check(
                     return FileResult {
                         file_path: file_path.clone(),
                         output: None,
+                        additional_outputs: Vec::new(),
                         transformed: None,
                         compiler_input: None,
                     };
@@ -981,7 +1233,7 @@ async fn run_single_check(
                 let tsx_code = transform_result.code;
                 let transformed_file = TransformedFile {
                     original_path: file_path.clone(),
-                    generated_line_index: LineIndex::new(&tsx_code),
+                    generated_line_index: LineIndex::new_typescript(&tsx_code),
                     tsx_content: tsx_code,
                     source_map: transform_result.source_map,
                     processed_line_index: LineIndex::new(&source),
@@ -1027,6 +1279,7 @@ async fn run_single_check(
             FileResult {
                 file_path: file_path.clone(),
                 output,
+                additional_outputs: Vec::new(),
                 transformed,
                 compiler_input: None,
             }
@@ -1044,6 +1297,10 @@ async fn run_single_check(
             files_with_diagnostics.insert(result.file_path);
         }
         if let Some(output) = result.output {
+            outputs.push(output);
+        }
+        for (path, output) in result.additional_outputs {
+            files_with_diagnostics.insert(path);
             outputs.push(output);
         }
         if let Some((virtual_path, transformed_file)) = result.transformed {
@@ -1384,7 +1641,11 @@ async fn run_single_check(
         println!("{}", json);
     }
 
-    Ok(summary)
+    Ok(CheckRun {
+        summary,
+        dependencies,
+        dependencies_complete,
+    })
 }
 
 /// Runs tsgo type-checking on transformed files.
@@ -1412,49 +1673,38 @@ async fn run_tsgo_check(
         .map_err(|e| OrchestratorError::TsgoError(e.to_string()))
 }
 
-/// Runs configured Svelte preprocessors using the existing bun worker bridge.
-async fn run_bun_preprocess(
-    workspace: &Utf8Path,
-    inputs: Vec<BunInput>,
-    config_path: Option<&Utf8Path>,
-) -> Result<Vec<BunPreprocessed>, OrchestratorError> {
-    let bun_path = BunRunner::ensure_bun(Some(workspace))
-        .await
-        .map_err(|e| OrchestratorError::BunError(e.to_string()))?;
-
-    let worker_count = bun_worker_count();
-    let runner = BunRunner::new(bun_path, workspace.to_owned(), worker_count)
-        .map_err(|e| OrchestratorError::BunError(e.to_string()))?;
-
-    runner
-        .preprocess_files(inputs, config_path)
-        .await
-        .map_err(|e| OrchestratorError::BunError(e.to_string()))
-}
-
 fn map_preprocessed_span(
     span: Span,
     map: &PreprocessorMap,
+    original_path: &Utf8Path,
     processed_index: &LineIndex,
     original_index: &LineIndex,
-) -> Span {
+) -> Option<Span> {
     let map_offset = |offset| {
         processed_index
             .utf16_line_col(offset)
-            .and_then(|position| map.original_position(position))
+            .and_then(|position| map.original_position_in(position, original_path))
             .and_then(|position| original_index.offset_utf16(position))
     };
 
     match (map_offset(span.start), map_offset(span.end)) {
-        (Some(start), Some(end)) if end >= start => Span::new(start, end),
-        (Some(start), _) => Span::empty(start),
-        _ => span,
+        (Some(start), Some(end)) if end >= start => Some(Span::new(start, end)),
+        (Some(start), _) => Some(Span::empty(start)),
+        _ => None,
     }
 }
 
 fn preprocess_error_span(error: &BunPreprocessError, source: &str) -> Span {
-    let index = LineIndex::new(source);
     let source_len = source.len() as u32;
+    let fragment_byte = match (error.phase, error.fragment_offset) {
+        (
+            Some(bun_runner::BunPreprocessPhase::Script | bun_runner::BunPreprocessPhase::Style),
+            Some(offset),
+        ) => utf16_offset_to_byte(source, offset).unwrap_or(0),
+        _ => 0,
+    };
+    let position_source = &source[fragment_byte as usize..];
+    let index = LineIndex::new(position_source);
     let position_offset = |position: Option<bun_runner::BunPreprocessPosition>| {
         position.and_then(|position| {
             position
@@ -1466,11 +1716,12 @@ fn preprocess_error_span(error: &BunPreprocessError, source: &str) -> Span {
                         col: column,
                     })
                 })
-                .map(u32::from)
+                .map(|offset| fragment_byte + u32::from(offset))
                 .or_else(|| {
                     position
                         .offset
-                        .and_then(|offset| utf16_offset_to_byte(source, offset))
+                        .and_then(|offset| utf16_offset_to_byte(position_source, offset))
+                        .map(|offset| fragment_byte + offset)
                 })
         })
     };
@@ -1500,6 +1751,7 @@ fn utf16_offset_to_byte(source: &str, target: u32) -> Option<u32> {
 fn map_svelte_diagnostics(
     diagnostics: &mut [svelte_diagnostics::Diagnostic],
     map: &PreprocessorMap,
+    original_path: &Utf8Path,
     processed_source: &str,
     original_source: &str,
 ) {
@@ -1507,11 +1759,42 @@ fn map_svelte_diagnostics(
     let original_index = LineIndex::new(original_source);
 
     for diagnostic in diagnostics {
-        diagnostic.span =
-            map_preprocessed_span(diagnostic.span, map, &processed_index, &original_index);
+        if let Some(span) = map_preprocessed_span(
+            diagnostic.span,
+            map,
+            original_path,
+            &processed_index,
+            &original_index,
+        ) {
+            diagnostic.span = span;
+        } else {
+            let original_code = diagnostic.code;
+            diagnostic.code = svelte_diagnostics::DiagnosticCode::PreprocessError;
+            diagnostic.severity = Severity::Error;
+            diagnostic.message = format!(
+                "Unable to map {} diagnostic through the preprocessor source map: {}",
+                original_code, diagnostic.message
+            );
+            diagnostic.span = Span::empty(0u32);
+            diagnostic.suggestions.clear();
+            continue;
+        }
+        let mut all_suggestions_mapped = true;
         for suggestion in &mut diagnostic.suggestions {
-            suggestion.span =
-                map_preprocessed_span(suggestion.span, map, &processed_index, &original_index);
+            if let Some(span) = map_preprocessed_span(
+                suggestion.span,
+                map,
+                original_path,
+                &processed_index,
+                &original_index,
+            ) {
+                suggestion.span = span;
+            } else {
+                all_suggestions_mapped = false;
+            }
+        }
+        if !all_suggestions_mapped {
+            diagnostic.suggestions.clear();
         }
     }
 }
@@ -1525,18 +1808,42 @@ fn map_compiler_diagnostics(
             continue;
         };
         let map_position = |position: bun_runner::BunPosition| {
-            map.original_position(LineCol {
-                line: position.line.saturating_sub(1),
-                col: position.column,
-            })
+            map.original_position_in(
+                LineCol {
+                    line: position.line.saturating_sub(1),
+                    col: position.column.saturating_sub(1),
+                },
+                &diagnostic.file,
+            )
             .map(|original| bun_runner::BunPosition {
                 line: original.line + 1,
-                column: original.col,
+                column: original.col + 1,
             })
-            .unwrap_or(position)
         };
-        diagnostic.start = map_position(diagnostic.start);
-        diagnostic.end = map_position(diagnostic.end);
+        match (map_position(diagnostic.start), map_position(diagnostic.end)) {
+            (Some(start), Some(end)) => {
+                diagnostic.start = start;
+                diagnostic.end = if (end.line, end.column) >= (start.line, start.column) {
+                    end
+                } else {
+                    start
+                };
+            }
+            (Some(start), None) => {
+                diagnostic.start = start;
+                diagnostic.end = start;
+            }
+            _ => {
+                diagnostic.code = "preprocess-error".to_string();
+                diagnostic.message = format!(
+                    "Unable to map compiler diagnostic through the preprocessor source map: {}",
+                    diagnostic.message
+                );
+                diagnostic.severity = BunDiagnosticSeverity::Error;
+                diagnostic.start = bun_runner::BunPosition { line: 1, column: 1 };
+                diagnostic.end = diagnostic.start;
+            }
+        }
     }
 }
 
@@ -1738,6 +2045,10 @@ fn format_compiler_diagnostics_json(
     workspace: &Utf8Path,
     sources: &HashMap<Utf8PathBuf, String>,
 ) -> Vec<FormattedDiagnostic> {
+    let source_indexes: HashMap<_, _> = sources
+        .iter()
+        .map(|(path, source)| (path, LineIndex::new(source)))
+        .collect();
     diagnostics
         .iter()
         .map(|diag| {
@@ -1752,21 +2063,25 @@ fn format_compiler_diagnostics_json(
                 BunDiagnosticSeverity::Warning => "Warning",
             };
 
-            let offset = sources
+            let offset = source_indexes
                 .get(&diag.file)
-                .map(|source| {
-                    line_column_to_offset(
-                        source,
-                        diag.start.line as usize,
-                        diag.start.column as usize,
-                    )
+                .and_then(|index| {
+                    index.offset_utf16(LineCol {
+                        line: diag.start.line.saturating_sub(1),
+                        col: diag.start.column.saturating_sub(1),
+                    })
                 })
+                .map(u32::from)
                 .unwrap_or(0);
-            let end_offset = sources
+            let end_offset = source_indexes
                 .get(&diag.file)
-                .map(|source| {
-                    line_column_to_offset(source, diag.end.line as usize, diag.end.column as usize)
+                .and_then(|index| {
+                    index.offset_utf16(LineCol {
+                        line: diag.end.line.saturating_sub(1),
+                        col: diag.end.column.saturating_sub(1),
+                    })
                 })
+                .map(u32::from)
                 .unwrap_or(offset);
 
             FormattedDiagnostic {
@@ -1994,6 +2309,143 @@ fn read_env_bool(name: &str) -> Option<bool> {
     }
 }
 
+trait WatchBackend {
+    fn watch_directory(&mut self, path: &Utf8Path) -> notify::Result<()>;
+    fn unwatch_directory(&mut self, path: &Utf8Path) -> notify::Result<()>;
+}
+
+impl<T: notify::Watcher> WatchBackend for T {
+    fn watch_directory(&mut self, path: &Utf8Path) -> notify::Result<()> {
+        notify::Watcher::watch(
+            self,
+            path.as_std_path(),
+            notify::RecursiveMode::NonRecursive,
+        )
+    }
+
+    fn unwatch_directory(&mut self, path: &Utf8Path) -> notify::Result<()> {
+        notify::Watcher::unwatch(self, path.as_std_path())
+    }
+}
+
+#[derive(Debug, Default)]
+struct WatchReconciler {
+    logical_files: HashSet<Utf8PathBuf>,
+    watched_directories: HashSet<Utf8PathBuf>,
+}
+
+impl WatchReconciler {
+    fn reconcile<B: WatchBackend>(
+        &mut self,
+        backend: &mut B,
+        logical_files: HashSet<Utf8PathBuf>,
+    ) -> notify::Result<()> {
+        let mut desired_directories: HashSet<_> = logical_files
+            .iter()
+            .filter_map(|file| nearest_existing_parent(file))
+            .collect();
+        if cfg!(windows) {
+            // ReadDirectoryChangesW observes entries inside a watched
+            // directory, not a rename of that directory in its parent.
+            desired_directories.extend(
+                desired_directories
+                    .iter()
+                    .filter_map(|directory| directory.parent().map(Utf8Path::to_owned))
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        let mut additions: Vec<_> = desired_directories
+            .difference(&self.watched_directories)
+            .cloned()
+            .collect();
+        let mut removals: Vec<_> = self
+            .watched_directories
+            .difference(&desired_directories)
+            .cloned()
+            .collect();
+        additions.sort();
+        removals.sort();
+
+        // Add replacement coverage before removing stale directories so a
+        // missing dependency becoming nested cannot create a blind window.
+        for directory in additions {
+            backend.watch_directory(&directory)?;
+            self.watched_directories.insert(directory);
+        }
+        for directory in removals {
+            match backend.unwatch_directory(&directory) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind,
+                        notify::ErrorKind::PathNotFound | notify::ErrorKind::WatchNotFound
+                    ) => {}
+                Err(error) => return Err(error),
+            }
+            self.watched_directories.remove(&directory);
+        }
+
+        self.logical_files = logical_files;
+        Ok(())
+    }
+
+    fn event_path_is_relevant(&self, changed: &Utf8Path) -> bool {
+        self.logical_files.iter().any(|logical| {
+            paths_match(logical, changed)
+                || (logical.starts_with(changed)
+                    && (!self.watched_directories.contains(changed) || !changed.exists()))
+        })
+    }
+}
+
+fn nearest_existing_parent(file: &Utf8Path) -> Option<Utf8PathBuf> {
+    let mut directory = file.parent();
+    while let Some(candidate) = directory {
+        if candidate.is_dir() {
+            return Some(candidate.to_owned());
+        }
+        directory = candidate.parent();
+    }
+    None
+}
+
+fn config_candidate_paths(workspace: &Utf8Path) -> HashSet<Utf8PathBuf> {
+    let mut candidates = HashSet::new();
+    let mut directory = Some(workspace);
+    while let Some(current) = directory {
+        candidates.extend(CONFIG_FILENAMES.iter().map(|name| current.join(name)));
+        directory = current.parent();
+    }
+    candidates
+}
+
+fn config_candidates_changed(
+    workspace: &Utf8Path,
+    changed_paths: &HashSet<Utf8PathBuf>,
+    config_candidates: &HashSet<Utf8PathBuf>,
+) -> bool {
+    changed_paths.iter().any(|changed| {
+        config_candidates
+            .iter()
+            .map(|candidate| normalize_dependency_path(workspace, candidate))
+            .any(|candidate| paths_match(&candidate, changed))
+    })
+}
+
+fn watch_files(
+    initial_files: &[Utf8PathBuf],
+    config_candidates: &HashSet<Utf8PathBuf>,
+    dependencies: &HashSet<Utf8PathBuf>,
+) -> HashSet<Utf8PathBuf> {
+    initial_files
+        .iter()
+        .chain(config_candidates)
+        .chain(dependencies)
+        .cloned()
+        .collect()
+}
+
 /// Runs in watch mode.
 async fn run_watch_mode(
     args: &Args,
@@ -2001,42 +2453,53 @@ async fn run_watch_mode(
     initial_files: Vec<Utf8PathBuf>,
     file_scan_time: Option<std::time::Duration>,
     use_nodenext_imports: bool,
-    svelte_run_config: &SvelteRunConfig<'_>,
+    mut svelte_run_config: SvelteRunConfig,
     extra_paths: &HashMap<String, Vec<String>>,
 ) -> Result<CheckSummary, OrchestratorError> {
-    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+    use notify::{Config, RecommendedWatcher, Watcher};
     use std::time::Duration;
 
     println!("Starting watch mode...\n");
+    let mut active_extra_paths = extra_paths.clone();
 
     // Initial check
-    let _summary = run_single_check(
+    let initial_run = run_single_check(
         args,
         workspace,
         initial_files.clone(),
         file_scan_time,
         use_nodenext_imports,
-        svelte_run_config,
-        extra_paths,
+        &mut svelte_run_config,
+        &active_extra_paths,
     )
     .await?;
+    let mut dependencies = initial_run.dependencies;
 
     // Set up file watcher with tokio channel
-    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
             if let Ok(event) = res {
-                let _ = tx.blocking_send(event);
+                let _ = tx.send(event);
             }
         },
         Config::default().with_poll_interval(Duration::from_secs(1)),
     )
     .map_err(|e| OrchestratorError::WatchFailed(e.to_string()))?;
 
-    watcher
-        .watch(workspace.as_std_path(), RecursiveMode::Recursive)
-        .map_err(|e| OrchestratorError::WatchFailed(e.to_string()))?;
+    // Parent-directory watches survive atomic saves and renames. Reconcile the
+    // full logical set after every pass so removed dependencies release their
+    // watcher and missing paths remain covered by their nearest existing
+    // ancestor.
+    let config_candidates = config_candidate_paths(workspace);
+    let mut watch_reconciler = WatchReconciler::default();
+    watch_reconciler
+        .reconcile(
+            &mut watcher,
+            watch_files(&initial_files, &config_candidates, &dependencies),
+        )
+        .map_err(|error| OrchestratorError::WatchFailed(error.to_string()))?;
 
     println!("Watching for changes... (Ctrl+C to stop)\n");
 
@@ -2048,11 +2511,29 @@ async fn run_watch_mode(
                 || path_str.ends_with(".svelte.ts")
                 || path_str.ends_with(".svelte.js")
         });
-        let preprocessor_config_changed = svelte_run_config
-            .config_path
-            .is_some_and(|config_path| event.paths.iter().any(|path| path == config_path));
+        let changed_paths: HashSet<_> = event
+            .paths
+            .iter()
+            .filter_map(|path| Utf8PathBuf::try_from(path.clone()).ok())
+            .map(|path| normalize_dependency_path(workspace, &path))
+            .collect();
+        let dependency_changed = changed_paths.iter().any(|path| {
+            dependencies
+                .iter()
+                .any(|dependency| paths_match(dependency, path))
+                || watch_reconciler.event_path_is_relevant(path)
+        });
+        let config_candidates_changed =
+            config_candidates_changed(workspace, &changed_paths, &config_candidates);
+        let config_changed = config_candidates_changed
+            || changed_paths.iter().any(|path| {
+                svelte_run_config
+                    .config_dependencies
+                    .iter()
+                    .any(|dependency| paths_match(dependency, path))
+            });
 
-        if svelte_changed || preprocessor_config_changed {
+        if svelte_changed || dependency_changed || config_changed {
             if !args.preserve_watch_output {
                 // Clear screen
                 print!("\x1B[2J\x1B[1;1H");
@@ -2060,17 +2541,77 @@ async fn run_watch_mode(
 
             println!("File changed, re-checking...\n");
 
-            // Re-run check
-            let _ = run_single_check(
+            if config_changed {
+                match run_bun_load_config(workspace).await {
+                    Ok((loaded, session)) => {
+                        apply_loaded_config(
+                            workspace,
+                            &mut svelte_run_config,
+                            &mut active_extra_paths,
+                            loaded,
+                            session,
+                        );
+                    }
+                    Err(error) => eprintln!("Failed to reload Svelte config: {error}"),
+                }
+            }
+
+            // Re-run check and refresh the dynamically returned dependency set.
+            let mut check_result = run_single_check(
                 args,
                 workspace,
                 initial_files.clone(),
                 file_scan_time,
                 use_nodenext_imports,
-                svelte_run_config,
-                extra_paths,
+                &mut svelte_run_config,
+                &active_extra_paths,
             )
             .await;
+            if matches!(&check_result, Err(OrchestratorError::BunError(_)))
+                && svelte_run_config.config_session.is_some()
+            {
+                if let Err(error) = &check_result {
+                    eprintln!(
+                        "Configured preprocessor worker failed; recreating its config session: {error}"
+                    );
+                }
+                if let Ok((loaded, session)) = run_bun_load_config(workspace).await {
+                    apply_loaded_config(
+                        workspace,
+                        &mut svelte_run_config,
+                        &mut active_extra_paths,
+                        loaded,
+                        session,
+                    );
+                    check_result = run_single_check(
+                        args,
+                        workspace,
+                        initial_files.clone(),
+                        file_scan_time,
+                        use_nodenext_imports,
+                        &mut svelte_run_config,
+                        &active_extra_paths,
+                    )
+                    .await;
+                }
+            }
+
+            match check_result {
+                Ok(check_run) => {
+                    if check_run.dependencies_complete {
+                        dependencies = check_run.dependencies;
+                    } else {
+                        dependencies.extend(check_run.dependencies);
+                    }
+                    if let Err(error) = watch_reconciler.reconcile(
+                        &mut watcher,
+                        watch_files(&initial_files, &config_candidates, &dependencies),
+                    ) {
+                        eprintln!("Failed to refresh preprocessor dependency watches: {error}");
+                    }
+                }
+                Err(error) => eprintln!("Watch recheck failed: {error}"),
+            }
         }
     }
 
@@ -2106,6 +2647,18 @@ fn line_column_to_offset(source: &str, line: usize, column: usize) -> u32 {
 
     // Line not found, return end of file
     current_offset as u32
+}
+
+/// Converts a 1-indexed line and UTF-16 column to a UTF-8 byte offset.
+#[cfg(test)]
+fn utf16_line_column_to_offset(source: &str, line: usize, column: usize) -> u32 {
+    LineIndex::new(source)
+        .offset_utf16(LineCol {
+            line: line.saturating_sub(1) as u32,
+            col: column.saturating_sub(1) as u32,
+        })
+        .map(u32::from)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -2307,6 +2860,33 @@ mod tests {
     }
 
     #[test]
+    fn test_utf16_line_column_to_offset_after_non_bmp_character() {
+        assert_eq!(utf16_line_column_to_offset("😀value", 1, 3), 4);
+        assert_eq!(utf16_line_column_to_offset("x\n😀value", 2, 3), 6);
+    }
+
+    #[test]
+    fn compiler_low_resolution_map_never_emits_column_zero() {
+        let file = Utf8PathBuf::from("/workspace/input.svelte");
+        let map = PreprocessorMap::parse(
+            r#"{"version":3,"sources":["input.svelte"],"names":[],"mappings":"AAAA"}"#,
+        )
+        .expect("source map");
+        let maps = HashMap::from([(file.clone(), map)]);
+        let mut diagnostics = vec![BunDiagnostic {
+            file,
+            code: "fixture".to_string(),
+            message: "fixture".to_string(),
+            severity: BunDiagnosticSeverity::Error,
+            start: bun_runner::BunPosition { line: 1, column: 6 },
+            end: bun_runner::BunPosition { line: 1, column: 7 },
+        }];
+        map_compiler_diagnostics(&mut diagnostics, &maps);
+        assert_eq!(diagnostics[0].start.column, 1);
+        assert_eq!(diagnostics[0].end.column, 1);
+    }
+
+    #[test]
     fn test_preprocess_error_span_prefers_component_line_column() {
         let source = "<script>\n  const broken = ;\n</script>";
         let error = BunPreprocessError {
@@ -2318,6 +2898,9 @@ mod tests {
                 offset: Some(0),
             }),
             end: None,
+            phase: None,
+            fragment_offset: None,
+            file: None,
         };
 
         let span = preprocess_error_span(&error, source);
@@ -2338,10 +2921,36 @@ mod tests {
                 offset: Some(18),
             }),
             end: None,
+            phase: None,
+            fragment_offset: None,
+            file: None,
         };
 
         let span = preprocess_error_span(&error, source);
         assert_eq!(u32::from(span.start), 20);
+    }
+
+    #[test]
+    fn test_preprocess_error_span_applies_script_fragment_offset() {
+        let source = "<p>before</p>\n<p>again</p>\n<script>\nfirst\nsecond\n</script>";
+        let fragment = source.find("\nfirst").expect("script content") as u32;
+        let error = BunPreprocessError {
+            message: "script failure".to_string(),
+            start: Some(bun_runner::BunPreprocessPosition {
+                line: Some(2),
+                column: Some(1),
+                offset: None,
+            }),
+            end: None,
+            phase: Some(bun_runner::BunPreprocessPhase::Script),
+            fragment_offset: Some(fragment),
+            file: None,
+        };
+        let span = preprocess_error_span(&error, source);
+        assert_eq!(
+            LineIndex::new(source).utf16_line_col(span.start),
+            Some(LineCol::new(3, 1))
+        );
     }
 
     #[test]
@@ -2432,5 +3041,175 @@ mod tests {
         // Should not match files outside the excluded directory
         assert!(!glob.is_match("src/routes/Page.svelte"));
         assert!(!glob.is_match("src/lib/Component.svelte"));
+    }
+
+    #[derive(Default)]
+    struct FakeWatchBackend {
+        watched: HashSet<Utf8PathBuf>,
+        operations: Vec<(bool, Utf8PathBuf)>,
+        missing_on_unwatch: bool,
+    }
+
+    impl WatchBackend for FakeWatchBackend {
+        fn watch_directory(&mut self, path: &Utf8Path) -> notify::Result<()> {
+            self.watched.insert(path.to_owned());
+            self.operations.push((true, path.to_owned()));
+            Ok(())
+        }
+
+        fn unwatch_directory(&mut self, path: &Utf8Path) -> notify::Result<()> {
+            self.watched.remove(path);
+            self.operations.push((false, path.to_owned()));
+            if self.missing_on_unwatch {
+                Err(notify::Error::new(notify::ErrorKind::WatchNotFound))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn watch_reconciler_removes_stale_dependency_directories() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let a = root.join("a");
+        let b = root.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+
+        let mut backend = FakeWatchBackend::default();
+        let mut reconciler = WatchReconciler::default();
+        reconciler
+            .reconcile(
+                &mut backend,
+                HashSet::from([a.join("dependency.txt"), b.join("dependency.txt")]),
+            )
+            .unwrap();
+        reconciler
+            .reconcile(
+                &mut backend,
+                HashSet::from([b.join("renamed-dependency.txt")]),
+            )
+            .unwrap();
+
+        assert_eq!(backend.watched, HashSet::from([b]));
+        assert!(
+            backend.operations.contains(&(false, a)),
+            "stale directory was not unwatched"
+        );
+    }
+
+    #[test]
+    fn watch_reconciler_narrows_missing_path_coverage_without_a_gap() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let dependency = root.join("new/nested/dependency.txt");
+        let mut backend = FakeWatchBackend::default();
+        let mut reconciler = WatchReconciler::default();
+        let logical = HashSet::from([dependency.clone()]);
+
+        reconciler.reconcile(&mut backend, logical.clone()).unwrap();
+        assert_eq!(backend.watched, HashSet::from([root.clone()]));
+        assert!(reconciler.event_path_is_relevant(&root.join("new")));
+
+        fs::create_dir_all(root.join("new/nested")).unwrap();
+        let operation_start = backend.operations.len();
+        reconciler.reconcile(&mut backend, logical).unwrap();
+        let refresh = &backend.operations[operation_start..];
+        assert_eq!(refresh[0], (true, root.join("new/nested")));
+        assert_eq!(refresh[1], (false, root));
+    }
+
+    #[test]
+    fn watch_reconciler_accepts_already_removed_backend_watches() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let mut backend = FakeWatchBackend::default();
+        let mut reconciler = WatchReconciler::default();
+        reconciler
+            .reconcile(&mut backend, HashSet::from([child.join("dependency")]))
+            .unwrap();
+        backend.missing_on_unwatch = true;
+        reconciler.reconcile(&mut backend, HashSet::new()).unwrap();
+        assert!(reconciler.watched_directories.is_empty());
+    }
+
+    #[test]
+    fn config_candidate_changes_require_an_exact_candidate_path() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let candidates = config_candidate_paths(&workspace);
+
+        assert!(config_candidates_changed(
+            &workspace,
+            &HashSet::from([workspace.join("svelte.config.js")]),
+            &candidates,
+        ));
+        assert!(!config_candidates_changed(
+            &workspace,
+            &HashSet::from([root.join("dependency/svelte.config.js")]),
+            &candidates,
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn config_candidate_changes_normalize_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target = root.join("shared-config.js");
+        fs::write(&target, "export default {};").unwrap();
+        symlink(&target, workspace.join("svelte.config.js")).unwrap();
+
+        assert!(config_candidates_changed(
+            &workspace,
+            &HashSet::from([target]),
+            &config_candidate_paths(&workspace),
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn missing_dependency_paths_canonicalize_their_existing_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let physical = root.join("physical");
+        fs::create_dir_all(&physical).unwrap();
+        let alias = root.join("alias");
+        symlink(&physical, &alias).unwrap();
+
+        let normalized = normalize_dependency_path(&root, &alias.join("missing/file.scss"));
+        assert_eq!(normalized, physical.join("missing/file.scss"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_watches_dependency_directories_and_their_parents() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let mut backend = FakeWatchBackend::default();
+        let mut reconciler = WatchReconciler::default();
+        reconciler
+            .reconcile(&mut backend, HashSet::from([child.join("dependency")]))
+            .unwrap();
+
+        assert!(backend.watched.contains(&child));
+        assert!(backend.watched.contains(&root));
+        assert!(paths_match(
+            Utf8Path::new(r"C:\Project\Config.js"),
+            Utf8Path::new(r"c:\project\config.js")
+        ));
     }
 }

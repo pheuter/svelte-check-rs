@@ -446,49 +446,19 @@ fn find_first_equals(s: &str) -> Option<usize> {
 /// Find matching brace and return content and closing index.
 fn find_matching_brace(s: &str) -> Option<(&str, usize)> {
     let mut depth = 1;
-    let mut string_char: Option<char> = None;
-    let mut escaped = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut chars = s.char_indices().peekable();
+    let mut in_string = false;
+    let mut string_char = ' ';
 
-    while let Some((i, ch)) = chars.next() {
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
+    for (i, ch) in s.char_indices() {
+        if !in_string && (ch == '"' || ch == '\'' || ch == '`') {
+            in_string = true;
+            string_char = ch;
+            continue;
+        }
+        if in_string {
+            if ch == string_char {
+                in_string = false;
             }
-            continue;
-        }
-        if in_block_comment {
-            if ch == '*' && chars.peek().is_some_and(|(_, next)| *next == '/') {
-                chars.next();
-                in_block_comment = false;
-            }
-            continue;
-        }
-        if let Some(quote) = string_char {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                string_char = None;
-            }
-            continue;
-        }
-
-        if ch == '/' && chars.peek().is_some_and(|(_, next)| *next == '/') {
-            chars.next();
-            in_line_comment = true;
-            continue;
-        }
-        if ch == '/' && chars.peek().is_some_and(|(_, next)| *next == '*') {
-            chars.next();
-            in_block_comment = true;
-            continue;
-        }
-        if ch == '"' || ch == '\'' || ch == '`' {
-            string_char = Some(ch);
             continue;
         }
 
@@ -1131,23 +1101,6 @@ mod tests {
             info.type_annotation,
             Some("{ items: Array<{ id: number; name: string }> }".to_string())
         );
-    }
-
-    #[test]
-    fn test_props_accessor_before_multiline_destructuring() {
-        let script = r#"
-const uid = $props.id();
-let {
-    elevated = false,
-    bordered = false, // it's valid to use an apostrophe in a comment
-    children,
-    ...rest
-}: ComponentProps = $props();
-"#;
-        let info = extract_props_info(script, script, 0).unwrap();
-
-        assert_eq!(info.type_annotation, Some("ComponentProps".to_string()));
-        assert_eq!(info.properties.len(), 4);
     }
 
     #[test]
