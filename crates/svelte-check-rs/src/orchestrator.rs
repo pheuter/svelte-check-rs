@@ -3119,7 +3119,11 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(backend.watched, HashSet::from([b]));
+        let mut expected = HashSet::from([b]);
+        if cfg!(windows) {
+            expected.insert(root);
+        }
+        assert_eq!(backend.watched, expected);
         assert!(
             backend.operations.contains(&(false, a)),
             "stale directory was not unwatched"
@@ -3136,15 +3140,29 @@ mod tests {
         let logical = HashSet::from([dependency.clone()]);
 
         reconciler.reconcile(&mut backend, logical.clone()).unwrap();
-        assert_eq!(backend.watched, HashSet::from([root.clone()]));
+        let mut expected = HashSet::from([root.clone()]);
+        if cfg!(windows) {
+            expected.insert(root.parent().unwrap().to_owned());
+        }
+        assert_eq!(backend.watched, expected);
         assert!(reconciler.event_path_is_relevant(&root.join("new")));
 
         fs::create_dir_all(root.join("new/nested")).unwrap();
         let operation_start = backend.operations.len();
         reconciler.reconcile(&mut backend, logical).unwrap();
         let refresh = &backend.operations[operation_start..];
-        assert_eq!(refresh[0], (true, root.join("new/nested")));
-        assert_eq!(refresh[1], (false, root));
+        let replacement_added = refresh
+            .iter()
+            .position(|operation| operation == &(true, root.join("new/nested")))
+            .expect("replacement directory was not watched");
+        let stale_removed = refresh
+            .iter()
+            .position(|operation| operation == &(false, root.clone()))
+            .expect("stale directory was not unwatched");
+        assert!(
+            replacement_added < stale_removed,
+            "replacement coverage must be added before stale coverage is removed"
+        );
     }
 
     #[test]
@@ -3171,6 +3189,7 @@ mod tests {
         );
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
+        let workspace = normalize_dependency_path(&root, &workspace);
         let candidates = config_candidate_paths(&workspace);
 
         assert!(config_candidates_changed(
