@@ -595,7 +595,8 @@ fn plain_file_url_objects_are_normalized_as_dependencies() {
             Some(&config),
         ))
         .expect("preprocess plain file URL dependency");
-    let expected = Utf8PathBuf::from_path_buf(temp.path().join("dependency.scss"))
+    let expected_root = temp.path().canonicalize().expect("canonical temp path");
+    let expected = Utf8PathBuf::from_path_buf(expected_root.join("dependency.scss"))
         .expect("utf-8 dependency path");
     assert_eq!(
         processed[0].dependencies,
@@ -873,6 +874,48 @@ fn watch_mode_rechecks_nested_workspace_dependencies() {
 
 #[test]
 #[serial]
+fn watch_mode_tracks_referenced_file_from_initial_preprocess_error() {
+    let project = fixture_path();
+    ensure_fixture_ready(&project);
+    let dependency = project.join("src/_partial.scss");
+    let original = fs::read(&dependency).expect("read referenced Sass file");
+    let _restore = RestoreFile {
+        path: dependency.clone(),
+        contents: original.clone(),
+    };
+
+    let mut command = Command::new(binary_path());
+    command
+        .arg("--workspace")
+        .arg(&project)
+        .arg("--single-file")
+        .arg("src/FragmentError.svelte")
+        .arg("--watch")
+        .arg("--skip-tsgo")
+        .arg("--preserveWatchOutput")
+        .env("SVELTE_CHECK_RS_TEST_EXTERNAL_STYLE_ERROR", "1");
+    let watch = WatchProcess::spawn(&mut command);
+    let failed = watch.wait_for("external Sass failure");
+    let watching = watch.wait_for("Watching for changes");
+    if failed.is_ok() && watching.is_ok() {
+        let mut changed = original;
+        changed.extend_from_slice(b"\n/* repair attempt */\n");
+        fs::write(&dependency, changed).expect("update referenced Sass file");
+    }
+    let rechecked = watch.wait_for("File changed, re-checking");
+
+    assert!(
+        failed.is_ok(),
+        "initial preprocess error was not reported: {failed:?}"
+    );
+    assert!(
+        rechecked.is_ok(),
+        "referenced error file did not trigger a recheck: {rechecked:?}"
+    );
+}
+
+#[test]
+#[serial]
 fn watch_mode_reloads_when_config_precedence_changes() {
     let project = fixture_path();
     ensure_fixture_ready(&project);
@@ -964,6 +1007,46 @@ fn watch_mode_recovers_after_imported_config_module_is_restored() {
     assert!(
         restored.is_ok(),
         "restoring an imported config module did not reload config: {restored:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn watch_mode_recovers_when_imported_config_module_is_initially_missing() {
+    let project = fixture_path();
+    ensure_fixture_ready(&project);
+    let dependency = project.join("config-dependency.js");
+    let original = fs::read(&dependency).expect("read config dependency");
+    let _restore = RestoreFile {
+        path: dependency.clone(),
+        contents: original.clone(),
+    };
+    fs::remove_file(&dependency).expect("remove config dependency before startup");
+
+    let mut command = Command::new(binary_path());
+    command
+        .arg("--workspace")
+        .arg(&project)
+        .arg("--single-file")
+        .arg("src/NoPreprocess.svelte")
+        .arg("--watch")
+        .arg("--skip-tsgo")
+        .arg("--preserveWatchOutput");
+    let watch = WatchProcess::spawn(&mut command);
+    let broken = watch.wait_for("config-dependency.js");
+    let watching = watch.wait_for("Watching for changes");
+    if broken.is_ok() && watching.is_ok() {
+        fs::write(&dependency, &original).expect("restore imported config module");
+    }
+    let restored = watch.wait_for("found 0 errors and 0 warnings");
+
+    assert!(
+        broken.is_ok(),
+        "initial config import failure was not reported: {broken:?}"
+    );
+    assert!(
+        restored.is_ok(),
+        "restoring the initially missing config module did not reload config: {restored:?}"
     );
 }
 

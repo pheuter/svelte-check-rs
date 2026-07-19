@@ -51,6 +51,7 @@ function findConfig(dir, basename, extensions) {
 
 async function collectModuleDependencies(configPath) {
   const dependencies = new Set([path.resolve(configPath)]);
+  collectStaticModuleDependencies(configPath, dependencies);
   try {
     const result = await Bun.build({
       entrypoints: [configPath],
@@ -73,7 +74,93 @@ async function collectModuleDependencies(configPath) {
   return [...dependencies];
 }
 
+const MODULE_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx'];
+
+function importCandidates(importer, specifier) {
+  let resolved;
+  try {
+    if (specifier.startsWith('file:')) {
+      resolved = fileURLToPath(specifier);
+    } else if (path.isAbsolute(specifier)) {
+      resolved = specifier;
+    } else if (specifier.startsWith('./') || specifier.startsWith('../')) {
+      resolved = fileURLToPath(new URL(specifier, pathToFileURL(importer)));
+    } else {
+      return [];
+    }
+  } catch {
+    return [];
+  }
+
+  resolved = path.resolve(resolved);
+  if (path.extname(resolved)) return [resolved];
+  return [
+    resolved,
+    ...MODULE_EXTENSIONS.map((extension) => `${resolved}${extension}`),
+    ...MODULE_EXTENSIONS.map((extension) => path.join(resolved, `index${extension}`))
+  ];
+}
+
+function transpilerLoader(modulePath) {
+  switch (path.extname(modulePath)) {
+    case '.ts':
+    case '.mts':
+    case '.cts':
+      return 'ts';
+    case '.tsx':
+      return 'tsx';
+    case '.jsx':
+      return 'jsx';
+    case '.js':
+    case '.mjs':
+    case '.cjs':
+      return 'js';
+    default:
+      return null;
+  }
+}
+
+function collectStaticModuleDependencies(configPath, dependencies) {
+  const pending = [path.resolve(configPath)];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const modulePath = pending.pop();
+    if (visited.has(modulePath)) continue;
+    visited.add(modulePath);
+
+    const loader = transpilerLoader(modulePath);
+    if (!loader || !fs.existsSync(modulePath)) continue;
+
+    let imports;
+    try {
+      const source = fs.readFileSync(modulePath, 'utf8');
+      imports = new Bun.Transpiler({ loader }).scanImports(source);
+    } catch {
+      // The module itself remains watched, so repairing its syntax retries the
+      // config and discovers any dependencies that could not be scanned.
+      continue;
+    }
+
+    for (const imported of imports) {
+      const candidates = importCandidates(modulePath, imported.path);
+      const existing = candidates.filter((candidate) => {
+        try {
+          return fs.statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      });
+      const watched = existing.length > 0 ? existing : candidates;
+      for (const candidate of watched) {
+        dependencies.add(candidate);
+        if (existing.includes(candidate)) pending.push(candidate);
+      }
+    }
+  }
+}
+
 async function loadSvelteConfig(configPath) {
+  const dependencies = await collectModuleDependencies(configPath);
   try {
     const mod = await import(pathToFileURL(configPath).href);
     const config = mod?.default;
@@ -86,10 +173,10 @@ async function loadSvelteConfig(configPath) {
       config,
       configFilePath: configPath,
       configSource: 'svelte',
-      dependencies: await collectModuleDependencies(configPath)
+      dependencies
     };
   } catch (error) {
-    return { error, configFilePath: configPath, configSource: 'svelte', dependencies: [configPath] };
+    return { error, configFilePath: configPath, configSource: 'svelte', dependencies };
   }
 }
 

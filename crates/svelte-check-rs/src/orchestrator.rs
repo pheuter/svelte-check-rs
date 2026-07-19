@@ -360,6 +360,25 @@ fn normalize_dependency_path(workspace: &Utf8Path, path: &Utf8Path) -> Utf8PathB
     canonicalize_with_missing_suffix(&normalize_lexical(&path))
 }
 
+fn preprocessor_error_dependency(
+    component_path: &Utf8Path,
+    error_file: &Utf8Path,
+) -> Option<Utf8PathBuf> {
+    // Valid file URLs are converted by the Bun bridge. Any URL left here is
+    // not a filesystem path and cannot be watched by notify.
+    if error_file.as_str().contains("://") {
+        return None;
+    }
+    Some(if error_file.is_absolute() {
+        error_file.to_owned()
+    } else {
+        component_path
+            .parent()
+            .unwrap_or_else(|| Utf8Path::new(""))
+            .join(error_file)
+    })
+}
+
 fn canonicalize_with_missing_suffix(path: &Utf8Path) -> Utf8PathBuf {
     let mut ancestor = path.to_owned();
     let mut suffix = Vec::new();
@@ -853,6 +872,14 @@ async fn run_single_check(
             dependencies: processed_dependencies,
             error,
         } = processed;
+        if let Some(error_dependency) = error.as_ref().and_then(|error| {
+            error
+                .file
+                .as_deref()
+                .and_then(|file| preprocessor_error_dependency(&filename, file))
+        }) {
+            dependencies.insert(normalize_dependency_path(workspace, &error_dependency));
+        }
         dependencies.extend(
             processed_dependencies
                 .iter()
@@ -3139,7 +3166,9 @@ mod tests {
     #[test]
     fn config_candidate_changes_require_an_exact_candidate_path() {
         let temp = tempfile::tempdir().expect("temp directory");
-        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let root = canonicalize_physical(
+            &Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path"),
+        );
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let candidates = config_candidate_paths(&workspace);
@@ -3162,7 +3191,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().expect("temp directory");
-        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let root = canonicalize_physical(
+            &Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path"),
+        );
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let target = root.join("shared-config.js");
@@ -3182,7 +3213,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().expect("temp directory");
-        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path");
+        let root = canonicalize_physical(
+            &Utf8PathBuf::from_path_buf(temp.path().to_owned()).expect("utf-8 temp path"),
+        );
         let physical = root.join("physical");
         fs::create_dir_all(&physical).unwrap();
         let alias = root.join("alias");
