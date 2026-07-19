@@ -583,6 +583,7 @@ fn plain_file_url_objects_are_normalized_as_dependencies() {
         r#"export default { preprocess: { markup({ content }) { const url = new URL('./dependency.scss', import.meta.url); return { code: content, dependencies: [{ href: url.href }, { href: 'file:///bad%2Fslash' }] }; } } };"#,
     )
     .expect("write config");
+    fs::write(temp.path().join("dependency.scss"), "").expect("write dependency");
     let config = Utf8PathBuf::from_path_buf(config).expect("utf-8 config path");
 
     let processed = runtime
@@ -595,12 +596,18 @@ fn plain_file_url_objects_are_normalized_as_dependencies() {
             Some(&config),
         ))
         .expect("preprocess plain file URL dependency");
-    let expected_root = temp.path().canonicalize().expect("canonical temp path");
-    let expected = Utf8PathBuf::from_path_buf(expected_root.join("dependency.scss"))
-        .expect("utf-8 dependency path");
+    assert_eq!(processed[0].dependencies.len(), 2);
+    let actual = processed[0].dependencies[0]
+        .canonicalize_utf8()
+        .expect("canonical actual dependency path");
+    let expected = Utf8PathBuf::from_path_buf(temp.path().join("dependency.scss"))
+        .expect("utf-8 dependency path")
+        .canonicalize_utf8()
+        .expect("canonical expected dependency path");
+    assert_eq!(actual, expected);
     assert_eq!(
-        processed[0].dependencies,
-        vec![expected, Utf8PathBuf::from("file:///bad%2Fslash")]
+        processed[0].dependencies[1],
+        Utf8PathBuf::from("file:///bad%2Fslash")
     );
 }
 
