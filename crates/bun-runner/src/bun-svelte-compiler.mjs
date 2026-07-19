@@ -287,7 +287,7 @@ async function loadViteConfig(root, configPath) {
       error,
       configFilePath: configPath,
       configSource: 'vite',
-      dependencies: [configPath]
+      dependencies: await collectModuleDependencies(configPath)
     };
   } finally {
     process.chdir(cwd);
@@ -303,7 +303,15 @@ async function loadConfigFromDirectory(dir) {
     if (result?.error) viteError = result;
   }
   const sveltePath = findConfig(dir, 'svelte.config', SVELTE_CONFIG_EXTENSIONS);
-  return sveltePath ? await loadSvelteConfig(sveltePath) : viteError;
+  if (!sveltePath) return viteError;
+
+  const svelteResult = await loadSvelteConfig(sveltePath);
+  if (viteError) {
+    svelteResult.dependencies = [
+      ...new Set([...viteError.dependencies, ...svelteResult.dependencies])
+    ];
+  }
+  return svelteResult;
 }
 
 async function loadEffectiveConfig(root, configPath = null) {

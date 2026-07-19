@@ -2,8 +2,8 @@
 //! and `vite.config.*` Svelte-config reading (issue #3031).
 //!
 //! Upstream commit f53efb39 widens the config-file extension set from
-//! `{js,cjs,mjs}` to `{js,ts,cjs,mjs,mts}`. svelte-check-rs parses configs
-//! statically with SWC, so the full set is adopted unconditionally (no
+//! `{js,cjs,mjs}` to `{js,ts,cjs,mjs,mts}`. svelte-check-rs loads configs
+//! through Bun, so the full set is adopted unconditionally (no
 //! `process.features.typescript` strip-types gate).
 //!
 //! Upstream commit 5b13da15 (#3031) additionally reads Svelte config options
@@ -12,9 +12,10 @@
 //! `vite.resolveConfig` and falls through to svelte.config otherwise.
 //!
 //! Each test builds a self-contained project on disk under `target/test-tmp/`
-//! and runs the CLI with `--show-config --skip-tsgo`. The Vite tests install
-//! minimal local stubs for the APIs exercised by config loading, so the tests
-//! don't require `bun install`, a warm Bun package cache, or tsgo.
+//! and runs the CLI with `--show-config --skip-tsgo`. Every project installs a
+//! minimal Svelte compiler stub, while the Vite tests add stubs for the APIs
+//! exercised by Vite config loading. The tests therefore don't require
+//! `bun install`, a warm Bun package cache, or tsgo.
 
 #![cfg(not(target_os = "windows"))]
 
@@ -65,6 +66,7 @@ fn make_project(name: &str) -> PathBuf {
         fs::remove_dir_all(&dir).expect("clear previous test dir");
     }
     fs::create_dir_all(dir.join("src")).expect("create project dir");
+    write_svelte_compiler_stub(&dir);
     dir
 }
 
@@ -72,7 +74,7 @@ fn write(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
 }
 
-fn write_vite_stubs(project: &Path) {
+fn write_svelte_compiler_stub(project: &Path) {
     let svelte = project.join("node_modules/svelte/compiler");
     fs::create_dir_all(&svelte).expect("create svelte compiler stub");
     write(
@@ -97,7 +99,9 @@ export function preprocess() {
 }
 "#,
     );
+}
 
+fn write_vite_stubs(project: &Path) {
     let vite = project.join("node_modules/vite");
     fs::create_dir_all(&vite).expect("create vite stub");
     write(
@@ -202,9 +206,9 @@ struct RunOutput {
     stderr: String,
 }
 
-/// `--show-config` prints resolved config to stderr and returns early (no tsgo
-/// or bun). The `kit.alias` line is sourced from the svelte config, so it
-/// proves the config file was discovered AND parsed.
+/// `--show-config` prints resolved config to stderr and returns before tsgo or
+/// source processing. The `kit.alias` line is sourced from the Svelte config,
+/// so it proves the config file was discovered and loaded through Bun.
 fn run_show_config(project: &Path) -> RunOutput {
     ensure_binary_built();
     let output = Command::new(binary_path())
@@ -343,8 +347,8 @@ fn test_svelte_config_js_commonjs_alias_is_honored() {
 }
 
 /// Issue #3031: a `vite.config.ts` declaring `svelte({ kit: { alias } })` (and
-/// NO svelte.config.*) must be discovered and its `$lib` alias honored. This is
-/// the static approximation; upstream runs vite.resolveConfig at runtime.
+/// NO svelte.config.*) must be discovered through `vite.resolveConfig`, with
+/// its `$lib` alias honored.
 #[test]
 fn test_vite_config_ts_alias_is_honored() {
     let project = make_project("vite_config_ts");

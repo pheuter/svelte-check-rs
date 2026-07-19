@@ -2,8 +2,9 @@
 //!
 //! Each test builds a self-contained project on disk under `target/test-tmp/`,
 //! runs the CLI against it with `--list-files --skip-tsgo`, and asserts on
-//! stdout/stderr. `--list-files` exits before tsgo or bun are invoked, so
-//! these tests don't require `bun install` or `tsgo` to be present.
+//! stdout/stderr. Config loading uses a minimal local Svelte compiler stub;
+//! `--list-files` returns before tsgo or source processing, so these tests
+//! don't require `bun install` or `tsgo` to be present.
 
 #![cfg(not(target_os = "windows"))]
 
@@ -54,11 +55,39 @@ fn make_project(name: &str) -> PathBuf {
         fs::remove_dir_all(&dir).expect("clear previous test dir");
     }
     fs::create_dir_all(dir.join("src")).expect("create project dir");
+    write_svelte_compiler_stub(&dir);
     dir
 }
 
 fn write(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
+}
+
+fn write_svelte_compiler_stub(project: &Path) {
+    let svelte = project.join("node_modules/svelte/compiler");
+    fs::create_dir_all(&svelte).expect("create svelte compiler stub");
+    write(
+        &project.join("node_modules/svelte/package.json"),
+        r#"{
+  "name": "svelte",
+  "type": "module",
+  "exports": {
+    "./compiler": "./compiler/index.js"
+  }
+}
+"#,
+    );
+    write(
+        &svelte.join("index.js"),
+        r#"export function compile() {
+	throw new Error('compile is not used by extension discovery tests');
+}
+
+export function preprocess() {
+	throw new Error('preprocess is not used by extension discovery tests');
+}
+"#,
+    );
 }
 
 struct RunOutput {

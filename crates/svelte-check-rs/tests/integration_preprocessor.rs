@@ -1059,6 +1059,54 @@ fn watch_mode_recovers_when_imported_config_module_is_initially_missing() {
 
 #[test]
 #[serial]
+fn watch_mode_recovers_when_vite_import_is_initially_missing() {
+    let project = fixture_path();
+    ensure_fixture_ready(&project);
+    let config = project.join("vite.config.ts");
+    let original_config = fs::read(&config).expect("read Vite config");
+    let _restore_config = RestoreFile {
+        path: config.clone(),
+        contents: original_config.clone(),
+    };
+    let dependency = project.join("vite-config-dependency.js");
+    assert!(!dependency.exists(), "test dependency already exists");
+    let _remove_dependency = RemoveFile(dependency.clone());
+
+    let mut broken_config = b"import './vite-config-dependency.js';\n".to_vec();
+    broken_config.extend_from_slice(&original_config);
+    fs::write(&config, broken_config).expect("add missing Vite config import");
+
+    let mut command = Command::new(binary_path());
+    command
+        .arg("--workspace")
+        .arg(&project)
+        .arg("--single-file")
+        .arg("src/ViteOnly.svelte")
+        .arg("--watch")
+        .arg("--skip-tsgo")
+        .arg("--preserveWatchOutput")
+        .env("SVELTE_CHECK_RS_TEST_VITE_INLINE", "1");
+    let watch = WatchProcess::spawn(&mut command);
+    let fell_back = watch.wait_for("the conventional Svelte config must not win over Vite");
+    let watching = watch.wait_for("Watching for changes");
+    if fell_back.is_ok() && watching.is_ok() {
+        fs::write(&dependency, "export const loaded = true;\n")
+            .expect("restore missing Vite config dependency");
+    }
+    let restored = watch.wait_for("found 0 errors and 0 warnings");
+
+    assert!(
+        fell_back.is_ok(),
+        "broken Vite config did not use the Svelte fallback: {fell_back:?}"
+    );
+    assert!(
+        restored.is_ok(),
+        "restoring the initially missing Vite import did not reload config: {restored:?}"
+    );
+}
+
+#[test]
+#[serial]
 fn watch_mode_recreates_a_failed_preprocessor_worker() {
     let project = fixture_path();
     ensure_fixture_ready(&project);
