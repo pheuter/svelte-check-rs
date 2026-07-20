@@ -94,16 +94,20 @@ enum ScanContext {
     RegexLiteral,
 }
 
+/// Collect store subscriptions in script output without rewriting them.
+///
+/// This preserves `$store` identifiers so TypeScript can narrow on them,
+/// while we emit `$store` aliases in the script prologue.
 struct StoreScanResult {
     store_names: HashSet<SmolStr>,
     uses_props_accessor: bool,
 }
 
-/// Collect store subscriptions in script output without rewriting them.
-///
-/// This preserves `$store` identifiers so TypeScript can narrow on them,
-/// while we emit `$store` aliases in the script prologue.
-fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
+fn scan_store_subscriptions(
+    expr: &str,
+    synthetic_rune_stores: &HashSet<SmolStr>,
+    scope_analysis_available: bool,
+) -> StoreScanResult {
     let mut store_names = HashSet::new();
     let mut uses_props_accessor = false;
     let mut chars = expr.chars().peekable();
@@ -232,35 +236,22 @@ fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
                     }
 
                     let rest: String = chars.clone().collect();
-                    let trimmed_rest = rest.trim_start();
-                    let next_non_ws = trimmed_rest.chars().next();
-
-                    if identifier == "props" {
-                        if matches!(next_non_ws, Some('.') | Some('?') | Some('[')) {
-                            uses_props_accessor = true;
-                        }
-                        continue;
+                    let rest = rest.trim_start();
+                    if identifier == "props"
+                        && matches!(rest.chars().next(), Some('.') | Some('?') | Some('['))
+                    {
+                        uses_props_accessor = true;
                     }
 
-                    let mut is_rune = matches!(next_non_ws, Some('(') | Some('<') | Some(':'));
-                    if !is_rune && next_non_ws == Some('.') {
-                        let is_dot_rune = match identifier.as_str() {
-                            "derived" => trimmed_rest.starts_with(".by"),
-                            "state" => {
-                                trimmed_rest.starts_with(".raw")
-                                    || trimmed_rest.starts_with(".snapshot")
-                            }
-                            "effect" => {
-                                trimmed_rest.starts_with(".pre")
-                                    || trimmed_rest.starts_with(".root")
-                            }
-                            _ => false,
-                        };
-                        if is_dot_rune {
-                            is_rune = true;
-                        }
-                    }
-                    if !is_rune {
+                    let is_type_member = rest.starts_with(':')
+                        || rest
+                            .strip_prefix('?')
+                            .is_some_and(|rest| rest.trim_start().starts_with(':'));
+                    let is_known_rune = is_rune_root(&identifier)
+                        && (scope_analysis_available || looks_like_rune_usage(&identifier, rest));
+                    if !is_type_member
+                        && (synthetic_rune_stores.contains(identifier.as_str()) || !is_known_rune)
+                    {
                         store_names.insert(SmolStr::new(&identifier));
                     }
                     continue;
@@ -272,6 +263,35 @@ fn scan_store_subscriptions(expr: &str) -> StoreScanResult {
     StoreScanResult {
         store_names,
         uses_props_accessor,
+    }
+}
+
+fn is_rune_root(name: &str) -> bool {
+    matches!(
+        name,
+        "state" | "derived" | "effect" | "props" | "bindable" | "inspect" | "host"
+    )
+}
+
+fn looks_like_rune_usage(root: &str, rest: &str) -> bool {
+    if matches!(rest.chars().next(), Some('(') | Some('<') | Some(':')) {
+        return true;
+    }
+
+    match root {
+        "state" => {
+            rest.starts_with(".raw") || rest.starts_with(".snapshot") || rest.starts_with(".eager")
+        }
+        "derived" => rest.starts_with(".by"),
+        "props" => matches!(rest.chars().next(), Some('.') | Some('?') | Some('[')),
+        "effect" => {
+            rest.starts_with(".pre")
+                || rest.starts_with(".tracking")
+                || rest.starts_with(".root")
+                || rest.starts_with(".pending")
+        }
+        "inspect" => rest.starts_with(".trace"),
+        _ => false,
     }
 }
 
@@ -309,11 +329,37 @@ pub fn transform_runes_with_options(
     base_offset: u32,
     default_props_type: Option<&str>,
 ) -> RuneTransformResult {
-    let scanner = RuneScanner::new(script, base_offset, default_props_type);
+    transform_runes_with_options_and_stores(
+        script,
+        base_offset,
+        default_props_type,
+        &HashSet::new(),
+        false,
+    )
+}
+
+/// Transforms rune expressions while preserving rune-shaped legacy store accesses.
+pub(crate) fn transform_runes_with_options_and_stores(
+    script: &str,
+    base_offset: u32,
+    default_props_type: Option<&str>,
+    synthetic_rune_stores: &HashSet<SmolStr>,
+    scope_analysis_available: bool,
+) -> RuneTransformResult {
+    let scanner = RuneScanner::new(
+        script,
+        base_offset,
+        default_props_type,
+        synthetic_rune_stores,
+    );
     let mut result = scanner.scan_and_transform();
 
     // Collect store subscriptions so we can declare aliases in the script prologue.
-    let store_scan = scan_store_subscriptions(&result.output);
+    let store_scan = scan_store_subscriptions(
+        &result.output,
+        synthetic_rune_stores,
+        scope_analysis_available,
+    );
     result.store_names = store_scan.store_names;
     result.uses_props_accessor = store_scan.uses_props_accessor;
 
@@ -337,10 +383,16 @@ struct RuneScanner<'a> {
     output_pos: u32,
     /// Default type to use for untyped $props().
     default_props_type: Option<&'a str>,
+    synthetic_rune_stores: HashSet<SmolStr>,
 }
 
 impl<'a> RuneScanner<'a> {
-    fn new(source: &'a str, base_offset: u32, default_props_type: Option<&'a str>) -> Self {
+    fn new(
+        source: &'a str,
+        base_offset: u32,
+        default_props_type: Option<&'a str>,
+        synthetic_rune_stores: &HashSet<SmolStr>,
+    ) -> Self {
         Self {
             source,
             chars: source.char_indices().peekable(),
@@ -353,6 +405,7 @@ impl<'a> RuneScanner<'a> {
             base_offset,
             output_pos: 0,
             default_props_type,
+            synthetic_rune_stores: synthetic_rune_stores.clone(),
         }
     }
 
@@ -587,6 +640,13 @@ impl<'a> RuneScanner<'a> {
     /// Try to match a rune at the current position.
     fn try_match_rune(&mut self, start_pos: usize) -> Option<RuneMatch> {
         let remaining = &self.source[start_pos..];
+        let root_end = remaining
+            .strip_prefix('$')?
+            .find(|character: char| !character.is_ascii_alphanumeric() && character != '_')?;
+        let root = &remaining[1..1 + root_end];
+        if self.synthetic_rune_stores.contains(root) {
+            return None;
+        }
 
         // Try each rune pattern in order of specificity (longer patterns first)
         let patterns: &[(&str, RuneKind)] = &[
@@ -2156,6 +2216,55 @@ function updateEndTime() {
         // access on the *store value* (`$formData.x`).
         let result = transform_runes("function f() { return $formData.value; }", 0);
         assert!(result.store_names.contains("formData"));
+    }
+
+    #[test]
+    fn test_new_rune_members_are_not_collected_as_stores() {
+        let result = transform_runes(
+            "const a = $state.eager(1); const b = $effect.pending(); \
+             const c = $effect.tracking();",
+            0,
+        );
+        assert!(!result.store_names.contains("state"));
+        assert!(!result.store_names.contains("effect"));
+    }
+
+    #[test]
+    fn test_callable_store_is_collected() {
+        let result = transform_runes("const value = $factory();", 0);
+        assert!(result.store_names.contains("factory"));
+    }
+
+    #[test]
+    fn test_type_members_are_not_collected_as_stores() {
+        let result = transform_runes("interface Selection { $from: number; $to?: number }", 0);
+        assert!(!result.store_names.contains("from"));
+        assert!(!result.store_names.contains("to"));
+    }
+
+    #[test]
+    fn test_shadowed_rune_calls_are_preserved_as_stores() {
+        let stores = HashSet::from([SmolStr::new("state"), SmolStr::new("props")]);
+        let source = "const props = $state(); const value = $props();";
+        let result = transform_runes_with_options_and_stores(source, 0, None, &stores, true);
+
+        assert_eq!(result.output, source);
+        assert!(result.runes.is_empty());
+        assert!(result.store_names.contains("state"));
+        assert!(result.store_names.contains("props"));
+    }
+
+    #[test]
+    fn test_unshadowed_props_id_is_not_collected_as_store() {
+        let result = transform_runes("const uid = $props.id();", 0);
+        assert!(!result.store_names.contains("props"));
+        assert!(result.uses_props_accessor);
+    }
+
+    #[test]
+    fn test_store_scan_falls_back_when_scope_analysis_is_unavailable() {
+        let result = transform_runes("const state = store; const value = $state; @", 0);
+        assert!(result.store_names.contains("state"));
     }
 
     #[test]
