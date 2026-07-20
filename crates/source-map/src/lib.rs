@@ -6,8 +6,10 @@
 
 mod builder;
 mod line_index;
+mod preprocessor;
 mod span;
 
 pub use builder::{Mapping, SourceMap, SourceMapBuilder};
 pub use line_index::{LineCol, LineIndex};
+pub use preprocessor::{PreprocessorMap, PreprocessorMapError, PreprocessorMappedPosition};
 pub use span::{ByteOffset, Span};

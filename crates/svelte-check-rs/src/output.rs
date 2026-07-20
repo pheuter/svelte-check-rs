@@ -70,7 +70,7 @@ impl Formatter {
 
         for diag in diagnostics {
             let start = line_index
-                .line_col(diag.span.start)
+                .utf16_line_col(diag.span.start)
                 .unwrap_or(LineCol::new(0, 0));
 
             let severity = match diag.severity {
@@ -106,7 +106,7 @@ impl Formatter {
 
         for diag in diagnostics {
             let start = line_index
-                .line_col(diag.span.start)
+                .utf16_line_col(diag.span.start)
                 .unwrap_or(LineCol::new(0, 0));
 
             let severity = match diag.severity {
@@ -167,10 +167,10 @@ impl Formatter {
             .iter()
             .map(|diag| {
                 let start = line_index
-                    .line_col(diag.span.start)
+                    .utf16_line_col(diag.span.start)
                     .unwrap_or(LineCol::new(0, 0));
                 let end = line_index
-                    .line_col(diag.span.end)
+                    .utf16_line_col(diag.span.end)
                     .unwrap_or(LineCol::new(0, 0));
 
                 FormattedDiagnostic {
@@ -210,10 +210,10 @@ impl Formatter {
 
         for diag in diagnostics {
             let start = line_index
-                .line_col(diag.span.start)
+                .utf16_line_col(diag.span.start)
                 .unwrap_or(LineCol::new(0, 0));
             let end = line_index
-                .line_col(diag.span.end)
+                .utf16_line_col(diag.span.end)
                 .unwrap_or(LineCol::new(0, 0));
 
             let severity = match diag.severity {

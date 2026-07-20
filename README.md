@@ -9,6 +9,7 @@ A high-performance, Rust-powered diagnostic engine designed as a drop-in replace
 - 🚀 **Fast**: 10-100x faster than `svelte-check` through Rust's zero-cost abstractions and parallel processing
 - ✅ **Accurate**: Matches `svelte-check` diagnostics, including Svelte compiler errors via bun
 - 🔄 **Compatible**: Drop-in CLI replacement, identical output formats
+- 🧩 **Preprocessor-aware**: Resolves effective Vite/Svelte config preprocessors and maps diagnostics back to their original sources
 - 🔧 **Maintainable**: Clean separation of concerns, comprehensive test suite
 
 ## Installation
@@ -76,6 +77,13 @@ npm install -D @typescript/native-preview
 ```
 
 Some package managers (for example, bun) may auto-install peer dependencies, but explicit installation is always supported.
+The supported peer range starts at `7.0.0-dev.20260707.2`, whose CLI reports UTF-16 diagnostic columns consistently.
+
+Configured preprocessors are resolved with Vite-first precedence: effective options from
+`vite.config.*` are used when vite-plugin-svelte or SvelteKit exposes them; otherwise
+`svelte.config.{js,cjs,mjs,ts,mts}` is loaded. Inline Vite preprocessors and the
+vite-plugin-svelte `configFile` option are supported. Preprocessor and imported config
+dependencies are monitored in watch mode, including files outside the workspace.
 
 ### CLI Options
 

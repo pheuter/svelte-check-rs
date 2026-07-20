@@ -2,21 +2,20 @@
 //! and `vite.config.*` Svelte-config reading (issue #3031).
 //!
 //! Upstream commit f53efb39 widens the config-file extension set from
-//! `{js,cjs,mjs}` to `{js,ts,cjs,mjs,mts}`. svelte-check-rs parses configs
-//! statically with SWC, so the full set is adopted unconditionally (no
+//! `{js,cjs,mjs}` to `{js,ts,cjs,mjs,mts}`. svelte-check-rs loads configs
+//! through Bun, so the full set is adopted unconditionally (no
 //! `process.features.typescript` strip-types gate).
 //!
 //! Upstream commit 5b13da15 (#3031) additionally reads Svelte config options
 //! from `vite.config.{js,mjs,ts,cjs,mts,cts}`, preferring it over svelte.config
-//! when it yields plugin options. Upstream runs `vite.resolveConfig` at runtime;
-//! svelte-check-rs parses the vite config STATICALLY with SWC (best-effort
-//! literal-case approximation) and falls through to svelte.config otherwise.
+//! when it yields plugin options. svelte-check-rs likewise runs
+//! `vite.resolveConfig` and falls through to svelte.config otherwise.
 //!
 //! Each test builds a self-contained project on disk under `target/test-tmp/`
-//! and runs the CLI with `--show-config --skip-tsgo`. `--show-config` exits
-//! before tsgo or bun are invoked and prints the resolved `kit.alias` (read
-//! from the svelte config), so these tests don't require `bun install` or
-//! `tsgo` to be present and prove the config flows through the orchestrator.
+//! and runs the CLI with `--show-config --skip-tsgo`. Every project installs a
+//! minimal Svelte compiler stub, while the Vite tests add stubs for the APIs
+//! exercised by Vite config loading. The tests therefore don't require
+//! `bun install`, a warm Bun package cache, or tsgo.
 
 #![cfg(not(target_os = "windows"))]
 
@@ -67,11 +66,119 @@ fn make_project(name: &str) -> PathBuf {
         fs::remove_dir_all(&dir).expect("clear previous test dir");
     }
     fs::create_dir_all(dir.join("src")).expect("create project dir");
+    write_svelte_compiler_stub(&dir);
     dir
 }
 
 fn write(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
+}
+
+fn write_svelte_compiler_stub(project: &Path) {
+    let svelte = project.join("node_modules/svelte/compiler");
+    fs::create_dir_all(&svelte).expect("create svelte compiler stub");
+    write(
+        &project.join("node_modules/svelte/package.json"),
+        r#"{
+  "name": "svelte",
+  "type": "module",
+  "exports": {
+    "./compiler": "./compiler/index.js"
+  }
+}
+"#,
+    );
+    write(
+        &svelte.join("index.js"),
+        r#"export function compile() {
+	throw new Error('compile is not used by config discovery tests');
+}
+
+export function preprocess() {
+	throw new Error('preprocess is not used by config discovery tests');
+}
+"#,
+    );
+}
+
+fn write_vite_stubs(project: &Path) {
+    let vite = project.join("node_modules/vite");
+    fs::create_dir_all(&vite).expect("create vite stub");
+    write(
+        &vite.join("package.json"),
+        r#"{
+  "name": "vite",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  }
+}
+"#,
+    );
+    write(
+        &vite.join("index.js"),
+        r#"import { pathToFileURL } from 'node:url';
+
+export function defineConfig(config) {
+	return config;
+}
+
+export async function resolveConfig(inlineConfig) {
+	const loaded = await import(pathToFileURL(inlineConfig.configFile).href);
+	const config = loaded.default ?? {};
+	return {
+		...config,
+		root: inlineConfig.root,
+		plugins: (config.plugins ?? []).flat(Infinity),
+		configFileDependencies: [inlineConfig.configFile]
+	};
+}
+"#,
+    );
+
+    let svelte_plugin = project.join("node_modules/@sveltejs/vite-plugin-svelte");
+    fs::create_dir_all(&svelte_plugin).expect("create vite-plugin-svelte stub");
+    write(
+        &svelte_plugin.join("package.json"),
+        r#"{
+  "name": "@sveltejs/vite-plugin-svelte",
+  "type": "module",
+  "exports": "./index.js"
+}
+"#,
+    );
+    write(
+        &svelte_plugin.join("index.js"),
+        r#"export function svelte(options = {}) {
+	return {
+		name: 'vite-plugin-svelte:config',
+		api: { options }
+	};
+}
+"#,
+    );
+
+    let sveltekit = project.join("node_modules/@sveltejs/kit");
+    fs::create_dir_all(&sveltekit).expect("create sveltekit stub");
+    write(
+        &sveltekit.join("package.json"),
+        r#"{
+  "name": "@sveltejs/kit",
+  "type": "module",
+  "exports": {
+    "./vite": "./vite.js"
+  }
+}
+"#,
+    );
+    write(
+        &sveltekit.join("vite.js"),
+        r#"export function sveltekit() {
+	return { name: 'vite-plugin-sveltekit-setup' };
+}
+"#,
+    );
 }
 
 fn write_minimal_tsconfig(project: &Path) {
@@ -99,9 +206,9 @@ struct RunOutput {
     stderr: String,
 }
 
-/// `--show-config` prints resolved config to stderr and returns early (no tsgo
-/// or bun). The `kit.alias` line is sourced from the svelte config, so it
-/// proves the config file was discovered AND parsed.
+/// `--show-config` prints resolved config to stderr and returns before tsgo or
+/// source processing. The `kit.alias` line is sourced from the Svelte config,
+/// so it proves the config file was discovered and loaded through Bun.
 fn run_show_config(project: &Path) -> RunOutput {
     ensure_binary_built();
     let output = Command::new(binary_path())
@@ -240,11 +347,12 @@ fn test_svelte_config_js_commonjs_alias_is_honored() {
 }
 
 /// Issue #3031: a `vite.config.ts` declaring `svelte({ kit: { alias } })` (and
-/// NO svelte.config.*) must be discovered and its `$lib` alias honored. This is
-/// the static approximation; upstream runs vite.resolveConfig at runtime.
+/// NO svelte.config.*) must be discovered through `vite.resolveConfig`, with
+/// its `$lib` alias honored.
 #[test]
 fn test_vite_config_ts_alias_is_honored() {
     let project = make_project("vite_config_ts");
+    write_vite_stubs(&project);
     write(
         &project.join("vite.config.ts"),
         r#"import { defineConfig } from 'vite';
@@ -282,6 +390,7 @@ export default defineConfig({
 #[test]
 fn test_vite_config_wins_over_svelte_config() {
     let project = make_project("vite_config_precedence");
+    write_vite_stubs(&project);
     write(
         &project.join("vite.config.ts"),
         r#"import { defineConfig } from 'vite';
@@ -328,6 +437,7 @@ export default defineConfig({
 #[test]
 fn test_bare_sveltekit_vite_config_falls_through_to_svelte_config() {
     let project = make_project("vite_config_bare_sveltekit");
+    write_vite_stubs(&project);
     write(
         &project.join("vite.config.ts"),
         r#"import { defineConfig } from 'vite';
