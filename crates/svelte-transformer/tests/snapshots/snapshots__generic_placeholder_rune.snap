@@ -21,6 +21,11 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
 // Helper functions for template type-checking
 type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
+type __SvelteComponentInstance<
+  Props extends Record<string, any>,
+  Exports extends Record<string, any>
+> = ReturnType<__SvelteComponentType<Props, Exports>>;
+
 // Isomorphic component type that supports both constructor (new) and call signatures
 interface __SvelteComponent<
   Props extends Record<string, any> = {},
@@ -29,7 +34,7 @@ interface __SvelteComponent<
   // Constructor signature for `new Component({ target, props })`
   new (options: { target: any; props?: Props & __SvelteCssProps }): __SvelteLegacyComponent<Props, any, any> & Exports;
   // Call signature for Svelte 5 function components
-  (internal: unknown, props: Props & __SvelteCssProps): Exports;
+  (internal: unknown, props: Props & __SvelteCssProps): __SvelteComponentInstance<Props, Exports>;
 }
 
 // Normalize legacy class components to a callable form.
@@ -178,11 +183,12 @@ return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, 
 // === COMPONENT TYPE EXPORT ===
 type __SvelteProps_Placeholder_<T> = Awaited<ReturnType<typeof __svelte_render<T>>>["props"];
 declare const __SvelteComponent_Placeholder_: {
-<T>(this: void, internals: any, props: __SvelteProps_Placeholder_<T> & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render<T>>>["exports"];
+<T>(this: void, internals: any, props: __SvelteProps_Placeholder_<T> & __SvelteCssProps): __SvelteComponentInstance<__SvelteProps_Placeholder_<T>, Awaited<ReturnType<typeof __svelte_render<T>>>["exports"]>;
 __svelte_generic: true;
 element?: typeof HTMLElement;
 z_$$bindings?: any;
 };
+type __SvelteComponent_Placeholder_<T> = ReturnType<typeof __SvelteComponent_Placeholder_<T>>;
 export default __SvelteComponent_Placeholder_;
 
 

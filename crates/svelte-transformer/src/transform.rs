@@ -770,6 +770,7 @@ fn extract_attribute_text(value: &AttributeValue) -> Option<String> {
 struct GenericParam {
     name: String,
     definition: String,
+    type_definition: String,
 }
 
 fn parse_generic_declarations(generics: &str) -> Vec<GenericParam> {
@@ -782,11 +783,21 @@ fn parse_generic_declarations(generics: &str) -> Vec<GenericParam> {
                 return None;
             }
 
+            // `const` modifiers are valid on function type parameters, but not
+            // on type aliases. Preserve the original declaration for the
+            // component call signature and strip it for the merged type alias.
+            let type_definition = match param.strip_prefix("const") {
+                Some(rest) if rest.chars().next().is_some_and(char::is_whitespace) => {
+                    rest.trim_start()
+                }
+                _ => param,
+            };
+
             // Extract name up to first whitespace or '='
-            let name_end = param
+            let name_end = type_definition
                 .find(|c: char| c.is_whitespace() || c == '=')
-                .unwrap_or(param.len());
-            let name = param[..name_end].trim().to_string();
+                .unwrap_or(type_definition.len());
+            let name = type_definition[..name_end].trim().to_string();
             if name.is_empty() {
                 return None;
             }
@@ -794,6 +805,7 @@ fn parse_generic_declarations(generics: &str) -> Vec<GenericParam> {
             Some(GenericParam {
                 name,
                 definition: param.to_string(),
+                type_definition: type_definition.to_string(),
             })
         })
         .collect()
@@ -832,6 +844,18 @@ fn generics_def(params: &[GenericParam]) -> String {
     let defs = params
         .iter()
         .map(|param| param.definition.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{}>", defs)
+}
+
+fn generics_type_def(params: &[GenericParam]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let defs = params
+        .iter()
+        .map(|param| param.type_definition.as_str())
         .collect::<Vec<_>>()
         .join(", ");
     format!("<{}>", defs)
@@ -1658,6 +1682,7 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
     generic_decls.retain(|param| !declared_types.contains(&param.name));
     let has_generics = !generic_decls.is_empty();
     let generics_def_str = generics_def(&generic_decls);
+    let generics_type_def_str = generics_type_def(&generic_decls);
     let generics_ref_str = generics_ref(&generic_decls);
 
     let helpers_import_path = options.helpers_import_path.as_deref();
@@ -1722,6 +1747,11 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
     let helpers = r#"// Helper functions for template type-checking
 type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
+type __SvelteComponentInstance<
+  Props extends Record<string, any>,
+  Exports extends Record<string, any>
+> = ReturnType<__SvelteComponentType<Props, Exports>>;
+
 // Isomorphic component type that supports both constructor (new) and call signatures
 interface __SvelteComponent<
   Props extends Record<string, any> = {},
@@ -1730,7 +1760,7 @@ interface __SvelteComponent<
   // Constructor signature for `new Component({ target, props })`
   new (options: { target: any; props?: Props & __SvelteCssProps }): __SvelteLegacyComponent<Props, any, any> & Exports;
   // Call signature for Svelte 5 function components
-  (internal: unknown, props: Props & __SvelteCssProps): Exports;
+  (internal: unknown, props: Props & __SvelteCssProps): __SvelteComponentInstance<Props, Exports>;
 }
 
 // Normalize legacy class components to a callable form.
@@ -2233,17 +2263,19 @@ declare module "svelte" {
         let internal_name = format!("__SvelteComponent_{}_", component_name);
         let props_name = format!("__SvelteProps_{}_", component_name);
         format!(
-            "type {props_name}{generics_def} = Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"props\"];\n\
+            "type {props_name}{generics_type_def} = Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"props\"];\n\
 declare const {internal_name}: {{\n\
-  {generics_def}(this: void, internals: any, props: {props_name}{generics_ref} & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"exports\"];\n\
+  {generics_def}(this: void, internals: any, props: {props_name}{generics_ref} & __SvelteCssProps): __SvelteComponentInstance<{props_name}{generics_ref}, Awaited<ReturnType<typeof __svelte_render{generics_ref}>>[\"exports\"]>;\n\
   __svelte_generic: true;\n\
   element?: typeof HTMLElement;\n\
   z_$$bindings?: any;\n\
 }};\n\
+type {internal_name}{generics_type_def} = ReturnType<typeof {internal_name}{generics_ref}>;\n\
 export default {internal_name};\n",
             props_name = props_name,
             internal_name = internal_name,
             generics_def = generics_def_str,
+            generics_type_def = generics_type_def_str,
             generics_ref = generics_ref_str
         )
     } else if has_render {
@@ -2254,6 +2286,7 @@ export default {internal_name};\n",
             "type {props_name} = Awaited<ReturnType<typeof __svelte_render>>[\"props\"];\n\
 type {exports_name} = Awaited<ReturnType<typeof __svelte_render>>[\"exports\"];\n\
 declare const {internal_name}: __SvelteComponent<{props_name}, {exports_name}>;\n\
+type {internal_name} = ReturnType<typeof {internal_name}>;\n\
 export default {internal_name};\n",
             props_name = props_name,
             exports_name = exports_name,
@@ -2378,6 +2411,49 @@ mod tests {
             rewrite_svelte_imports(r#"import X from "./other.ts""#),
             r#"import X from "./other.ts""#
         );
+    }
+
+    #[test]
+    fn test_const_generic_declarations() {
+        let params = parse_generic_declarations(
+            "const T extends { id: string } = { id: string }, U = keyof T",
+        );
+
+        assert_eq!(
+            generics_def(&params),
+            "<const T extends { id: string } = { id: string }, U = keyof T>"
+        );
+        assert_eq!(
+            generics_type_def(&params),
+            "<T extends { id: string } = { id: string }, U = keyof T>"
+        );
+        assert_eq!(generics_ref(&params), "<T, U>");
+    }
+
+    #[test]
+    fn test_legacy_props_are_not_instance_exports() {
+        let doc = parse(
+            r#"<script lang="ts">
+                export let value: string = "";
+            </script>
+            <span>{value}</span>"#,
+        )
+        .document;
+        let result = transform(
+            &doc,
+            TransformOptions {
+                filename: Some("LegacyTarget.svelte".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(result.exports.exports_type, None);
+        let export_section = result
+            .tsx_code
+            .split_once("// === COMPONENT TYPE EXPORT ===")
+            .expect("component type export section")
+            .1;
+        assert!(!export_section.contains("value"));
     }
 
     #[test]

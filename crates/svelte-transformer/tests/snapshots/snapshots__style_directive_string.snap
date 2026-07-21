@@ -16,6 +16,11 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
 // Helper functions for template type-checking
 type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
+type __SvelteComponentInstance<
+  Props extends Record<string, any>,
+  Exports extends Record<string, any>
+> = ReturnType<__SvelteComponentType<Props, Exports>>;
+
 // Isomorphic component type that supports both constructor (new) and call signatures
 interface __SvelteComponent<
   Props extends Record<string, any> = {},
@@ -24,7 +29,7 @@ interface __SvelteComponent<
   // Constructor signature for `new Component({ target, props })`
   new (options: { target: any; props?: Props & __SvelteCssProps }): __SvelteLegacyComponent<Props, any, any> & Exports;
   // Call signature for Svelte 5 function components
-  (internal: unknown, props: Props & __SvelteCssProps): Exports;
+  (internal: unknown, props: Props & __SvelteCssProps): __SvelteComponentInstance<Props, Exports>;
 }
 
 // Normalize legacy class components to a callable form.
@@ -170,6 +175,7 @@ async function __svelte_template_check__() {
 // === COMPONENT TYPE EXPORT ===
 type __SvelteProps_Test_ = __SvelteLoosen<{}>;
 declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_>;
+type __SvelteComponent_Test_ = ReturnType<typeof __SvelteComponent_Test_>;
 export default __SvelteComponent_Test_;
 
 

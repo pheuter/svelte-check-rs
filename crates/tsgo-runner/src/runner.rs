@@ -26,6 +26,11 @@ export {};
 declare global {
   type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
+  type __SvelteComponentInstance<
+    Props extends Record<string, any>,
+    Exports extends Record<string, any>
+  > = ReturnType<SvelteComponentType<Props, Exports>>;
+
   // Isomorphic component type that supports both constructor (new) and call signatures
   // This allows usage with both class components and Svelte 5 function components
   interface __SvelteComponent<
@@ -35,7 +40,7 @@ declare global {
     // Constructor signature for `new Component({ target, props })`
     new (options: { target: any; props?: Props & __SvelteCssProps }): SvelteLegacyComponent<Props, any, any> & Exports;
     // Call signature for Svelte 5 function components
-    (internal: unknown, props: Props & __SvelteCssProps): Exports;
+    (internal: unknown, props: Props & __SvelteCssProps): __SvelteComponentInstance<Props, Exports>;
   }
 
   // Normalize legacy class components to a callable form.

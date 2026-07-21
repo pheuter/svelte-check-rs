@@ -279,6 +279,29 @@ where
 }
 
 // ============================================================================
+// COMPONENT VALUES AS INSTANCE TYPES
+// ============================================================================
+
+/// A generated Svelte component's default export occupies both TypeScript's
+/// value and type namespaces, matching svelte2tsx. Cover direct type imports,
+/// multi-level named barrel re-exports, generics, JavaScript components,
+/// scriptless and legacy components, and `bind:this` in one full-pipeline fixture.
+#[test]
+fn test_component_values_are_usable_as_precise_instance_types() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+
+    let fixture_diagnostics: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.filename.contains("component-instance-types/"))
+        .collect();
+    assert!(
+        fixture_diagnostics.is_empty(),
+        "component instance type fixture produced diagnostics:\n{fixture_diagnostics:#?}",
+    );
+}
+
+// ============================================================================
 // ISSUE #21: COLON IN IMPORTS
 // ============================================================================
 // These tests verify that colons in import paths, string literals, and regex
