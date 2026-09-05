@@ -188,6 +188,7 @@ enum BunOperation {
     Config,
     Compile,
     Preprocess,
+    ResolveCompiler,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,6 +205,10 @@ struct BunRequest {
 
 #[derive(Debug, Deserialize)]
 struct BunResponse {
+    #[serde(rename = "compilerIdentity")]
+    compiler_identity: Option<String>,
+    #[serde(default, rename = "runnerError")]
+    runner_error: bool,
     id: Option<u64>,
     diagnostics: Option<Vec<BunJsDiagnostic>>,
     code: Option<String>,
@@ -557,14 +562,31 @@ impl BunRunner {
             return Ok(Vec::new());
         }
 
-        let svelte_version = self.resolve_svelte_version();
+        let mut resolver = BunWorker::spawn(
+            self.bun_path.clone(),
+            self.workspace_root.clone(),
+            self.script_path.clone(),
+        )
+        .await?;
+        let mut compiler_identities = HashMap::new();
         let cache_dir = self.compiler_cache_dir();
         let mut diagnostics_by_key: HashMap<String, Vec<BunDiagnostic>> = HashMap::new();
         let mut misses = Vec::new();
         let mut ordered_keys = Vec::with_capacity(inputs.len());
 
         for input in inputs {
-            let key = compiler_cache_key(&input, svelte_version.as_deref())?;
+            let directory = input
+                .filename
+                .parent()
+                .unwrap_or(&self.workspace_root)
+                .to_owned();
+            let identity = if let Some(identity) = compiler_identities.get(&directory) {
+                identity
+            } else {
+                let identity = resolver.resolve_compiler(&input.filename).await?;
+                compiler_identities.entry(directory).or_insert(identity)
+            };
+            let key = compiler_cache_key(&input, Some(identity))?;
             ordered_keys.push(key.clone());
             if let Some(cached) = cache_dir
                 .as_ref()
@@ -659,22 +681,6 @@ impl BunRunner {
             let candidate = dir.join("node_modules");
             if candidate.is_dir() {
                 return Some(candidate);
-            }
-            current = dir.parent();
-        }
-        None
-    }
-
-    fn resolve_svelte_version(&self) -> Option<String> {
-        let mut current = Some(self.workspace_root.as_path());
-        while let Some(dir) = current {
-            let package_json = dir.join("node_modules/svelte/package.json");
-            if let Ok(contents) = fs::read_to_string(&package_json) {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
-                    if let Some(version) = value.get("version").and_then(|v| v.as_str()) {
-                        return Some(version.to_string());
-                    }
-                }
             }
             current = dir.parent();
         }
@@ -988,6 +994,27 @@ impl BunWorker {
             .ok_or_else(|| BunError::ProtocolError("missing config response".to_string()))
     }
 
+    async fn resolve_compiler(&mut self, filename: &Utf8Path) -> Result<String, BunError> {
+        self.send_request(&BunRequest {
+            id: 1,
+            operation: BunOperation::ResolveCompiler,
+            filename: filename.to_string(),
+            source: String::new(),
+            options: BunCompileOptions::default(),
+            config_path: None,
+        })
+        .await?;
+        let line = self.next_response_line().await?;
+        let response: BunResponse =
+            serde_json::from_str(&line).map_err(|error| BunError::ParseError(error.to_string()))?;
+        if let Some(error) = response.error {
+            return Err(BunError::ProtocolError(error));
+        }
+        response
+            .compiler_identity
+            .ok_or_else(|| BunError::ProtocolError("missing compiler identity".into()))
+    }
+
     async fn preprocess_batch(
         &mut self,
         inputs: Vec<BunInput>,
@@ -1017,6 +1044,13 @@ impl BunWorker {
                 return Err(BunError::ProtocolError(format!(
                     "unexpected response id {response_id}; expected {id}"
                 )));
+            }
+            if response.runner_error {
+                return Err(BunError::ProtocolError(
+                    response
+                        .error
+                        .unwrap_or_else(|| "compiler loading failed".into()),
+                ));
             }
             if let Some(error) = response.error {
                 processed.push(BunPreprocessed {

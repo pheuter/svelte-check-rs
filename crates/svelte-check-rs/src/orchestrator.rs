@@ -1474,7 +1474,7 @@ async fn run_single_check(
                 }
             }
             Err(e) => {
-                eprintln!("Svelte compiler checking failed: {}", e);
+                return Err(e);
             }
         }
     }
