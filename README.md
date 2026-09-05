@@ -70,14 +70,25 @@ svelte-check-rs --output human-verbose
 
 ## Requirements
 
-`svelte-check-rs` expects `tsgo` to be available from your workspace `node_modules`. Install it via:
+`svelte-check-rs` supports the released TypeScript 7 native compiler. For Svelte
+and SvelteKit projects, keep TypeScript 6 installed for tooling that uses its
+JavaScript API and install the native compiler alongside it:
 
 ```bash
-npm install -D @typescript/native-preview
+npm install -D typescript@^6 @typescript/native@npm:typescript@^7.0.2
 ```
 
-Some package managers (for example, bun) may auto-install peer dependencies, but explicit installation is always supported.
-The supported peer range starts at `7.0.0-dev.20260707.2`, whose CLI reports UTF-16 diagnostic columns consistently.
+The checker resolves `@typescript/native` directly, so a shared `tsc` shim cannot
+accidentally select TypeScript 6. A regular `typescript` installation at version
+7 or later is also supported when your other tooling no longer needs the
+TypeScript 6 API. Replacing TypeScript 6 outright can break SvelteKit type
+generation; see the [upstream compatibility discussion](https://github.com/sveltejs/language-tools/issues/3063#issuecomment-5472405798).
+
+Existing `@typescript/native-preview` installations remain supported, starting at
+`7.0.0-dev.20260707.2` for consistent UTF-16 diagnostic columns. Install one of the
+native compiler options explicitly; both npm peers are optional to allow either
+choice. Compiler resolution walks up from `--workspace` through ancestor
+`node_modules` directories.
 
 Configured preprocessors are resolved with Vite-first precedence: effective options from
 `vite.config.*` are used when vite-plugin-svelte or SvelteKit exposes them; otherwise

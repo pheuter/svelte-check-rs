@@ -30,8 +30,9 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 
 **tsgo Integration** (tsgo-runner crate):
 - External TypeScript type-checker (Go-based, faster than tsc)
-- Resolved from workspace `node_modules/.bin` (walks up from `--workspace`)
-- Requires `@typescript/native-preview` to be installed in the workspace (peer dependency range: `>=7.0.0-dev.20260707.2`)
+- Resolves released TypeScript 7 from `@typescript/native` (npm alias) or `typescript`, then legacy `node_modules/.bin/tsgo`; walks up from `--workspace`
+- Recommended: `typescript@^6` for Svelte tooling plus `@typescript/native@npm:typescript@^7.0.2` for native checking
+- Legacy `@typescript/native-preview >=7.0.0-dev.20260707.2` remains supported
 - Communication: JSON over stdin/stdout
 - Incremental builds via `node_modules/.cache/svelte-check-rs/tsgo.tsbuildinfo`
 

@@ -128,7 +128,7 @@ fn print_debug_paths(workspace: &Utf8Path) {
         Ok(path) => println!("  resolved: {}", path),
         Err(_) => {
             println!(
-                "  resolved: (not found - install @typescript/native-preview in your workspace)"
+                "  resolved: (not found - install @typescript/native@npm:typescript@^7 or @typescript/native-preview)"
             );
         }
     }

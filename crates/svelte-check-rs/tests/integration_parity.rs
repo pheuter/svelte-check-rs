@@ -129,8 +129,11 @@ fn ensure_fixture_ready(fixture_path: &PathBuf) {
         let _ = fs::remove_dir_all(&cache_path);
 
         let node_modules = fixture_path.join("node_modules");
-        let tsgo_bin = node_modules.join(".bin/tsgo");
-        if !node_modules.exists() || !tsgo_bin.exists() {
+        let has_checker = tsgo_runner::TsgoRunner::resolve_tsgo(
+            &Utf8PathBuf::from_path_buf(fixture_path.to_path_buf()).expect("utf-8 fixture"),
+        )
+        .is_ok();
+        if !node_modules.exists() || !has_checker {
             eprintln!("Installing dependencies for sveltekit-bundler...");
             let bun_path = bun_path_for(fixture_path);
             let output = Command::new(bun_path.as_std_path())
