@@ -221,7 +221,7 @@ pub enum TsgoError {
 
     /// tsgo not installed in node_modules.
     #[error(
-        "tsgo not found in node_modules starting at {0}. Install @typescript/native-preview in your workspace (some package managers may auto-install peer dependencies)."
+        "tsgo not found in node_modules starting at {0}. Install @typescript/native@npm:typescript@^7 with TypeScript 6 for Svelte tooling, or install @typescript/native-preview."
     )]
     TsgoNotInstalled(Utf8PathBuf),
 
@@ -448,7 +448,8 @@ impl TsgoRunner {
             .to_string()
     }
 
-    /// Resolves tsgo from node_modules/.bin by walking up from the workspace root.
+    /// Resolves a released native TypeScript package, then a legacy tsgo shim,
+    /// by walking up from the workspace root. Never selects a generic tsc shim.
     ///
     /// On Windows, `Command::new` cannot execute the extensionless Unix shell
     /// shim that npm/pnpm/yarn install alongside `.cmd`/`.exe`; CreateProcess
@@ -468,6 +469,11 @@ impl TsgoRunner {
             let node_modules = dir.join("node_modules");
             if node_modules.is_dir() {
                 saw_node_modules = true;
+                for package in ["@typescript/native", "typescript"] {
+                    if let Some(entry) = native_typescript_entry(&node_modules.join(package)) {
+                        return Ok(entry);
+                    }
+                }
                 let bin_dir = node_modules.join(".bin");
                 for name in SHIM_CANDIDATES {
                     let tsgo_path = bin_dir.join(name);
@@ -495,7 +501,7 @@ impl TsgoRunner {
     ) -> Result<(String, Utf8PathBuf), TsgoError> {
         let tsgo_path = Self::resolve_tsgo(workspace_root)?;
 
-        let output = Command::new(&tsgo_path)
+        let output = compiler_command(&tsgo_path)
             .arg("--version")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1506,7 +1512,7 @@ impl TsgoRunner {
 
         // Run tsgo on the temp directory
         let tsgo_start = Instant::now();
-        let mut command = Command::new(&self.tsgo_path);
+        let mut command = compiler_command(&self.tsgo_path);
         command.arg("--project").arg(&temp_tsconfig);
         if emit_diagnostics {
             command.arg("--diagnostics").arg("--extendedDiagnostics");
@@ -1602,6 +1608,54 @@ fn is_fatal_config_code(code: &str) -> bool {
             // `getOptionsDiagnostics()`; upstream keeps it an Error.
             | "TS6046"
     )
+}
+
+// Package identity and version distinguish the native release from TS5/TS6,
+// even when package managers overwrite a shared node_modules/.bin/tsc shim.
+fn native_typescript_entry(package: &Utf8Path) -> Option<Utf8PathBuf> {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(package.join("package.json")).ok()?).ok()?;
+    if manifest.get("name")?.as_str()? != "typescript" {
+        return None;
+    }
+    let major = manifest
+        .get("version")?
+        .as_str()?
+        .split('.')
+        .next()?
+        .parse::<u32>()
+        .ok()?;
+    if major < 7 {
+        return None;
+    }
+    let bin = manifest.get("bin")?;
+    let entry = bin.as_str().or_else(|| bin.get("tsc")?.as_str())?;
+    let entry = package.join(entry);
+    entry.is_file().then_some(entry)
+}
+
+fn compiler_command(path: &Utf8Path) -> Command {
+    // Package bin entries are JS launchers, not Windows executables. Invoke
+    // their declared Node runtime explicitly on every platform.
+    use std::io::Read;
+    let mut prefix = [0u8; 128];
+    let is_node = std::fs::File::open(path)
+        .ok()
+        .and_then(|mut file| file.read(&mut prefix).ok())
+        .is_some_and(|len| {
+            let first = String::from_utf8_lossy(&prefix[..len]);
+            first
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("#!") && line.contains("node"))
+        });
+    if is_node {
+        let mut command = Command::new("node");
+        command.arg(path);
+        command
+    } else {
+        Command::new(path)
+    }
 }
 
 /// Downgrades tsconfig-attributed options/global diagnostics to warnings and
@@ -2517,6 +2571,66 @@ mod tests {
 
         let resolved = TsgoRunner::find_sveltekit_binary(&temp_root).expect("find svelte-kit");
         assert_eq!(resolved, js_path);
+    }
+
+    fn write_native_package(root: &Utf8Path, name: &str, version: &str) -> Utf8PathBuf {
+        let package = root.join("node_modules").join(name);
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            serde_json::json!({"name": "typescript", "version": version, "bin": {"tsc": "bin/tsc"}}).to_string(),
+        ).unwrap();
+        let entry = package.join("bin/tsc");
+        std::fs::write(
+            &entry,
+            "#!/usr/bin/env node\nconsole.log('Version 7.0.2');\n",
+        )
+        .unwrap();
+        entry
+    }
+
+    #[test]
+    fn test_native_release_resolution_with_api_compatible_typescript() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(temp.path()).unwrap();
+        let bin = root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // A shared tsc shim may point at either package; it must never be used.
+        std::fs::write(bin.join("tsc"), "wrong compiler").unwrap();
+        for version in ["5.9.3", "6.0.3"] {
+            write_native_package(root, "typescript", version);
+            assert!(TsgoRunner::resolve_tsgo(root).is_err());
+        }
+        let legacy = bin.join(if cfg!(windows) { "tsgo.cmd" } else { "tsgo" });
+        std::fs::write(&legacy, "legacy shim").unwrap();
+        assert_eq!(TsgoRunner::resolve_tsgo(root).unwrap(), legacy);
+        let native = write_native_package(root, "@typescript/native", "7.0.2");
+        assert_eq!(TsgoRunner::resolve_tsgo(root).unwrap(), native);
+        // Monorepo apps inherit the root compiler without relying on PATH.
+        let app = root.join("apps/example");
+        std::fs::create_dir_all(&app).unwrap();
+        assert_eq!(TsgoRunner::resolve_tsgo(&app).unwrap(), native);
+        // Ignore missing bin entries and directories posing as entry files.
+        std::fs::remove_file(&native).unwrap();
+        assert_eq!(TsgoRunner::resolve_tsgo(root).unwrap(), legacy);
+        std::fs::create_dir(&native).unwrap();
+        assert_eq!(TsgoRunner::resolve_tsgo(root).unwrap(), legacy);
+    }
+
+    #[tokio::test]
+    async fn test_native_package_launch_and_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(temp.path()).unwrap();
+        // Use a non-executable, extensionless JS bin entry, including on Windows.
+        let canonical = write_native_package(root, "typescript", "7.0.2");
+        assert_eq!(TsgoRunner::resolve_tsgo(root).unwrap(), canonical);
+        let (version, path) = TsgoRunner::get_tsgo_version(root).await.unwrap();
+        assert_eq!(version, "Version 7.0.2");
+        assert_eq!(path, canonical);
+        let alias = write_native_package(root, "@typescript/native", "7.0.2");
+        let (version, path) = TsgoRunner::get_tsgo_version(root).await.unwrap();
+        assert_eq!(version, "Version 7.0.2");
+        assert_eq!(path, alias);
     }
 
     #[test]

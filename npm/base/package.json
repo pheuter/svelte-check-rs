@@ -18,6 +18,15 @@
   ],
   "optionalDependencies": {},
   "peerDependencies": {
+    "@typescript/native": ">=7.0.2",
     "@typescript/native-preview": ">=7.0.0-dev.20260707.2"
+  },
+  "peerDependenciesMeta": {
+    "@typescript/native": {
+      "optional": true
+    },
+    "@typescript/native-preview": {
+      "optional": true
+    }
   }
 }
