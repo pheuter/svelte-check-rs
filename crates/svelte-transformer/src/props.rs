@@ -13,7 +13,7 @@
 use source_map::Span;
 use std::sync::Arc;
 use swc_common::{FileName, SourceMap as SwcSourceMap, Spanned};
-use swc_ecma_ast::{Expr, Lit};
+use swc_ecma_ast::{Callee, Decl, Expr, Lit, ModuleDecl, ModuleItem, Pat, Stmt};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
 
 /// Information about the component's props extracted from `$props()`.
@@ -70,6 +70,12 @@ pub fn extract_props_info(
     original_script: &str,
     base_offset: u32,
 ) -> Option<PropsInfo> {
+    // Use syntax boundaries for complete scripts. Quotes and declaration-like
+    // text in comments must not change where a destructure or its type ends.
+    if let Ok(info) = extract_parsed_props(original_script, base_offset) {
+        return info;
+    }
+    // Keep tolerant extraction for incomplete scripts while editing.
     // Find the `$props()`/`$props<...>()` rune call, skipping any `$props`
     // mentioned in a comment or string literal. A plain `find("$props")` is
     // fooled by an explanatory comment like `// untyped $props()` and then fails
@@ -88,6 +94,85 @@ pub fn extract_props_info(
 
     // Parse the declaration pattern
     parse_props_declaration(declaration, base_offset + decl_start as u32)
+}
+
+fn extract_parsed_props(script: &str, base_offset: u32) -> Result<Option<PropsInfo>, ()> {
+    let cm = SwcSourceMap::default();
+    let file = cm.new_source_file(FileName::Anon.into(), script.to_owned());
+    let mut parser = Parser::new(
+        Syntax::Typescript(TsSyntax::default()),
+        StringInput::from(&*file),
+        None,
+    );
+    let module = parser.parse_module().map_err(|_| ())?;
+    if !parser.take_errors().is_empty() {
+        return Err(());
+    }
+    let slice = |span: swc_common::Span| {
+        script.get((span.lo.0 - file.start_pos.0) as usize..(span.hi.0 - file.start_pos.0) as usize)
+    };
+    for item in &module.body {
+        let declaration = match item {
+            ModuleItem::Stmt(Stmt::Decl(Decl::Var(var))) => var,
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => {
+                let Decl::Var(var) = &export.decl else {
+                    continue;
+                };
+                var
+            }
+            _ => continue,
+        };
+        for var in &declaration.decls {
+            let Some(Expr::Call(call)) = var.init.as_deref() else {
+                continue;
+            };
+            let Callee::Expr(callee) = &call.callee else {
+                continue;
+            };
+            if !matches!(callee.as_ref(), Expr::Ident(id) if id.sym == *"$props") {
+                continue;
+            }
+            let mut info = PropsInfo::default();
+            let annotation = match &var.name {
+                Pat::Object(object) => {
+                    info.is_destructured = true;
+                    for prop in &object.props {
+                        let span = prop.span();
+                        if let Some(property) = slice(span).and_then(|source| {
+                            parse_single_property(
+                                source,
+                                base_offset + span.lo.0 - file.start_pos.0,
+                            )
+                        }) {
+                            info.properties.push(property);
+                        }
+                    }
+                    object.type_ann.as_deref()
+                }
+                Pat::Ident(id) => {
+                    info.object_binding = Some(id.id.sym.to_string());
+                    id.type_ann.as_deref()
+                }
+                _ => continue,
+            };
+            let type_span = annotation.map(|ann| ann.type_ann.span()).or_else(|| {
+                call.type_args
+                    .as_ref()?
+                    .params
+                    .first()
+                    .map(|param| param.span())
+            });
+            if let Some(span) = type_span {
+                info.type_annotation = slice(span).map(str::to_owned);
+                info.type_span = Some(Span::new(
+                    base_offset + span.lo.0 - file.start_pos.0,
+                    base_offset + span.hi.0 - file.start_pos.0,
+                ));
+            }
+            return Ok(Some(info));
+        }
+    }
+    Ok(None)
 }
 
 /// Find the byte offset of the `$props` rune call (`$props(` or `$props<`),
@@ -830,6 +915,36 @@ fn is_complex_type_reference(type_ann: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comments_cannot_change_props_declaration_boundaries() {
+        let source = r#"const text = 'let fake = $props()';
+let {
+  // Someone's comment contains let, const, } and a comma,
+  title = $bindable('hello'),
+  callback = () => { const nested = 1; return nested; },
+  ...rest
+}: { title?: string; callback?: () => number } = $props();"#;
+        let info = extract_props_info(source, source, 10).unwrap();
+        assert_eq!(
+            info.type_annotation.as_deref(),
+            Some("{ title?: string; callback?: () => number }")
+        );
+        assert_eq!(
+            info.properties
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["title", "callback", "rest"]
+        );
+        assert!(info.properties[0].is_bindable);
+        assert!(info.properties[2].is_rest);
+        let span = info.type_span.unwrap();
+        assert_eq!(
+            &source[usize::from(span.start) - 10..usize::from(span.end) - 10],
+            info.type_annotation.as_deref().unwrap()
+        );
+    }
 
     #[test]
     fn test_infer_type_from_default() {

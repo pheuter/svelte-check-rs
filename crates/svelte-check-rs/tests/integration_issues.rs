@@ -2620,3 +2620,17 @@ fn test_issue_157_props_destructuring_comments_no_errors() {
     );
     assert_no_diagnostics_in_file(&ts_diagnostics, "issue-157-props-comments/+page.svelte");
 }
+
+#[test]
+fn test_issue_172_props_comments_preserve_type_and_error_position() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_, diagnostics) = run_check_json(&fixture_path);
+    let actual: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.filename.ends_with("issue-172-props-comments.svelte"))
+        .collect();
+    assert_eq!(actual.len(), 1, "{actual:#?}");
+    assert_eq!(actual[0].code, "TS2322");
+    assert_eq!(actual[0].start.line, 7);
+    assert_eq!(actual[0].start.column, 11);
+}
