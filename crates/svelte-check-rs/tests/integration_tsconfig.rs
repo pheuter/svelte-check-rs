@@ -659,6 +659,12 @@ fn bundler_expected_errors() -> Vec<ExpectedError> {
             code: "TS2322",
             message_contains: "is not assignable to type '\"nope\"'",
         },
+        ExpectedError {
+            filename: "src/lib/issue-172-props-comments.svelte",
+            line: 7,
+            code: "TS2322",
+            message_contains: "Type 'string' is not assignable to type 'number'",
+        },
     ]
 }
 
@@ -1169,7 +1175,8 @@ fn test_all_configs_have_expected_error_counts() {
     // + 1 #2946 server companion (+page.server.js event.bogus TS2339)
     // + 2 #2863 each non-iterable lock-in (TS2345 non-indexed + indexed/keyed)
     // + 1 #2895 await wrong-annotation lock-in (TS2322) = 33
-    assert_eq!(bundler_errors, 33, "Bundler should have exactly 33 errors");
+    // + 1 issue-172 props-comment type error = 34
+    assert_eq!(bundler_errors, 34, "Bundler should have exactly 34 errors");
     assert_eq!(
         nodenext_errors, 4,
         "NodeNext should have exactly 4 errors (2 TS2834 + 2 type errors)"

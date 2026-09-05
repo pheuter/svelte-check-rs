@@ -2291,3 +2291,11 @@ fn test_declaration_tag_async() {
 fn test_declaration_tag_source_map() {
     transform_snapshot_with_source_map("declaration_tag_source_map", "{const x = 1}\n{let y = 2}");
 }
+
+#[test]
+fn props_comments_large() {
+    transform_snapshot(
+        "props_comments_large",
+        include_str!("../../../test-fixtures/valid/parser/props-comments-large.svelte"),
+    );
+}
