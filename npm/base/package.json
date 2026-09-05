@@ -1,7 +1,7 @@
 {
   "name": "svelte-check-rs",
   "version": "0.0.0",
-  "description": "High-performance Svelte type-checker and linter",
+  "description": "Sunsetted: use official svelte-check. Archived Rust-based Svelte 5 checker.",
   "license": "MIT",
   "repository": {
     "type": "git",

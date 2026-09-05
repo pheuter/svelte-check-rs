@@ -1,48 +1,23 @@
-// Benchmark data — measured with hyperfine on careswitch-web
-// (SvelteKit monorepo, 531 svelte / 1,573 ts files, ~415k LOC src).
-// Hardware: Apple M4 Max, 48 GB. svelte-check 4.4.8 vs svelte-check-rs 0.9.14.
-const BENCHMARKS = {
-  cold: {
-    label: "Cold start",
-    runs: 5,
-    svelte: 47.95,
-    rs: 7.07,
-    speedup: 6.8,
-  },
-  warm: {
-    label: "Warm cache",
-    runs: 5,
-    svelte: 51.83,
-    rs: 0.84,
-    speedup: 61.9,
-  },
-  iterative: {
-    label: "Iterative change",
-    runs: 5,
-    svelte: 56.24,
-    rs: 1.17,
-    speedup: 48.1,
-  },
-};
-
+// Data is generated from benchmarks/results.json by benchmarks/publish.py.
 // DOM elements
 const scenarioButtons = document.querySelectorAll("[data-scenario]");
 const scenarioLabel = document.querySelector("[data-scenario-label]");
 const runsLabel = document.querySelector("[data-runs]");
 const speedupValue = document.querySelector("[data-speedup]");
-const barSvelte = document.querySelector('[data-bar="svelte"]');
-const barRs = document.querySelector('[data-bar="rs"]');
-const timeSvelte = document.querySelector('[data-time="svelte"]');
-const timeRs = document.querySelector('[data-time="rs"]');
+const workloadSelect = document.querySelector('[data-workload]');
+const workloadSource = document.querySelector('[data-workload-source]');
+const benchmarkNote = document.querySelector('[data-benchmark-note]');
+const benchmarkVersions = document.querySelector('[data-benchmark-versions]');
+const speedupLabel = document.querySelector('[data-speedup-label]');
 const themeToggle = document.querySelector(".theme-toggle");
 
 // Formatters
-const formatSeconds = (value) => `${value.toFixed(2)}s`;
+const formatSeconds = (value) => `${value.toFixed(3)}s`;
 const formatSpeed = (value) => `${value.toFixed(1)}x`;
 
-// Animation state
+// Selected benchmark
 let currentScenario = "warm";
-let animationTimeouts = [];
+let currentWorkload = "components-500";
 
 // ========================================
 // Theme Management
@@ -100,121 +75,57 @@ window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()
 // Benchmark Visualization
 // ========================================
 
-function animateValue(element, start, end, duration, formatter) {
-  const startTime = performance.now();
-
-  function update(currentTime) {
-    const elapsed = currentTime - startTime;
-    const progress = Math.min(elapsed / duration, 1);
-
-    // Ease out cubic
-    const eased = 1 - Math.pow(1 - progress, 3);
-    const current = start + (end - start) * eased;
-
-    element.textContent = formatter(current);
-
-    if (progress < 1) {
-      requestAnimationFrame(update);
-    }
-  }
-
-  requestAnimationFrame(update);
-}
-
-function clearAnimations() {
-  animationTimeouts.forEach(clearTimeout);
-  animationTimeouts = [];
-}
-
-function scheduleTimeout(fn, delay) {
-  const id = setTimeout(fn, delay);
-  animationTimeouts.push(id);
-  return id;
-}
-
-function render(key, animate = true) {
-  const data = BENCHMARKS[key];
+function render(key) {
+  const workload = BENCHMARK_WORKLOADS[currentWorkload];
+  const data = workload?.scenarios[key];
   if (!data) return;
-
-  // Clear any pending animations
-  clearAnimations();
-
   currentScenario = key;
 
-  // Update tab states
   scenarioButtons.forEach((button) => {
-    const isActive = button.dataset.scenario === key;
-    button.setAttribute("aria-selected", isActive ? "true" : "false");
+    const active = button.dataset.scenario === key;
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
   });
-
-  // Update labels
   if (scenarioLabel) scenarioLabel.textContent = data.label;
-  if (runsLabel) runsLabel.textContent = `n=${data.runs}`;
+  if (runsLabel) runsLabel.textContent = `Median of ${workload.runs} runs`;
+  if (workloadSource) workloadSource.textContent = workload.source;
+  if (benchmarkNote) benchmarkNote.textContent = workload.note;
+  document.querySelector('[data-benchmark-date]').textContent = workload.date;
+  document.querySelector('[data-benchmark-env]').textContent = workload.environment;
+  document.querySelector('[data-benchmark-checkers]').textContent = workload.checkers;
+  if (benchmarkVersions) {
+    const packages = workload.packages;
+    benchmarkVersions.textContent = `Svelte ${packages.svelte}` +
+      (packages["@sveltejs/kit"] ? ` · Kit ${packages["@sveltejs/kit"]}` : "") +
+      ` · TypeScript ${packages.typescript} / ${packages["@typescript/native"]}`;
+  }
 
-  // Calculate bar widths
-  const max = Math.max(data.svelte, data.rs);
-  const svelteWidth = (data.svelte / max) * 100;
-  const rsWidth = (data.rs / max) * 100;
-
-  // Get bar fill elements
-  const svelteFill = barSvelte?.querySelector(".bench-bar-fill");
-  const rsFill = barRs?.querySelector(".bench-bar-fill");
-
-  if (animate) {
-    // Disable transitions for instant reset
-    svelteFill?.style.setProperty("transition", "none");
-    rsFill?.style.setProperty("transition", "none");
-
-    // Reset to zero
-    if (svelteFill) svelteFill.style.width = "0%";
-    if (rsFill) rsFill.style.width = "0%";
-    timeSvelte?.classList.remove("visible");
-    timeRs?.classList.remove("visible");
-    speedupValue?.classList.remove("visible");
-
-    // Set initial values while hidden
-    if (timeSvelte) timeSvelte.textContent = "0.00s";
-    if (timeRs) timeRs.textContent = "0.00s";
-    if (speedupValue) speedupValue.textContent = "1.0x";
-
-    // Force reflow to apply the reset
-    void svelteFill?.offsetWidth;
-    void rsFill?.offsetWidth;
-
-    // Re-enable transitions by removing inline style
-    svelteFill?.style.removeProperty("transition");
-    rsFill?.style.removeProperty("transition");
-
-    // Another reflow to ensure transition is active
-    void svelteFill?.offsetWidth;
-
-    // Start all animations together
-    if (svelteFill) svelteFill.style.width = `${svelteWidth}%`;
-    if (rsFill) rsFill.style.width = `${rsWidth}%`;
-
-    // Show numbers immediately and animate values in sync with bars
-    timeSvelte?.classList.add("visible");
-    timeRs?.classList.add("visible");
-    speedupValue?.classList.add("visible");
-    if (timeSvelte) animateValue(timeSvelte, 0, data.svelte, 400, formatSeconds);
-    if (timeRs) animateValue(timeRs, 0, data.rs, 400, formatSeconds);
-    if (speedupValue) animateValue(speedupValue, 1, data.speedup, 400, formatSpeed);
-  } else {
-    // No animation - set values immediately
-    if (svelteFill) svelteFill.style.width = `${svelteWidth}%`;
-    if (rsFill) rsFill.style.width = `${rsWidth}%`;
-    if (timeSvelte) {
-      timeSvelte.textContent = formatSeconds(data.svelte);
-      timeSvelte.classList.add("visible");
+  const tools = ["svelte", "tsgo", "rs"];
+  const max = Math.max(...tools.map((tool) => data[tool] ?? 0));
+  tools.forEach((tool) => {
+    const bar = document.querySelector(`[data-bar="${tool}"]`);
+    const row = bar?.closest(".bench-row");
+    const fill = bar?.querySelector(".bench-bar-fill");
+    const time = document.querySelector(`[data-time="${tool}"]`);
+    const measured = Number.isFinite(data[tool]);
+    row?.classList.toggle("unmeasured", !measured);
+    if (fill) {
+      fill.style.width = measured ? `${data[tool] / max * 100}%` : "0%";
     }
-    if (timeRs) {
-      timeRs.textContent = formatSeconds(data.rs);
-      timeRs.classList.add("visible");
+    if (time) {
+      time.textContent = measured ? formatSeconds(data[tool]) : "Not measured";
+      time.classList.add("visible");
     }
-    if (speedupValue) {
-      speedupValue.textContent = formatSpeed(data.speedup);
-      speedupValue.classList.add("visible");
-    }
+  });
+  document.querySelector("#bench").dataset.qualified = String(!workload.showSpeedup);
+  if (speedupValue) {
+    speedupValue.textContent = workload.showSpeedup ? formatSpeed(data.tsgo / data.rs) : "Diagnostics differ";
+    speedupValue.classList.add("visible");
+  }
+  if (speedupLabel) {
+    speedupLabel.textContent = workload.showSpeedup
+      ? "faster than TS7 + incremental"
+      : "";
   }
 }
 
@@ -248,29 +159,6 @@ function setupCopyButtons() {
       }
     });
   });
-}
-
-// ========================================
-// Scroll Animations
-// ========================================
-
-function setupScrollAnimations() {
-  const observer = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting && entry.target.classList.contains("hero-bench")) {
-          render(currentScenario, true);
-          observer.unobserve(entry.target);
-        }
-      });
-    },
-    { threshold: 0.3 }
-  );
-
-  const heroBench = document.querySelector(".hero-bench");
-  if (heroBench) {
-    observer.observe(heroBench);
-  }
 }
 
 // ========================================
@@ -310,9 +198,14 @@ scenarioButtons.forEach((button) => {
   button.addEventListener("click", () => {
     const scenario = button.dataset.scenario;
     if (scenario !== currentScenario) {
-      render(scenario, true);
+      render(scenario);
     }
   });
+});
+
+workloadSelect?.addEventListener("change", () => {
+  currentWorkload = workloadSelect.value;
+  render(currentScenario);
 });
 
 // Theme toggle
@@ -354,24 +247,19 @@ document.addEventListener("DOMContentLoaded", () => {
   setupCopyButtons();
   setupInstallTabs();
 
-  // Check if reduced motion is preferred
-  const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (workloadSelect) {
+    workloadSelect.replaceChildren();
+    ["components-500", "components-100", "careswitch-web"].forEach((key) => {
+      const workload = BENCHMARK_WORKLOADS[key];
+      if (!workload) return;
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = workload.title;
+      workloadSelect.append(option);
+    });
+    workloadSelect.value = currentWorkload;
+  }
 
   // Initial render
-  render("warm", !prefersReducedMotion);
-
-  // Setup scroll animations only if motion is allowed
-  if (!prefersReducedMotion) {
-    setupScrollAnimations();
-  }
-});
-
-// Handle visibility change to re-trigger animations
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!prefersReducedMotion) {
-      render(currentScenario, true);
-    }
-  }
+  render("warm");
 });

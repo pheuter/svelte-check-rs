@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="svelte-check-rs: A Rust-powered drop-in replacement for svelte-check. 10-30x faster diagnostics via parallel processing and tsgo."
+      content="svelte-check-rs is sunsetted. Read the project history, final benchmarks, and guidance for moving to official svelte-check."
     />
     <meta name="color-scheme" content="light dark" />
-    <title>svelte-check-rs</title>
+    <title>svelte-check-rs — sunsetted</title>
 
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
@@ -16,14 +16,12 @@
     <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
 
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="svelte-check-rs" />
-    <meta property="og:description" content="Drop-in replacement for svelte-check. 30x faster diagnostics via Rust parser, parallel transforms, and tsgo." />
-    <meta property="og:image" content="https://svelte-check-rs.vercel.app/og-image.png" />
+    <meta property="og:title" content="svelte-check-rs — sunsetted" />
+    <meta property="og:description" content="Sunsetted September 2026. Thank you to our community. We recommend official svelte-check." />
 
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="svelte-check-rs" />
-    <meta name="twitter:description" content="Drop-in replacement for svelte-check. 30x faster diagnostics via Rust parser, parallel transforms, and tsgo." />
-    <meta name="twitter:image" content="https://svelte-check-rs.vercel.app/og-image.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="svelte-check-rs — sunsetted" />
+    <meta name="twitter:description" content="Sunsetted September 2026. Thank you to our community. We recommend official svelte-check." />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -41,8 +39,8 @@
           <span>svelte-check-rs</span>
         </a>
         <nav class="nav">
-          <a href="#context">context</a>
-          <a href="#cli">cli</a>
+          <a href="#context">story</a>
+          <a href="#migration">migration</a>
           <button class="icon-btn theme-toggle" aria-label="Toggle theme">
             <svg class="icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
@@ -64,81 +62,91 @@
       <section class="hero">
         <div class="container narrow">
           <div class="tag-row">
-            <span class="tag">SVELTE 5+</span>
+            <span class="tag">SUNSETTED</span>
+            <span class="tag-dim">JAN — SEP 2026</span>
           </div>
-
           <h1>
-            <span class="line">Drop-in svelte-check.</span>
-            <span class="line"><span class="accent">60× faster</span> type-checks.</span>
+            <span class="line">A faster check.</span>
+            <span class="line accent">A good place to finish.</span>
           </h1>
+          <p class="lead">svelte-check-rs is no longer maintained. Official svelte-check now offers native TypeScript checking and incremental caching, closing the gap that inspired this project.</p>
+          <a class="upstream-link" href="https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check">Use official svelte-check <span aria-hidden="true">↗</span></a>
+          <p class="sunset-meta">Archived September 5, 2026. Source and releases remain available; no further fixes or releases are planned.</p>
+        </div>
+      </section>
 
-          <p class="lead">
-            Rust parser, parallel transforms,
-            <a href="https://devblogs.microsoft.com/typescript/typescript-native-port/" target="_blank" rel="noopener">tsgo</a> type-checking — built for CI and AI coding agents.
-          </p>
+      <section class="section" id="context">
+        <div class="container narrow prose">
+          <h2><span class="hash">#</span> How we got here</h2>
+          <p>I started svelte-check-rs in January 2026, before official svelte-check supported TSGO or incremental compilation. On a large Svelte app, repeatedly waiting for checks slowed down development, CI, and coding agents.</p>
+          <p>A Rust parser, parallel transforms, native TypeScript checking, and persistent caches shortened that loop. Early measurements on my workloads showed order-of-magnitude improvements over the official checker at the time. That was the reason to build and share this project.</p>
+          <p>Since then, official svelte-check has added native checking and incremental caches. Its <a href="https://github.com/sveltejs/language-tools/pull/2932">implementation explicitly credits svelte-check-rs and svelte-fast-check as inspirations</a>. It is rewarding to see those benefits become part of the official tooling.</p>
+          <p>Rust retains a speed advantage in our final benchmarks, but the practical gap has narrowed. Maintaining a separate parser, transformer, source mappings, and ecosystem integrations no longer makes sense for that remaining benefit. We recommend official svelte-check going forward.</p>
+        </div>
+      </section>
 
-          <div class="install-tabs" role="tablist">
-            <button data-os="npm" role="tab" aria-selected="true">npm</button>
-            <button data-os="unix" role="tab" aria-selected="false">macOS / Linux</button>
-            <button data-os="windows" role="tab" aria-selected="false">Windows</button>
-          </div>
-          <code class="cmd" data-os="npm" data-copy="npm install -D svelte-check-rs">
-            <span class="prompt">$</span><span class="cmd-text">npm install -D svelte-check-rs</span>
-            <button class="copy-btn" aria-label="Copy to clipboard">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="9" y="9" width="13" height="13" rx="0"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-            </button>
-          </code>
-          <code class="cmd" data-os="unix" data-copy="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh" hidden>
-            <span class="prompt">$</span><span class="cmd-text">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.sh | sh</span>
-            <button class="copy-btn" aria-label="Copy to clipboard">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="9" y="9" width="13" height="13" rx="0"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-            </button>
-          </code>
-          <code class="cmd" data-os="windows" data-copy="irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex" hidden>
-            <span class="prompt">&gt;</span><span class="cmd-text">irm https://github.com/pheuter/svelte-check-rs/releases/latest/download/svelte-check-rs-installer.ps1 | iex</span>
-            <button class="copy-btn" aria-label="Copy to clipboard">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="9" y="9" width="13" height="13" rx="0"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-            </button>
-          </code>
+      <section class="section" id="migration">
+        <div class="container narrow prose">
+          <h2><span class="hash">#</span> Moving forward</h2>
+          <p>Replace the svelte-check-rs development dependency and commands in your scripts, CI, and agent instructions with <a href="https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check">official svelte-check</a>. Keep your existing SvelteKit sync step and review flags against upstream’s current documentation.</p>
+          <p>For native checking and caching, upstream offers <code>--tsgo --incremental</code>. Follow its TypeScript dependency instructions and check the documented limitations, including Svelte files outside the tsconfig root. The newer <code>--tsgo-experimental-api</code> mode has different tradeoffs and is experimental.</p>
+          <p>Run the official checker and review its diagnostics before relying on the migrated command. The tools do not always report the same results; our real-application benchmark records that difference.</p>
+          <p>The <a href="https://github.com/pheuter/svelte-check-rs">archived repository</a> preserves the source, releases, and technical documentation under the MIT license.</p>
+        </div>
+      </section>
 
+      <section class="section" id="thanks">
+        <div class="container narrow prose">
+          <h2><span class="hash">#</span> Thank you</h2>
+          <p>To everyone who contributed code, opened an issue, shared a reproduction or benchmark, tested a release, or simply gave svelte-check-rs a try: thank you. Your contributions made this project useful far beyond my own application.</p>
+          <p>Thank you to the Svelte and language-tools maintainers, the TypeScript native compiler team, and the wider community that made this work possible. Future checking improvements belong with the <a href="https://github.com/sveltejs/language-tools">official project</a>.</p>
+          <p class="signature">— <a href="https://github.com/pheuter">Mark Fayngersh (@pheuter)</a></p>
+        </div>
+      </section>
+
+      <section class="section" id="results">
+        <div class="container narrow">
+          <h2><span class="hash">#</span> Final benchmarks</h2>
+          <p class="lead">A September 2026 snapshot, preserved for reference. The early order-of-magnitude gains describe the original motivation, not today’s comparison. These results informed the decision to sunset the project.</p>
           <div class="bench" id="bench">
             <div class="bench-head">
-              <div class="bench-title">
-                <span class="bench-brackets">[</span>
-                <span>BENCH</span>
-                <span class="bench-brackets">]</span>
+              <h3 class="bench-title">Recorded timings</h3>
+              <span class="bench-meta" data-runs></span>
+            </div>
+
+            <div class="bench-controls">
+              <div class="bench-control">
+                <label for="benchmark-workload">Workload</label>
+                <select id="benchmark-workload" data-workload aria-label="Benchmark workload">
+                  <option value="components-500">500 components · synthetic</option>
+                </select>
               </div>
-              <div class="bench-tabs" role="tablist">
-                <button data-scenario="cold" role="tab" aria-selected="false">cold</button>
-                <button data-scenario="warm" role="tab" aria-selected="true">warm</button>
-                <button data-scenario="iterative" role="tab" aria-selected="false">iterative</button>
+              <div class="bench-control">
+                <span id="scenario-label">Cache state</span>
+                <div class="bench-tabs" role="tablist" aria-labelledby="scenario-label">
+                  <button data-scenario="cold" role="tab" aria-selected="false">Cold</button>
+                  <button data-scenario="warm" role="tab" aria-selected="true">Warm</button>
+                  <button data-scenario="iterative" role="tab" aria-selected="false">Repeated edits</button>
+                </div>
               </div>
-              <div class="bench-meta">
-                <span data-runs></span>
-              </div>
+            </div>
+            <div class="bench-caption">
+              <span data-workload-source></span>
+              <span>Wall time · lower is better</span>
             </div>
 
             <div class="bench-chart">
               <div class="bench-row">
-                <div class="bench-tool">svelte-check</div>
+                <div class="bench-tool">svelte-check<small>TS7 + incremental</small></div>
                 <div class="bench-bar-wrap">
-                  <div class="bench-bar baseline" data-bar="svelte">
+                  <div class="bench-bar native" data-bar="tsgo">
                     <div class="bench-bar-fill"></div>
                   </div>
-                  <div class="bench-time" data-time="svelte"></div>
+                  <div class="bench-time" data-time="tsgo"></div>
                 </div>
               </div>
               <div class="bench-row">
-                <div class="bench-tool">svelte-check-rs</div>
+                <div class="bench-tool">svelte-check-rs<small>Rust · TS7 incremental</small></div>
                 <div class="bench-bar-wrap">
                   <div class="bench-bar fast" data-bar="rs">
                     <div class="bench-bar-fill"></div>
@@ -146,25 +154,40 @@
                   <div class="bench-time" data-time="rs"></div>
                 </div>
               </div>
+              <div class="bench-row">
+                <div class="bench-tool">svelte-check<small>default · TS6</small></div>
+                <div class="bench-bar-wrap">
+                  <div class="bench-bar baseline" data-bar="svelte">
+                    <div class="bench-bar-fill"></div>
+                  </div>
+                  <div class="bench-time" data-time="svelte"></div>
+                </div>
+              </div>
             </div>
 
             <div class="bench-result">
-              <span class="speedup-arrow">=&gt;</span>
-              <span class="speedup-value" data-speedup></span>
-              <span class="speedup-label">faster</span>
+              <div class="bench-result-heading">
+                <span class="speedup-value" data-speedup></span>
+                <span class="speedup-label" data-speedup-label>faster than TS7 + incremental</span>
+              </div>
+              <p class="bench-note" data-benchmark-note aria-live="polite"></p>
             </div>
 
+            <noscript><p class="bench-note">Read the <a href="https://github.com/pheuter/svelte-check-rs/tree/main/benchmarks">benchmark tables and methodology</a>.</p></noscript>
+
             <details class="methodology">
-              <summary><span class="caret">&gt;</span> methodology</summary>
+              <summary><span class="caret" aria-hidden="true">›</span> Methodology &amp; reproduction</summary>
               <div class="methodology-body">
                 <dl>
-                  <dt>tool</dt><dd>hyperfine 1.20 · n=5 per scenario (1 warmup)</dd>
-                  <dt>target</dt><dd>SvelteKit monorepo · 531 .svelte · 1,573 .ts/.js · ~415k LOC</dd>
-                  <dt>cold</dt><dd>rm -rf .svelte-kit + tool cache before each run</dd>
-                  <dt>warm</dt><dd>caches preserved, no file changes</dd>
-                  <dt>iterative</dt><dd>single isolated src/lib/*.ts edit before each run</dd>
-                  <dt>vs</dt><dd>svelte-check 4.4.8 · svelte-check-rs 0.9.14</dd>
-                  <dt>env</dt><dd>Apple M4 Max · 48 GB · macOS 26.5 · svelte 5.55 · kit 2.60 · tsgo 7.0.0-dev.20260521</dd>
+                  <dt>measured</dt><dd><span data-benchmark-date>2026-09-05</span> · median of 5 runs · 1 priming run, plus 1 untimed edit for iterative · rotating order</dd>
+                  <dt>cold</dt><dd>checker caches removed before each run; dependencies, OS cache, and generated Kit types retained</dd>
+                  <dt>warm</dt><dd>caches preserved, no source changes</dd>
+                  <dt>iterative</dt><dd>repeated changes to a typed TypeScript export's value, after an untimed priming edit; separate CLI processes</dd>
+                  <dt>TS7 mode</dt><dd><code>svelte-check --tsgo --incremental</code></dd>
+                  <dt>versions</dt><dd><span data-benchmark-checkers>svelte-check 4.7.6 · svelte-check-rs 0.11.2</span><br><span data-benchmark-versions></span></dd>
+                  <dt>env</dt><dd data-benchmark-env>Apple M4 Max · 48 GiB · macOS 27.0 · Node 24.20.0 · Bun 1.4.0</dd>
+                  <dt>scope</dt><dd>Public fixtures verify TS and Svelte error probes, then require zero diagnostics. The private app has different diagnostic results. Experimental API mode is not measured.</dd>
+                  <dt>reproduce</dt><dd><a href="https://github.com/pheuter/svelte-check-rs/tree/main/benchmarks">Commands, pinned dependencies, raw samples, and limitations</a></dd>
                 </dl>
               </div>
             </details>
@@ -172,104 +195,22 @@
         </div>
       </section>
 
-      <section class="section" id="context">
-        <div class="container narrow">
-          <h2><span class="hash">#</span> context</h2>
-
-          <div class="prose">
-            <p><strong>svelte-check</strong> is built on Language Server Protocol — optimized for IDEs with persistent connections and incremental updates. Great for autocomplete. Slow for one-shot CLI checks.</p>
-            <p><strong>svelte-check-rs</strong> is batch-first. No LSP. Parallel diagnostics for pipelines and agents.</p>
-          </div>
-
-          <div class="for-grid">
-            <div class="for-box">
-              <div class="for-label">[ for ]</div>
-              <ul>
-                <li>AI coding agents <span class="dim">(Claude Code, Codex)</span></li>
-                <li>CI/CD pipelines</li>
-                <li>Pre-commit hooks</li>
-                <li>Watch-mode iteration</li>
-              </ul>
-            </div>
-            <div class="for-box">
-              <div class="for-label dim">[ not for ]</div>
-              <ul>
-                <li>In-editor diagnostics</li>
-                <li>Autocomplete / IntelliSense</li>
-                <li>Hover documentation</li>
-                <li>Go-to-definition</li>
-              </ul>
-            </div>
-          </div>
-
-          <p class="note">
-            Keep using the <a href="https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode" target="_blank" rel="noopener">Svelte VS Code extension</a> for IDE features. Still on Svelte 4? Stick with <a href="https://www.npmjs.com/package/svelte-check" target="_blank" rel="noopener">svelte-check</a>.
-          </p>
-        </div>
-      </section>
-
-      <section class="section" id="cli">
-        <div class="container narrow">
-          <h2><span class="hash">#</span> cli</h2>
-          <div class="cli-grid">
-            <div class="cli-group">
-              <div class="cli-group-label">[ core ]</div>
-              <dl>
-                <dt><code>--workspace &lt;path&gt;</code></dt><dd>Project root</dd>
-                <dt><code>--tsconfig &lt;path&gt;</code></dt><dd>TypeScript config</dd>
-                <dt><code>--output &lt;fmt&gt;</code></dt><dd>human | json | machine</dd>
-                <dt><code>--watch</code></dt><dd>Re-check on file change</dd>
-              </dl>
-            </div>
-            <div class="cli-group">
-              <div class="cli-group-label">[ diagnostics ]</div>
-              <dl>
-                <dt><code>--threshold</code></dt><dd>error | warning</dd>
-                <dt><code>--fail-on-warnings</code></dt><dd>Exit 1 on warnings</dd>
-                <dt><code>--ignore &lt;glob&gt;</code></dt><dd>Skip matching files</dd>
-                <dt><code>--skip-tsgo</code></dt><dd>Skip type-checking</dd>
-              </dl>
-            </div>
-            <div class="cli-group">
-              <div class="cli-group-label">[ debug ]</div>
-              <dl>
-                <dt><code>--timings</code></dt><dd>Timing breakdown</dd>
-                <dt><code>--timings-format</code></dt><dd>text | json</dd>
-                <dt><code>--debug-paths</code></dt><dd>Resolved binaries</dd>
-                <dt><code>--emit-ts</code></dt><dd>Print transformed TS</dd>
-              </dl>
-            </div>
-            <div class="cli-group">
-              <div class="cli-group-label">[ tooling ]</div>
-              <dl>
-                <dt><code>--tsgo-version</code></dt><dd>Installed tsgo version</dd>
-                <dt><code>--bun-version</code></dt><dd>Installed bun version</dd>
-                <dt><code>--bun-update</code></dt><dd>Update bun to latest</dd>
-                <dt><code>--bun-update=&lt;ver&gt;</code></dt><dd>Install specific version</dd>
-              </dl>
-            </div>
-          </div>
-        </div>
-      </section>
     </main>
 
     <footer class="footer">
       <div class="container narrow">
         <div class="footer-rule"></div>
         <div class="footer-content">
-          <span>built by</span>
+          <span>Thank you from</span>
           <a href="https://www.markfayngersh.com" target="_blank" rel="noopener" class="author-link">
             <img src="https://avatars.githubusercontent.com/u/92698" alt="Mark Fayngersh" class="author-avatar" width="20" height="20" />
             <span>@pheuter</span>
           </a>
-          <span class="dim">·</span>
-          <a href="https://developers.openai.com/codex/cli/" target="_blank" rel="noopener">Codex</a>
-          <span class="dim">+</span>
-          <a href="https://claude.com/product/claude-code" target="_blank" rel="noopener">Claude Code</a>
         </div>
       </div>
     </footer>
 
+    <script src="benchmark-data.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

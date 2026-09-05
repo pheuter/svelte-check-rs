@@ -1,0 +1,1061 @@
+{
+  "date": "2026-09-05",
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Max",
+  "logical_cpus": 16,
+  "node": "v24.20.0",
+  "bun": "1.4.0",
+  "rust": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "rs_version": "svelte-check-rs 0.11.2",
+  "rs_commit": "0b6e0d59bcf29de91fcb11fbe082fd74cfbb784f",
+  "packages": {
+    "svelte-check": "4.7.6",
+    "svelte": "5.57.0",
+    "typescript": "6.0.3",
+    "@typescript/native": "7.0.2"
+  },
+  "runs": 5,
+  "statistic": "median",
+  "commands": {
+    "default": [
+      "node",
+      "<repo>/benchmarks/node_modules/svelte-check/bin/svelte-check",
+      "--workspace",
+      "<workspace>",
+      "--tsconfig",
+      "./tsconfig.json",
+      "--output",
+      "machine"
+    ],
+    "tsgo": [
+      "node",
+      "<repo>/benchmarks/node_modules/svelte-check/bin/svelte-check",
+      "--tsgo",
+      "--incremental",
+      "--workspace",
+      "<workspace>",
+      "--tsconfig",
+      "./tsconfig.json",
+      "--output",
+      "machine"
+    ],
+    "rs": [
+      "svelte-check-rs",
+      "--workspace",
+      "<workspace>",
+      "--tsconfig",
+      "./tsconfig.json",
+      "--output",
+      "machine"
+    ]
+  },
+  "workloads": {
+    "components-100": {
+      "scenarios": {
+        "cold": {
+          "default": [
+            {
+              "seconds": 0.6787810419918969,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6924297080258839,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6929681670153514,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.675904083007481,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6427457919926383,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.435768665978685,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.4407121669501066,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.44969845801824704,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.4356769170262851,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.42149970901664346,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.1983624169952236,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.1929336249595508,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.19357566599501297,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.18486433295765892,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.18251958402106538,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        },
+        "warm": {
+          "default": [
+            {
+              "seconds": 0.6324136670446023,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6346702500013635,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6469252500100993,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.629331290954724,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.628074457985349,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.24053737497888505,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.24164841702440754,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.2386637919698842,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.2375158749637194,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.2432530410005711,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.09206591703696176,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.08939316601026803,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.09152970899594948,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.08963566698366776,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.08769716700771824,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        },
+        "iterative": {
+          "default": [
+            {
+              "seconds": 0.6751537910313345,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.669924792018719,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6625550000462681,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.657553041994106,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6747340000001714,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.2581686659832485,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.2547833330463618,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.24592237500473857,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.2490445839939639,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.24698116595391184,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.100987084035296,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.09579195798141882,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.09879266703501344,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.09638674999587238,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.0923631249461323,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        }
+      },
+      "probe": {
+        "default": {
+          "seconds": 0.6961405409965664,
+          "files": 274,
+          "errors": 2,
+          "warnings": 1,
+          "exit_code": 1,
+          "diagnostics_sha256": "d75e9ab1fc2176e51d3f315c13dc95a12c6d53fb846dbae637c16f387defaf12"
+        },
+        "tsgo": {
+          "seconds": 0.46092874999158084,
+          "files": 102,
+          "errors": 2,
+          "warnings": 1,
+          "exit_code": 1,
+          "diagnostics_sha256": "d75e9ab1fc2176e51d3f315c13dc95a12c6d53fb846dbae637c16f387defaf12"
+        },
+        "rs": {
+          "seconds": 0.1879682500148192,
+          "files": 2,
+          "errors": 2,
+          "warnings": 1,
+          "exit_code": 1,
+          "diagnostics_sha256": "64b51ea3ee7020724872264bbdaa317fbe379052f64d8c441323629c26135993"
+        }
+      },
+      "source_files": {
+        "svelte": 100,
+        "ts_js": 100,
+        "lines": 1887
+      },
+      "medians": {
+        "cold": {
+          "default": 0.6787810419918969,
+          "tsgo": 0.435768665978685,
+          "rs": 0.1929336249595508
+        },
+        "warm": {
+          "default": 0.6324136670446023,
+          "tsgo": 0.24053737497888505,
+          "rs": 0.08963566698366776
+        },
+        "iterative": {
+          "default": 0.669924792018719,
+          "tsgo": 0.2490445839939639,
+          "rs": 0.09638674999587238
+        }
+      },
+      "packages": {
+        "svelte": "5.57.0",
+        "typescript": "6.0.3",
+        "@typescript/native": "7.0.2"
+      },
+      "priming": {
+        "iterative": {
+          "default": [
+            {
+              "seconds": 0.6667958329780959,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.6754387079854496,
+              "files": 273,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.4355697500286624,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.2573837090167217,
+              "files": 100,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.18342858302639797,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.11138645804021508,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        }
+      }
+    },
+    "components-500": {
+      "scenarios": {
+        "cold": {
+          "default": [
+            {
+              "seconds": 1.2764826670172624,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.274471957993228,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.3072127089835703,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.3187373749678954,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.2838122500106692,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.8957387909758836,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.8760129170259461,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.8955699580255896,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.8984530410380103,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.8881887919851579,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.41155833296943456,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.4056830419576727,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.4230241249897517,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.4177063329843804,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.4126921669812873,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        },
+        "warm": {
+          "default": [
+            {
+              "seconds": 1.3280290000257082,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.2999755829805508,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.2992779170162976,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.2883809579652734,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.2799257499864325,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.3852634999784641,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.3504126250045374,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.3484427500516176,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.3494756669970229,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.3501456250087358,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.15947508299723268,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.15675412502605468,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.15558254095958546,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.1523749170009978,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.15322579100029543,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        },
+        "iterative": {
+          "default": [
+            {
+              "seconds": 1.3251751660136506,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.3708804579800926,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.3602093330118805,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.3415412500035018,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.3469824589556083,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.39021291700191796,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.37541804095963016,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.37372566596604884,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.3670525000197813,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.3673019999987446,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.16831600002478808,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.16865737497573718,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.16786200000206009,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.1718772500171326,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.16692699998384342,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        }
+      },
+      "probe": {
+        "default": {
+          "seconds": 1.2690950409742072,
+          "files": 1074,
+          "errors": 2,
+          "warnings": 1,
+          "exit_code": 1,
+          "diagnostics_sha256": "d75e9ab1fc2176e51d3f315c13dc95a12c6d53fb846dbae637c16f387defaf12"
+        },
+        "tsgo": {
+          "seconds": 0.8850791669683531,
+          "files": 502,
+          "errors": 2,
+          "warnings": 1,
+          "exit_code": 1,
+          "diagnostics_sha256": "d75e9ab1fc2176e51d3f315c13dc95a12c6d53fb846dbae637c16f387defaf12"
+        },
+        "rs": {
+          "seconds": 0.40544333297293633,
+          "files": 2,
+          "errors": 2,
+          "warnings": 1,
+          "exit_code": 1,
+          "diagnostics_sha256": "64b51ea3ee7020724872264bbdaa317fbe379052f64d8c441323629c26135993"
+        }
+      },
+      "source_files": {
+        "svelte": 500,
+        "ts_js": 500,
+        "lines": 9487
+      },
+      "medians": {
+        "cold": {
+          "default": 1.2838122500106692,
+          "tsgo": 0.8955699580255896,
+          "rs": 0.4126921669812873
+        },
+        "warm": {
+          "default": 1.2992779170162976,
+          "tsgo": 0.3501456250087358,
+          "rs": 0.15558254095958546
+        },
+        "iterative": {
+          "default": 1.3469824589556083,
+          "tsgo": 0.37372566596604884,
+          "rs": 0.16831600002478808
+        }
+      },
+      "packages": {
+        "svelte": "5.57.0",
+        "typescript": "6.0.3",
+        "@typescript/native": "7.0.2"
+      },
+      "priming": {
+        "iterative": {
+          "default": [
+            {
+              "seconds": 1.3111459579668008,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 1.3037851249682717,
+              "files": 1073,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "tsgo": [
+            {
+              "seconds": 0.8854200000059791,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.39623012498486787,
+              "files": 500,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 0.4181111669749953,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            {
+              "seconds": 0.2076602089800872,
+              "files": null,
+              "errors": 0,
+              "warnings": 0,
+              "exit_code": 0,
+              "diagnostics_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "memory_bytes": 51539607552,
+  "macos": "27.0",
+  "node_options": "--max-old-space-size=8192",
+  "iterative_edit": "Repeated numeric export value changes after one untimed edit; preserve name and type",
+  "priming_runs": {
+    "cold": 1,
+    "warm": 1,
+    "iterative": 2
+  }
+}

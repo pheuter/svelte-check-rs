@@ -1,20 +1,113 @@
 # svelte-check-rs
 
-A high-performance, Rust-powered diagnostic engine designed as a drop-in replacement for `svelte-check`.
+> **Sunset · September 5, 2026.** This project is no longer maintained and the repository is archived. Use the official [svelte-check](https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check) for new and existing projects. The source, releases, and benchmarks remain available as a historical reference under the MIT license; no further fixes or releases are planned.
 
-> **Note:** This tool only supports **Svelte 5+**. For Svelte 4 or earlier, use the official [svelte-check](https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check).
+## Why this project existed
 
-## Features
+I started svelte-check-rs in January 2026, before official svelte-check offered
+TSGO or incremental compilation. Type-checking a large Svelte application could
+interrupt development for long enough to break the flow, especially when running
+checks repeatedly in CI or through coding agents.
 
-- 🚀 **Fast**: 10-100x faster than `svelte-check` through Rust's zero-cost abstractions and parallel processing
-- ✅ **Accurate**: Matches `svelte-check` diagnostics, including Svelte compiler errors via bun
-- 🔄 **Compatible**: Drop-in CLI replacement, identical output formats
-- 🧩 **Preprocessor-aware**: Resolves effective Vite/Svelte config preprocessors and maps diagnostics back to their original sources
-- 🔧 **Maintainable**: Clean separation of concerns, comprehensive test suite
+A Rust parser, parallel Svelte-to-TypeScript transforms, native TypeScript checking,
+and persistent caches made that loop much shorter. Early measurements on my
+workloads showed order-of-magnitude improvements over the official checker of
+the time. Those gains were the reason to build and share a Svelte 5+ replacement;
+they are historical results, not a claim about today's svelte-check.
+
+## Why sunset it now?
+
+Official svelte-check now supports native TypeScript checking and incremental
+caching. Its [implementation PR](https://github.com/sveltejs/language-tools/pull/2932)
+explicitly credits svelte-check-rs and svelte-fast-check as inspirations. Seeing
+those improvements reach the official tooling is a meaningful outcome for this
+project.
+
+The [September 2026 benchmarks](#benchmarks) still show a Rust performance
+advantage, but the practical gap has narrowed considerably. On a synthetic
+500-component project, warm checks took 0.35 seconds upstream and 0.16 seconds in
+Rust. On Careswitch Web, the timings were 3.14 and 2.20 seconds, with materially
+different diagnostics that prevent an equivalent-checking speedup claim.
+
+Maintaining a separate parser, transformer, source mappings, and integrations
+requires ongoing work to follow Svelte, SvelteKit, and TypeScript. That cost is no
+longer justified by the remaining speed advantage. The recommendation is now to
+use the official checker and focus compatibility and performance improvements
+there.
+
+## Moving to official svelte-check
+
+Use [svelte-check in sveltejs/language-tools](https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check)
+and follow its current installation and CLI documentation.
+
+- Replace the `svelte-check-rs` development dependency with `svelte-check` using your package manager.
+- Replace `svelte-check-rs` in package scripts, CI jobs, and agent instructions with `svelte-check`. Keep any existing `svelte-kit sync` step.
+- Review flags against upstream's documentation; Rust-specific options are not portable. Re-run checks and review diagnostics before relying on the migrated command.
+- For native checking, follow upstream's TypeScript dependency instructions. `--tsgo --incremental` enables both native checking and caching, but has documented limitations, including Svelte files outside the tsconfig root. The newer `--tsgo-experimental-api` mode has different tradeoffs and is experimental. Choose the mode appropriate for your project rather than assuming diagnostic parity.
+
+This sunset is not a claim that every project will produce identical diagnostics
+after switching. The [benchmark notes](benchmarks/README.md#careswitch-web) record
+known differences from the real application we measured.
+
+## Thank you
+
+Thank you to everyone who tried svelte-check-rs, contributed code, opened issues,
+shared reproductions and benchmarks, tested releases, or helped someone use it.
+Every contribution helped this project handle more of the Svelte ecosystem and
+made it useful beyond my own application.
+
+Thank you also to the Svelte and language-tools maintainers, the TypeScript native
+compiler team, and the wider community whose work made this possible. Please
+bring future Svelte checking improvements and reproducible issues to the
+[official project](https://github.com/sveltejs/language-tools), following its
+contribution guidance.
+
+— [Mark Fayngersh (@pheuter)](https://github.com/pheuter)
+
+## Benchmarks
+
+<!-- BENCHMARKS:START -->
+Median of 5 runs, measured 2026-09-05. svelte-check 4.7.6 vs svelte-check-rs 0.11.2.
+
+Apple M4 Max · 48 GiB · macOS 27.0 · Node 24.20.0 · Bun 1.4.0.
+
+| Workload | Scenario | svelte-check (TS6) | svelte-check (TS7 + incremental) | svelte-check-rs | Speedup vs TS7 |
+| --- | --- | --- | --- | --- | --- |
+| 500 components (synthetic) | Cold cache | 1.284 s | 0.896 s | 0.413 s | 2.2× |
+| 500 components (synthetic) | Warm cache | 1.299 s | 0.350 s | 0.156 s | 2.3× |
+| 500 components (synthetic) | Repeated TS edits | 1.347 s | 0.374 s | 0.168 s | 2.2× |
+
+All timed public-fixture runs reported **0 errors and 0 warnings**.
+
+Careswitch Web (private monorepo) has **different diagnostic results**: upstream TS7: **436 errors / 3 warnings**; Rust: **2 errors / 551 warnings**. These timings do not establish equivalent checking; no speedup claim is made for this workload.
+
+| Workload | Scenario | svelte-check (TS7 + incremental) | svelte-check-rs |
+| --- | --- | --- | --- |
+| Careswitch Web | Cold cache | 16.789 s | 11.460 s |
+| Careswitch Web | Warm cache | 3.140 s | 2.204 s |
+| Careswitch Web | Repeated TS edits | 3.490 s | 2.408 s |
+<!-- BENCHMARKS:END -->
+
+The TS7 baseline is `svelte-check --tsgo --incremental`, with both tools using
+TypeScript 7.0.2. Cold runs clear checker caches; warm runs preserve them;
+repeated-edit runs change one typed TypeScript export's value after an untimed
+priming edit. These are
+separate CLI processes, not watch-mode updates. Results depend on the workload.
+
+See [methodology, reproduction commands, and raw samples](benchmarks/README.md)
+for versions, diagnostic checks, and limitations.
+
+## Historical reference
+
+The following documents the final release for existing users and anyone studying
+or forking the code. It is not a recommendation to install this unmaintained tool.
+
+<details>
+<summary>Archived installation, usage, and development documentation</summary>
 
 ## Installation
 
-### npm (recommended)
+### npm
 
 ```bash
 npm install -D svelte-check-rs
@@ -158,6 +251,8 @@ SVELTE_REPO=/tmp/svelte cargo test -p svelte-parser test_upstream_svelte_parser_
 
 The harness runs every sample under `parser-modern` and `parser-legacy`, enabling loose mode
 for samples whose directory name starts with `loose-` (mirroring upstream's runner).
+
+</details>
 
 ## License
 

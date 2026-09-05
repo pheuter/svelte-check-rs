@@ -1,0 +1,383 @@
+{
+  "date": "2026-09-05",
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Max",
+  "logical_cpus": 16,
+  "node": "v24.20.0",
+  "bun": "1.4.0",
+  "rust": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "rs_version": "svelte-check-rs 0.11.2",
+  "rs_commit": "0b6e0d59bcf29de91fcb11fbe082fd74cfbb784f",
+  "packages": {
+    "svelte-check": "4.7.6",
+    "svelte": "5.57.0",
+    "typescript": "6.0.3",
+    "@typescript/native": "7.0.2"
+  },
+  "runs": 5,
+  "statistic": "median",
+  "commands": {
+    "tsgo": [
+      "node",
+      "<repo>/benchmarks/node_modules/svelte-check/bin/svelte-check",
+      "--tsgo",
+      "--incremental",
+      "--workspace",
+      "<workspace>",
+      "--tsconfig",
+      "./tsconfig.json",
+      "--output",
+      "machine"
+    ],
+    "rs": [
+      "svelte-check-rs",
+      "--workspace",
+      "<workspace>",
+      "--tsconfig",
+      "./tsconfig.json",
+      "--output",
+      "machine"
+    ]
+  },
+  "workloads": {
+    "careswitch-web": {
+      "scenarios": {
+        "cold": {
+          "tsgo": [
+            {
+              "seconds": 16.5148317500134,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 16.462572499993257,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 16.788918625039514,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 17.005500125000253,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 16.803420999960508,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 11.2749146669521,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 11.476670999953058,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 11.459890250000171,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 11.395777750003617,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 11.507015166978817,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            }
+          ]
+        },
+        "warm": {
+          "tsgo": [
+            {
+              "seconds": 3.1164547920343466,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.117516416008584,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.1875973750138655,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.1395548750297166,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.1786180419730954,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 2.291427166957874,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.154319374996703,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.2348656249814667,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.117326374980621,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.2043219580082223,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            }
+          ]
+        },
+        "iterative": {
+          "tsgo": [
+            {
+              "seconds": 3.489917290979065,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.593466083984822,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.460593208030332,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.3579040420008823,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 3.4970075829769485,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 2.346859792014584,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.408047999953851,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.4594369159894995,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.396004875015933,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 2.5635813329718076,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            }
+          ]
+        }
+      },
+      "probe": {},
+      "packages": {
+        "svelte": "5.56.10",
+        "typescript": "6.0.3",
+        "@typescript/native": "7.0.2",
+        "@sveltejs/kit": "2.70.3",
+        "vite": "8.2.2"
+      },
+      "source_files": {
+        "svelte": 626,
+        "ts_js": 2340,
+        "lines": 668416
+      },
+      "medians": {
+        "cold": {
+          "tsgo": 16.788918625039514,
+          "rs": 11.459890250000171
+        },
+        "warm": {
+          "tsgo": 3.1395548750297166,
+          "rs": 2.2043219580082223
+        },
+        "iterative": {
+          "tsgo": 3.489917290979065,
+          "rs": 2.408047999953851
+        }
+      },
+      "source_revision": "4c4777935678cacb2313331a1c43ec84dacb856d",
+      "priming": {
+        "iterative": {
+          "tsgo": [
+            {
+              "seconds": 17.071602625015657,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            },
+            {
+              "seconds": 12.27791166602401,
+              "files": 1192,
+              "errors": 436,
+              "warnings": 3,
+              "exit_code": 1,
+              "diagnostics_sha256": "1ba35cfb732b0e6de64a0c7c206324f51375ae50a7a01a0545851b0447211203"
+            }
+          ],
+          "rs": [
+            {
+              "seconds": 11.666556291980669,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            },
+            {
+              "seconds": 10.201306875038426,
+              "files": 287,
+              "errors": 2,
+              "warnings": 551,
+              "exit_code": 1,
+              "diagnostics_sha256": "36e33e5b69660ef94f3cd31d584b9bb1829a2e411cfccd89c5a45653debd3bdd"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "memory_bytes": 51539607552,
+  "macos": "27.0",
+  "node_options": "--max-old-space-size=8192",
+  "iterative_edit": "Repeated numeric export value changes after one untimed edit; preserve name and type",
+  "priming_runs": {
+    "cold": 1,
+    "warm": 1,
+    "iterative": 2
+  }
+}

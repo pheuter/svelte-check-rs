@@ -1,0 +1,33 @@
+name: Sunset npm packages
+
+# Retained as a record of the final package deprecation. No versions are removed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Mark all published versions as sunsetted
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          SUNSET_MESSAGE: 'Sunsetted September 2026; no longer maintained. Use official svelte-check: https://github.com/sveltejs/language-tools/tree/master/packages/svelte-check. Background: https://github.com/pheuter/svelte-check-rs#why-sunset-it-now'
+        run: |
+          for package in \
+            svelte-check-rs \
+            @svelte-check-rs/darwin-arm64 \
+            @svelte-check-rs/darwin-x64 \
+            @svelte-check-rs/linux-arm64 \
+            @svelte-check-rs/linux-x64 \
+            @svelte-check-rs/win32-x64
+          do
+            npm deprecate "${package}@*" "$SUNSET_MESSAGE"
+          done
