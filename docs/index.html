@@ -78,8 +78,7 @@
       <section class="section" id="context">
         <div class="container narrow prose">
           <h2><span class="hash">#</span> How we got here</h2>
-          <p>I started svelte-check-rs in January 2026, before official svelte-check supported TSGO or incremental compilation. On a large Svelte app, repeatedly waiting for checks slowed down development, CI, and coding agents.</p>
-          <p>A Rust parser, parallel transforms, native TypeScript checking, and persistent caches shortened that loop. Early measurements on my workloads showed order-of-magnitude improvements over the official checker at the time. That was the reason to build and share this project.</p>
+          <p>I started svelte-check-rs in January 2026, before official svelte-check offered TSGO or incremental compilation. On my own workloads, early versions made checks more than ten times faster. That changed how often I could run them and how quickly I could get back to building. I shared the project hoping it would do the same for other Svelte developers.</p>
           <p>Since then, official svelte-check has added native checking and incremental caches. Its <a href="https://github.com/sveltejs/language-tools/pull/2932">implementation explicitly credits svelte-check-rs and svelte-fast-check as inspirations</a>. It is rewarding to see those benefits become part of the official tooling.</p>
           <p>Rust retains a speed advantage in our final benchmarks, but the practical gap has narrowed. Maintaining a separate parser, transformer, source mappings, and ecosystem integrations no longer makes sense for that remaining benefit. We recommend official svelte-check going forward.</p>
         </div>
@@ -98,7 +97,8 @@
       <section class="section" id="thanks">
         <div class="container narrow prose">
           <h2><span class="hash">#</span> Thank you</h2>
-          <p>To everyone who contributed code, opened an issue, shared a reproduction or benchmark, tested a release, or simply gave svelte-check-rs a try: thank you. Your contributions made this project useful far beyond my own application.</p>
+          <p>A special thank you to Guillermo Rauch, who <a href="https://x.com/pheuter/status/2007524591347093601">shared svelte-check-rs when it first launched</a>. Having something I’d built reach him—and seeing him help introduce it to the wider community—was an honor. I’m grateful that he took the time to support it.</p>
+          <p>Small projects depend on people willing to give them a chance and spread the word. Guillermo’s support helped this one reach more people, and everyone who tried it, contributed, or shared what they learned helped it grow. Seeing the work eventually help inform improvements in Svelte’s official tooling makes this a particularly meaningful place to leave it.</p>
           <p>Thank you to the Svelte and language-tools maintainers, the TypeScript native compiler team, and the wider community that made this work possible. Future checking improvements belong with the <a href="https://github.com/sveltejs/language-tools">official project</a>.</p>
           <p class="signature">— <a href="https://github.com/pheuter">Mark Fayngersh (@pheuter)</a></p>
         </div>
@@ -107,7 +107,7 @@
       <section class="section" id="results">
         <div class="container narrow">
           <h2><span class="hash">#</span> Final benchmarks</h2>
-          <p class="lead">A September 2026 snapshot, preserved for reference. The early order-of-magnitude gains describe the original motivation, not today’s comparison. These results informed the decision to sunset the project.</p>
+          <p class="lead">Our final measurements from September 2026, preserved for reference. These results informed the decision to sunset the project.</p>
           <div class="bench" id="bench">
             <div class="bench-head">
               <h3 class="bench-title">Recorded timings</h3>

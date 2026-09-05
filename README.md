@@ -5,15 +5,10 @@
 ## Why this project existed
 
 I started svelte-check-rs in January 2026, before official svelte-check offered
-TSGO or incremental compilation. Type-checking a large Svelte application could
-interrupt development for long enough to break the flow, especially when running
-checks repeatedly in CI or through coding agents.
-
-A Rust parser, parallel Svelte-to-TypeScript transforms, native TypeScript checking,
-and persistent caches made that loop much shorter. Early measurements on my
-workloads showed order-of-magnitude improvements over the official checker of
-the time. Those gains were the reason to build and share a Svelte 5+ replacement;
-they are historical results, not a claim about today's svelte-check.
+TSGO or incremental compilation. On my own workloads, early versions made checks
+more than ten times faster. That changed how often I could run them and how
+quickly I could get back to building. I shared the project hoping it would do
+the same for other Svelte developers.
 
 ## Why sunset it now?
 
@@ -51,10 +46,16 @@ known differences from the real application we measured.
 
 ## Thank you
 
-Thank you to everyone who tried svelte-check-rs, contributed code, opened issues,
-shared reproductions and benchmarks, tested releases, or helped someone use it.
-Every contribution helped this project handle more of the Svelte ecosystem and
-made it useful beyond my own application.
+A special thank you to Guillermo Rauch, who [shared svelte-check-rs when it
+first launched](https://x.com/pheuter/status/2007524591347093601). Having
+something I’d built reach him—and seeing him help introduce it to the wider
+community—was an honor. I’m grateful that he took the time to support it.
+
+Small projects depend on people willing to give them a chance and spread the
+word. Guillermo’s support helped this one reach more people, and everyone who
+tried it, contributed, or shared what they learned helped it grow. Seeing the
+work eventually help inform improvements in Svelte’s official tooling makes this
+a particularly meaningful place to leave it.
 
 Thank you also to the Svelte and language-tools maintainers, the TypeScript native
 compiler team, and the wider community whose work made this possible. Please
