@@ -91,6 +91,7 @@ dependencies are monitored in watch mode, including files outside the workspace.
 |--------|-------------|
 | `--workspace <PATH>` | Working directory (default: `.`) |
 | `--output <FORMAT>` | Output format: `human`, `human-verbose`, `json`, `machine` |
+| `--color <MODE>` | Human output colors: `auto` (terminal only), `always`, `never`. Nonempty `NO_COLOR` disables colors. JSON and machine output stay plain. |
 | `--tsconfig <PATH>` | Path to tsconfig.json |
 | `--threshold <LEVEL>` | Minimum severity: `error`, `warning` |
 | `--watch` | Watch mode |

@@ -2620,3 +2620,81 @@ fn test_issue_157_props_destructuring_comments_no_errors() {
     );
     assert_no_diagnostics_in_file(&ts_diagnostics, "issue-157-props-comments/+page.svelte");
 }
+
+/// #161: every diagnostic source shares the human palette, while redirects,
+/// explicit opt-out, NO_COLOR, and structured output remain escape-free.
+#[test]
+fn test_output_color_across_diagnostic_sources_and_formats() {
+    with_bundler_lock(|| {
+        let fixture = fixtures_dir().join("sveltekit-bundler");
+        ensure_fixture_ready(&fixture, &BUNDLER_READY);
+        ensure_binary_built();
+        let run = |format: &str, color: &str, no_color: Option<&str>| {
+            let mut command = Command::new(binary_path());
+            command
+                .arg("--workspace")
+                .arg(&fixture)
+                .args(["--output", format, "--color", color])
+                .env("TERM", "xterm-256color")
+                .env_remove("COLORTERM")
+                .env_remove("NO_COLOR");
+            if let Some(value) = no_color {
+                command.env("NO_COLOR", value);
+            }
+            let output = command.output().expect("run checker");
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "fixture must retain its errors"
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let sorted_lines = |text: &str| {
+            let mut lines: Vec<_> = text.lines().map(str::to_owned).collect();
+            lines.sort();
+            lines
+        };
+        for format in ["human", "human-verbose"] {
+            let plain = run(format, "never", None);
+            assert!(!plain.contains('\x1b'));
+            let colored = run(format, "always", Some(""));
+            assert!(colored.contains("\x1b[90msrc/routes/+page.svelte\x1b[0m"));
+            assert!(colored.contains("\x1b[38;5;208mWarning\x1b[0m: A11y: Heading levels"));
+            assert!(colored.contains("\x1b[38;5;208mWarning\x1b[0m: noninteractive element"));
+            assert!(colored.contains("\x1b[31mError\x1b[0m:"));
+            assert!(colored.contains("(ts("));
+            let mut stripped = colored;
+            for escape in [
+                "\x1b[90m",
+                "\x1b[38;5;208m",
+                "\x1b[31m",
+                "\x1b[36m",
+                "\x1b[32m",
+                "\x1b[0m",
+            ] {
+                stripped = stripped.replace(escape, "");
+            }
+            assert_eq!(sorted_lines(&stripped), sorted_lines(&plain));
+            assert_eq!(
+                sorted_lines(&run(format, "auto", None)),
+                sorted_lines(&plain)
+            );
+            assert_eq!(
+                sorted_lines(&run(format, "always", Some("1"))),
+                sorted_lines(&plain)
+            );
+        }
+        for format in ["json", "machine"] {
+            let forced = run(format, "always", None);
+            assert!(!forced.contains('\x1b'));
+            assert_eq!(
+                sorted_lines(&forced),
+                sorted_lines(&run(format, "never", None))
+            );
+            if format == "json" {
+                let diagnostics: Vec<serde_json::Value> = serde_json::from_str(&forced).unwrap();
+                assert!(!diagnostics.is_empty());
+            }
+        }
+    });
+}

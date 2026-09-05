@@ -1,10 +1,79 @@
 //! Output formatting.
 
-use crate::cli::OutputFormat;
+use crate::cli::{ColorMode, OutputFormat};
 use camino::Utf8Path;
 use serde::Serialize;
 use source_map::{LineCol, LineIndex};
+use std::io::IsTerminal;
 use svelte_diagnostics::{Diagnostic, Severity};
+
+/// Shared color policy for internal, compiler, and TypeScript diagnostics.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ColorPolicy {
+    enabled: bool,
+    orange: bool,
+}
+
+impl ColorPolicy {
+    /// Detect colors once for a check run. Structured formats always stay plain.
+    pub fn detect(format: OutputFormat, mode: ColorMode) -> Self {
+        Self::resolve(
+            format,
+            mode,
+            std::io::stdout().is_terminal(),
+            std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
+            &std::env::var("TERM").unwrap_or_default(),
+            &std::env::var("COLORTERM").unwrap_or_default(),
+        )
+    }
+
+    fn resolve(
+        format: OutputFormat,
+        mode: ColorMode,
+        terminal: bool,
+        no_color: bool,
+        term: &str,
+        colorterm: &str,
+    ) -> Self {
+        let enabled = matches!(format, OutputFormat::Human | OutputFormat::HumanVerbose)
+            && !no_color
+            && match mode {
+                ColorMode::Always => true,
+                ColorMode::Never => false,
+                ColorMode::Auto => terminal && term != "dumb",
+            };
+        Self {
+            enabled,
+            orange: term.contains("256color") || matches!(colorterm, "truecolor" | "24bit"),
+        }
+    }
+
+    fn paint(self, text: &str, code: &str) -> String {
+        if self.enabled {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    /// Gray file path in human output.
+    pub fn path(self, path: &str) -> String {
+        self.paint(path, "90")
+    }
+
+    /// Color a diagnostic severity consistently across all diagnostic sources.
+    pub fn severity(self, severity: &str) -> String {
+        self.paint(
+            severity,
+            match severity {
+                "Error" => "31",
+                "Warning" if self.orange => "38;5;208",
+                "Warning" => "33",
+                _ => "36",
+            },
+        )
+    }
+}
 
 /// A formatted diagnostic for output.
 #[derive(Debug, Serialize)]
@@ -40,12 +109,13 @@ pub struct Position {
 /// Formats diagnostics for output.
 pub struct Formatter {
     format: OutputFormat,
+    colors: ColorPolicy,
 }
 
 impl Formatter {
     /// Creates a new formatter.
-    pub fn new(format: OutputFormat) -> Self {
-        Self { format }
+    pub fn new(format: OutputFormat, colors: ColorPolicy) -> Self {
+        Self { format, colors }
     }
 
     /// Formats a collection of diagnostics.
@@ -81,10 +151,10 @@ impl Formatter {
 
             output.push_str(&format!(
                 "{}:{}:{}\n{}: {} ({})\n\n",
-                file_path,
+                self.colors.path(file_path.as_str()),
                 start.line + 1,
                 start.col + 1,
-                severity,
+                self.colors.severity(severity),
                 diag.message,
                 diag.code
             ));
@@ -117,10 +187,10 @@ impl Formatter {
 
             output.push_str(&format!(
                 "{}:{}:{}\n{}: {} ({})\n",
-                file_path,
+                self.colors.path(file_path.as_str()),
                 start.line + 1,
                 start.col + 1,
-                severity,
+                self.colors.severity(severity),
                 diag.message,
                 diag.code
             ));
@@ -253,6 +323,22 @@ pub struct CheckSummary {
 }
 
 impl CheckSummary {
+    /// Formats the summary using the same severity palette as diagnostics.
+    pub fn format_with_color(&self, colors: ColorPolicy) -> String {
+        let code = if self.error_count > 0 {
+            "31"
+        } else if self.warning_count > 0 {
+            if colors.orange {
+                "38;5;208"
+            } else {
+                "33"
+            }
+        } else {
+            "32"
+        };
+        colors.paint(&self.format(), code)
+    }
+
     /// Formats the summary line.
     pub fn format(&self) -> String {
         let error_word = if self.error_count == 1 {
@@ -298,8 +384,59 @@ mod tests {
     use text_size::TextSize;
 
     #[test]
+    fn color_policy_respects_terminal_format_and_overrides() {
+        let policy = |format, mode, tty, no_color, term| {
+            ColorPolicy::resolve(format, mode, tty, no_color, term, "")
+        };
+        assert!(
+            !policy(
+                OutputFormat::Human,
+                ColorMode::Auto,
+                false,
+                false,
+                "xterm-256color"
+            )
+            .enabled
+        );
+        assert!(
+            policy(
+                OutputFormat::Human,
+                ColorMode::Auto,
+                true,
+                false,
+                "xterm-256color"
+            )
+            .enabled
+        );
+        assert!(!policy(OutputFormat::Human, ColorMode::Auto, true, false, "dumb").enabled);
+        assert!(!policy(OutputFormat::Human, ColorMode::Never, true, false, "xterm").enabled);
+        assert!(!policy(OutputFormat::Human, ColorMode::Always, true, true, "xterm").enabled);
+        for format in [OutputFormat::Json, OutputFormat::Machine] {
+            assert!(!policy(format, ColorMode::Always, true, false, "xterm").enabled);
+        }
+        let orange = policy(
+            OutputFormat::HumanVerbose,
+            ColorMode::Always,
+            false,
+            false,
+            "xterm-256color",
+        );
+        assert_eq!(orange.severity("Warning"), "\x1b[38;5;208mWarning\x1b[0m");
+        let basic = policy(
+            OutputFormat::Human,
+            ColorMode::Always,
+            false,
+            false,
+            "xterm",
+        );
+        assert_eq!(basic.severity("Warning"), "\x1b[33mWarning\x1b[0m");
+        assert_eq!(basic.severity("Error"), "\x1b[31mError\x1b[0m");
+        assert_eq!(basic.path("App.svelte"), "\x1b[90mApp.svelte\x1b[0m");
+    }
+
+    #[test]
     fn test_format_human() {
-        let formatter = Formatter::new(OutputFormat::Human);
+        let formatter = Formatter::new(OutputFormat::Human, ColorPolicy::default());
         let diag = Diagnostic::new(
             DiagnosticCode::A11yStructure,
             "Skipped heading level",
@@ -313,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_format_json() {
-        let formatter = Formatter::new(OutputFormat::Json);
+        let formatter = Formatter::new(OutputFormat::Json, ColorPolicy::default());
         let diag = Diagnostic::new(
             DiagnosticCode::A11yStructure,
             "Skipped heading level",
