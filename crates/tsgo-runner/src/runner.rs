@@ -1602,8 +1602,7 @@ fn is_fatal_config_code(code: &str) -> bool {
 /// Downgrades tsconfig-attributed options/global diagnostics to warnings and
 /// deduplicates all tsconfig-attributed diagnostics.
 ///
-/// A diagnostic is treated as config-owned when it is positionless
-/// (`position_unknown`) or its file resolves to the same path as the resolved
+/// A diagnostic is treated as config-owned when its file resolves to the resolved
 /// tsconfig (catches the positioned `TS6046`/`TS5xxx` config-file errors that
 /// tsc attributes to the tsconfig — tsgo prints these with a *relative* path,
 /// so we resolve against `project_root` before comparing).
@@ -1629,7 +1628,9 @@ fn downgrade_and_dedup_tsconfig_diagnostics(
     let mut seen: HashSet<(String, String, String, u32, u32)> = HashSet::new();
     diagnostics.retain_mut(|diag| {
         let file_norm = normalize_tsconfig_path(&diag.file, project_root);
-        let is_config = diag.position_unknown || file_norm == tsconfig_norm;
+        // A generated source error can also lack a source-map position. Its
+        // missing location does not make it a global/config warning.
+        let is_config = file_norm == tsconfig_norm;
         if !is_config {
             return true;
         }
@@ -2268,6 +2269,25 @@ mod tests {
             severity,
             position_unknown,
         }
+    }
+
+    #[test]
+    fn unmapped_generated_source_errors_remain_errors() {
+        let mut diagnostics = vec![make_diag(
+            "/repo/src/App.svelte",
+            "TS1131",
+            "Property or signature expected.",
+            0,
+            0,
+            DiagnosticSeverity::Error,
+            true,
+        )];
+        downgrade_and_dedup_tsconfig_diagnostics(
+            &mut diagnostics,
+            Utf8Path::new("/repo/tsconfig.json"),
+            Utf8Path::new("/repo"),
+        );
+        assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
     }
 
     #[test]
