@@ -1702,6 +1702,22 @@ fn test_issue_105_mount_page_without_props_no_error() {
     assert_no_diagnostics_in_file(&diagnostics, "lib/issue-105-mount-no-props.ts");
 }
 
+// `$props.id()` is a reserved rune returning `string`; it is independent of a
+// user prop named `id`, including optional and generic prop declarations. A
+// legacy store named `props` must still keep its own `$props.id()` member type.
+//
+// Fixture: src/lib/issue-props-id-typing.svelte
+// Fixture: src/lib/issue-props-id-store.svelte
+#[test]
+fn test_props_id_keeps_reserved_type_and_legacy_store_type() {
+    let fixture_path = fixtures_dir().join("sveltekit-bundler");
+    let (_exit_code, diagnostics) = run_check_json(&fixture_path);
+    let diagnostics = filter_diagnostics_by_source(&diagnostics, "ts");
+
+    assert_no_diagnostics_in_file(&diagnostics, "lib/issue-props-id-typing.svelte");
+    assert_no_diagnostics_in_file(&diagnostics, "lib/issue-props-id-store.svelte");
+}
+
 /// Issue #96: Label wrapping a component should not trigger a11y-label-has-associated-control.
 ///
 /// Fixture: src/routes/issue-96-label-component/+page.svelte

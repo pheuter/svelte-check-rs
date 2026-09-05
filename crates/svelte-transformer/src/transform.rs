@@ -2,7 +2,7 @@
 
 use crate::component_exports::{build_exports_type, extract_component_exports, ExportedName};
 use crate::props::{extract_props_info, generate_props_type};
-use crate::runes::transform_runes_with_options;
+use crate::runes::transform_runes_with_options_and_stores;
 use crate::snippets::split_snippet_name;
 use crate::template::{
     generate_template_body_with_spans, generate_template_check_with_spans,
@@ -11,15 +11,23 @@ use crate::template::{
 use crate::types::{component_name_from_path, ComponentExports};
 use smol_str::SmolStr;
 use source_map::{SourceMap, SourceMapBuilder, Span};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use svelte_parser::{
     Attribute, AttributeValue, AttributeValuePart, Fragment, ScriptLang, SvelteDocument,
     TemplateNode,
 };
-use swc_common::{FileName, SourceMap as SwcSourceMap, Spanned};
-use swc_ecma_ast::{ImportSpecifier, Module, ModuleDecl, ModuleItem, Stmt};
+use swc_common::{
+    FileName, Globals, Mark, SourceMap as SwcSourceMap, Spanned, SyntaxContext, GLOBALS,
+};
+use swc_ecma_ast::{
+    AssignTarget, AssignTargetPat, Callee, Decl, DefaultDecl, Expr, Ident, ImportSpecifier,
+    MemberProp, Module, ModuleDecl, ModuleItem, ObjectPatProp, Pat, SimpleAssignTarget, Stmt,
+    VarDeclarator,
+};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax};
+use swc_ecma_transforms_base::resolver;
+use swc_ecma_visit::{noop_visit_type, Visit, VisitMutWith, VisitWith};
 
 /// The kind of SvelteKit route file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1297,6 +1305,477 @@ fn parse_script_module(script: &str) -> Option<Module> {
     parser.parse_module().ok()
 }
 
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum RuneBinding {
+    #[default]
+    Absent,
+    Rune,
+    Store,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuneInitializer {
+    Ordinary,
+    Rune {
+        root: &'static str,
+        name: &'static str,
+    },
+    SvelteStoreDerivedImport,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RuneScopeAnalysis {
+    initializers: HashMap<SmolStr, RuneInitializer>,
+    rune_references: Vec<SmolStr>,
+    synthetic_stores: HashSet<SmolStr>,
+    implicit_bindings: HashSet<SmolStr>,
+    parsed: bool,
+}
+
+impl RuneScopeAnalysis {
+    #[cfg(test)]
+    fn local_binding(&self, name: &str) -> RuneBinding {
+        match self.initializers.get(name) {
+            None => RuneBinding::Absent,
+            Some(RuneInitializer::Ordinary) => RuneBinding::Store,
+            Some(_) if self.synthetic_stores.contains(name) => RuneBinding::Store,
+            Some(_) => RuneBinding::Rune,
+        }
+    }
+
+    fn record_initializer(&mut self, name: &str, initializer: RuneInitializer) {
+        self.initializers.insert(SmolStr::new(name), initializer);
+    }
+}
+
+fn is_rune_binding_name(name: &str) -> bool {
+    matches!(
+        name,
+        "state" | "derived" | "effect" | "props" | "bindable" | "inspect" | "host"
+    )
+}
+
+struct RuneReferenceCollector {
+    unresolved_ctxt: SyntaxContext,
+    references: Vec<(u32, SmolStr)>,
+}
+
+impl RuneReferenceCollector {
+    fn new(unresolved_ctxt: SyntaxContext) -> Self {
+        Self {
+            unresolved_ctxt,
+            references: Vec::new(),
+        }
+    }
+}
+
+impl Visit for RuneReferenceCollector {
+    noop_visit_type!();
+
+    fn visit_ident(&mut self, identifier: &Ident) {
+        if identifier.ctxt != self.unresolved_ctxt {
+            return;
+        }
+        let Some(name) = identifier.sym.as_ref().strip_prefix('$') else {
+            return;
+        };
+        if is_rune_binding_name(name) {
+            self.references
+                .push((identifier.span.lo.0, SmolStr::new(name)));
+        }
+    }
+}
+
+fn unwrap_transparent_expr(mut expr: &Expr) -> &Expr {
+    loop {
+        expr = match expr {
+            Expr::Paren(expression) => expression.expr.as_ref(),
+            Expr::TsAs(expression) => expression.expr.as_ref(),
+            Expr::TsSatisfies(expression) => expression.expr.as_ref(),
+            Expr::TsNonNull(expression) => expression.expr.as_ref(),
+            Expr::TsTypeAssertion(expression) => expression.expr.as_ref(),
+            Expr::TsConstAssertion(expression) => expression.expr.as_ref(),
+            _ => return expr,
+        };
+    }
+}
+
+fn rune_callee_initializer(expr: &Expr) -> Option<RuneInitializer> {
+    match unwrap_transparent_expr(expr) {
+        Expr::Ident(identifier) => match identifier.sym.as_ref() {
+            "$state" => Some(RuneInitializer::Rune {
+                root: "state",
+                name: "$state",
+            }),
+            "$derived" => Some(RuneInitializer::Rune {
+                root: "derived",
+                name: "$derived",
+            }),
+            "$props" => Some(RuneInitializer::Rune {
+                root: "props",
+                name: "$props",
+            }),
+            "$bindable" => Some(RuneInitializer::Rune {
+                root: "bindable",
+                name: "$bindable",
+            }),
+            "$effect" => Some(RuneInitializer::Rune {
+                root: "effect",
+                name: "$effect",
+            }),
+            "$inspect" => Some(RuneInitializer::Rune {
+                root: "inspect",
+                name: "$inspect",
+            }),
+            "$host" => Some(RuneInitializer::Rune {
+                root: "host",
+                name: "$host",
+            }),
+            _ => None,
+        },
+        Expr::Member(member) => {
+            let Expr::Ident(object) = unwrap_transparent_expr(member.obj.as_ref()) else {
+                return None;
+            };
+            let MemberProp::Ident(property) = &member.prop else {
+                return None;
+            };
+            let (root, name) = match (object.sym.as_ref(), property.sym.as_ref()) {
+                ("$state", "raw") => Some(("state", "$state.raw")),
+                ("$state", "snapshot") => Some(("state", "$state.snapshot")),
+                ("$state", "eager") => Some(("state", "$state.eager")),
+                ("$derived", "by") => Some(("derived", "$derived.by")),
+                ("$props", "id") => Some(("props", "$props.id")),
+                ("$effect", "pre") => Some(("effect", "$effect.pre")),
+                ("$effect", "tracking") => Some(("effect", "$effect.tracking")),
+                ("$effect", "root") => Some(("effect", "$effect.root")),
+                ("$effect", "pending") => Some(("effect", "$effect.pending")),
+                ("$inspect", "trace") => Some(("inspect", "$inspect.trace")),
+                _ => None,
+            }?;
+            Some(RuneInitializer::Rune { root, name })
+        }
+        _ => None,
+    }
+}
+
+fn rune_binding_initializer(expr: &Expr) -> Option<RuneInitializer> {
+    let Expr::Call(call) = unwrap_transparent_expr(expr) else {
+        return None;
+    };
+    let Callee::Expr(callee) = &call.callee else {
+        return None;
+    };
+    if let Some(initializer) = rune_callee_initializer(callee) {
+        return Some(initializer);
+    }
+
+    let Expr::Member(member) = unwrap_transparent_expr(callee) else {
+        return None;
+    };
+    let MemberProp::Ident(property) = &member.prop else {
+        return None;
+    };
+    if property.sym.as_ref() != "with" {
+        return None;
+    }
+    let Expr::Call(inspect_call) = unwrap_transparent_expr(member.obj.as_ref()) else {
+        return None;
+    };
+    let Callee::Expr(inspect_callee) = &inspect_call.callee else {
+        return None;
+    };
+
+    match unwrap_transparent_expr(inspect_callee) {
+        Expr::Ident(identifier) if identifier.sym.as_ref() == "$inspect" => {
+            Some(RuneInitializer::Rune {
+                root: "inspect",
+                name: "$inspect().with",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn collect_rune_binding_names(pattern: &Pat, names: &mut Vec<SmolStr>) {
+    match pattern {
+        Pat::Ident(binding) if is_rune_binding_name(binding.id.sym.as_ref()) => {
+            names.push(SmolStr::new(binding.id.sym.as_ref()));
+        }
+        Pat::Array(array) => {
+            for element in array.elems.iter().flatten() {
+                collect_rune_binding_names(element, names);
+            }
+        }
+        Pat::Object(object) => {
+            for property in &object.props {
+                match property {
+                    ObjectPatProp::KeyValue(property) => {
+                        collect_rune_binding_names(&property.value, names);
+                    }
+                    ObjectPatProp::Assign(property)
+                        if is_rune_binding_name(property.key.id.sym.as_ref()) =>
+                    {
+                        names.push(SmolStr::new(property.key.id.sym.as_ref()));
+                    }
+                    ObjectPatProp::Rest(property) => {
+                        collect_rune_binding_names(&property.arg, names);
+                    }
+                    ObjectPatProp::Assign(_) => {}
+                }
+            }
+        }
+        Pat::Assign(assign) => collect_rune_binding_names(&assign.left, names),
+        Pat::Rest(rest) => collect_rune_binding_names(&rest.arg, names),
+        Pat::Ident(_) | Pat::Expr(_) | Pat::Invalid(_) => {}
+    }
+}
+
+fn collect_rune_assignment_names(target: &AssignTarget, names: &mut Vec<SmolStr>) {
+    match target {
+        AssignTarget::Simple(SimpleAssignTarget::Ident(binding))
+            if is_rune_binding_name(binding.id.sym.as_ref()) =>
+        {
+            names.push(SmolStr::new(binding.id.sym.as_ref()));
+        }
+        AssignTarget::Pat(AssignTargetPat::Array(array)) => {
+            for element in array.elems.iter().flatten() {
+                collect_rune_binding_names(element, names);
+            }
+        }
+        AssignTarget::Pat(AssignTargetPat::Object(object)) => {
+            collect_rune_binding_names(&Pat::Object(object.clone()), names);
+        }
+        _ => {}
+    }
+}
+
+fn analyze_rune_declarators(declarations: &[VarDeclarator], analysis: &mut RuneScopeAnalysis) {
+    for declarator in declarations {
+        let initializer = declarator
+            .init
+            .as_deref()
+            .and_then(rune_binding_initializer)
+            .unwrap_or(RuneInitializer::Ordinary);
+
+        let mut names = Vec::new();
+        collect_rune_binding_names(&declarator.name, &mut names);
+        for name in names {
+            analysis.record_initializer(&name, initializer);
+        }
+    }
+}
+
+fn record_runtime_binding(
+    analysis: &mut RuneScopeAnalysis,
+    name: &str,
+    initializer: RuneInitializer,
+) {
+    if is_rune_binding_name(name) {
+        analysis.record_initializer(name, initializer);
+    }
+}
+
+fn analyze_rune_decl(declaration: &Decl, analysis: &mut RuneScopeAnalysis) {
+    match declaration {
+        Decl::Var(declaration) if !declaration.declare => {
+            analyze_rune_declarators(&declaration.decls, analysis);
+        }
+        Decl::Using(declaration) => {
+            analyze_rune_declarators(&declaration.decls, analysis);
+        }
+        Decl::Fn(declaration) if !declaration.declare => {
+            record_runtime_binding(
+                analysis,
+                declaration.ident.sym.as_ref(),
+                RuneInitializer::Ordinary,
+            );
+        }
+        Decl::Class(declaration) if !declaration.declare => {
+            record_runtime_binding(
+                analysis,
+                declaration.ident.sym.as_ref(),
+                RuneInitializer::Ordinary,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn analyze_rune_script(script: &str, allow_reactive_declarations: bool) -> RuneScopeAnalysis {
+    let Some(mut module) = parse_script_module(script) else {
+        return RuneScopeAnalysis::default();
+    };
+    let mut analysis = RuneScopeAnalysis {
+        rune_references: GLOBALS.set(&Globals::new(), || {
+            let unresolved_mark = Mark::new();
+            let top_level_mark = Mark::new();
+            // Svelte resolves runes after type-only TypeScript declarations have
+            // been removed, so ambient declarations must not shadow rune globals.
+            module.visit_mut_with(&mut resolver(unresolved_mark, top_level_mark, false));
+
+            let unresolved_ctxt = SyntaxContext::empty().apply_mark(unresolved_mark);
+            let mut references = RuneReferenceCollector::new(unresolved_ctxt);
+            module.visit_with(&mut references);
+            references.references.sort_by_key(|(position, _)| *position);
+            references
+                .references
+                .into_iter()
+                .map(|(_, name)| name)
+                .collect()
+        }),
+        parsed: true,
+        ..Default::default()
+    };
+
+    for item in &module.body {
+        match item {
+            ModuleItem::Stmt(Stmt::Decl(declaration)) => {
+                analyze_rune_decl(declaration, &mut analysis);
+            }
+            ModuleItem::Stmt(Stmt::Labeled(statement))
+                if allow_reactive_declarations
+                    && statement.label.sym.as_ref() == "$"
+                    && matches!(statement.body.as_ref(), Stmt::Expr(_)) =>
+            {
+                let Stmt::Expr(expression_statement) = statement.body.as_ref() else {
+                    unreachable!();
+                };
+                if let Expr::Assign(assignment) =
+                    unwrap_transparent_expr(expression_statement.expr.as_ref())
+                {
+                    let mut names = Vec::new();
+                    collect_rune_assignment_names(&assignment.left, &mut names);
+                    analysis.implicit_bindings.extend(names);
+                }
+            }
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => {
+                analyze_rune_decl(&export.decl, &mut analysis);
+            }
+            ModuleItem::ModuleDecl(ModuleDecl::Import(import)) if !import.type_only => {
+                let derived_exception = import.src.value.as_str() == Some("svelte/store");
+                for specifier in &import.specifiers {
+                    let identifier = match specifier {
+                        ImportSpecifier::Named(specifier) if !specifier.is_type_only => {
+                            Some(&specifier.local)
+                        }
+                        ImportSpecifier::Default(specifier) => Some(&specifier.local),
+                        ImportSpecifier::Namespace(specifier) => Some(&specifier.local),
+                        ImportSpecifier::Named(_) => None,
+                    };
+                    if let Some(identifier) = identifier {
+                        let initializer =
+                            if derived_exception && identifier.sym.as_ref() == "derived" {
+                                RuneInitializer::SvelteStoreDerivedImport
+                            } else {
+                                RuneInitializer::Ordinary
+                            };
+                        record_runtime_binding(&mut analysis, identifier.sym.as_ref(), initializer);
+                    }
+                }
+            }
+            ModuleItem::ModuleDecl(ModuleDecl::TsImportEquals(import)) if !import.is_type_only => {
+                record_runtime_binding(
+                    &mut analysis,
+                    import.id.sym.as_ref(),
+                    RuneInitializer::Ordinary,
+                );
+            }
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export)) => match &export.decl {
+                DefaultDecl::Fn(declaration) => {
+                    if let Some(identifier) = &declaration.ident {
+                        record_runtime_binding(
+                            &mut analysis,
+                            identifier.sym.as_ref(),
+                            RuneInitializer::Ordinary,
+                        );
+                    }
+                }
+                DefaultDecl::Class(declaration) => {
+                    if let Some(identifier) = &declaration.ident {
+                        record_runtime_binding(
+                            &mut analysis,
+                            identifier.sym.as_ref(),
+                            RuneInitializer::Ordinary,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    analysis
+}
+
+fn analyze_rune_scopes(
+    module_script: Option<&str>,
+    instance_script: Option<&str>,
+) -> (RuneScopeAnalysis, RuneScopeAnalysis) {
+    let module = module_script
+        .map(|script| analyze_rune_script(script, false))
+        .unwrap_or_default();
+    let mut instance = instance_script
+        .map(|script| analyze_rune_script(script, true))
+        .unwrap_or_default();
+
+    for name in std::mem::take(&mut instance.implicit_bindings) {
+        if !instance.initializers.contains_key(&name) && !module.initializers.contains_key(&name) {
+            instance.record_initializer(&name, RuneInitializer::Ordinary);
+        }
+    }
+
+    instance.synthetic_stores = resolve_synthetic_stores(
+        module
+            .rune_references
+            .iter()
+            .chain(&instance.rune_references),
+        |name| {
+            instance
+                .initializers
+                .get(name)
+                .copied()
+                .or_else(|| module.initializers.get(name).copied())
+        },
+    );
+
+    (module, instance)
+}
+
+fn resolve_synthetic_stores<'a>(
+    references: impl Iterator<Item = &'a SmolStr>,
+    mut initializer_for: impl FnMut(&str) -> Option<RuneInitializer>,
+) -> HashSet<SmolStr> {
+    let mut synthetic_stores = HashSet::new();
+    let mut seen = HashSet::new();
+
+    for name in references {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+
+        let is_store = match initializer_for(name) {
+            None | Some(RuneInitializer::SvelteStoreDerivedImport) => false,
+            Some(RuneInitializer::Ordinary) => true,
+            Some(RuneInitializer::Rune { root, name: rune }) => {
+                synthetic_stores.contains(root) || (rune == "$props" && name.as_str() != "props")
+            }
+        };
+        if is_store {
+            synthetic_stores.insert(name.clone());
+        }
+    }
+
+    synthetic_stores
+}
+
+#[cfg(test)]
+fn analyze_rune_bindings(script: &str) -> RuneScopeAnalysis {
+    analyze_rune_scopes(None, Some(script)).1
+}
+
 /// Returns true if `script` has a top-level import that binds `name`
 /// (named, default, or namespace specifier).
 ///
@@ -1658,6 +2137,16 @@ pub fn transform(doc: &SvelteDocument, options: TransformOptions) -> TransformRe
         store_scope.push_str(&instance.content);
     }
     let referenceable_names = collect_referenceable_names(&store_scope);
+    let (module_rune_scope, instance_rune_scope) = analyze_rune_scopes(
+        doc.module_script
+            .as_ref()
+            .map(|script| script.content.as_str()),
+        doc.instance_script
+            .as_ref()
+            .map(|script| script.content.as_str()),
+    );
+    let module_synthetic_rune_stores = &module_rune_scope.synthetic_stores;
+    let instance_synthetic_rune_stores = &instance_rune_scope.synthetic_stores;
 
     if !placeholder_types.is_empty() {
         let generic_names: HashSet<_> = generic_decls
@@ -1937,8 +2426,13 @@ declare module "svelte" {
         builder.add_generated(section);
 
         let base_offset: u32 = module.content_span.start.into();
-        let rune_result =
-            transform_runes_with_options(&module.content, base_offset, default_props_type);
+        let rune_result = transform_runes_with_options_and_stores(
+            &module.content,
+            base_offset,
+            default_props_type,
+            module_synthetic_rune_stores,
+            module_rune_scope.parsed,
+        );
         // Module-script `type X = unknown` placeholder aliases are kept on
         // purpose. Module-scope declarations (interfaces, other aliases) may use
         // them as default type arguments, e.g. `interface Column<T = TValue>`;
@@ -1947,23 +2441,12 @@ declare module "svelte" {
         // otherwise clash with the render function's generic parameters.
         let script_output = rune_result.output;
         let script_mappings = rune_result.mappings;
+        let store_names = rune_result.store_names;
 
         let indent = script_indent(&script_output);
-        if rune_result.uses_props_accessor {
-            let accessor_type = default_props_type.unwrap_or("Record<string, unknown>");
-            let decl = format!(
-                "{}declare const $props: __SveltePropsAccessor<{}>;\n",
-                indent, accessor_type
-            );
-            output.push_str(&decl);
-            builder.add_generated(&decl);
-        }
-        if let Some(aliases) = render_store_aliases(
-            &rune_result.store_names,
-            &referenceable_names,
-            &indent,
-            false,
-        ) {
+        if let Some(aliases) =
+            render_store_aliases(&store_names, &referenceable_names, &indent, false)
+        {
             output.push_str(&aliases);
             builder.add_generated(&aliases);
         }
@@ -1982,10 +2465,19 @@ declare module "svelte" {
         builder.add_generated(section);
 
         let base_offset: u32 = instance.content_span.start.into();
-        let rune_result =
-            transform_runes_with_options(&instance.content, base_offset, default_props_type);
+        let rune_result = transform_runes_with_options_and_stores(
+            &instance.content,
+            base_offset,
+            default_props_type,
+            instance_synthetic_rune_stores,
+            instance_rune_scope.parsed,
+        );
 
-        let props_info = extract_props_info(&rune_result.output, &instance.content, base_offset);
+        let props_info = if instance_synthetic_rune_stores.contains("props") {
+            None
+        } else {
+            extract_props_info(&rune_result.output, &instance.content, base_offset)
+        };
         let props_type = props_info.as_ref().map(generate_props_type);
         if let Some(ref ty) = props_type {
             exports.props_type = Some(ty.clone());
@@ -2027,6 +2519,7 @@ declare module "svelte" {
 
         let mut script_output = rune_result.output;
         let mut script_mappings = rune_result.mappings;
+        let mut store_names = rune_result.store_names;
         let mut edits = Vec::new();
         if let Some(info) = &props_info {
             if info.properties.iter().any(|prop| prop.is_rest) {
@@ -2055,22 +2548,9 @@ declare module "svelte" {
         }
 
         let indent = script_indent(&script_output);
-        let props_accessor_decl = if rune_result.uses_props_accessor {
-            let accessor_type = props_type
-                .as_deref()
-                .or(default_props_type)
-                .unwrap_or("Record<string, unknown>");
-            Some(format!(
-                "{}const $props = null as any as __SveltePropsAccessor<{}>;\n",
-                indent, accessor_type
-            ))
-        } else {
-            None
-        };
         // Instance-script components embed the template in the render function so
         // TypeScript control-flow narrowing from the script reaches template checks.
         let template_body_result = generate_template_body_with_spans(&doc.fragment, false);
-        let mut store_names = rune_result.store_names.clone();
         for name in &template_body_result.store_names {
             store_names.insert(name.clone());
         }
@@ -2091,10 +2571,6 @@ declare module "svelte" {
             output.push_str(&render_start);
             builder.add_generated(&render_start);
 
-            if let Some(decl) = props_accessor_decl {
-                output.push_str(&decl);
-                builder.add_generated(&decl);
-            }
             if let Some(aliases) = store_aliases {
                 output.push_str(&aliases);
                 builder.add_generated(&aliases);
@@ -2126,18 +2602,9 @@ declare module "svelte" {
             }
             template_emitted = true;
 
-            // Only fall back to SvelteKit's PageProps/LayoutProps when the component
-            // actually consumes props (via $props() or $props.id() accessor).
-            // Components without $props() have no declared props, so forcing
-            // PageProps would make mount() incorrectly require props.
-            let render_props_type = props_type
-                .as_deref()
-                .or(if rune_result.uses_props_accessor {
-                    default_props_type
-                } else {
-                    None
-                })
-                .unwrap_or("Record<string, unknown>");
+            // `$props.id()` does not declare component props. Only a `$props()`
+            // declaration contributes `props_type` here.
+            let render_props_type = props_type.as_deref().unwrap_or("Record<string, unknown>");
             let return_stmt = format!(
                 "return {{ props: null as any as {}, exports: {}, slots: {}, events: {} }};\n",
                 render_props_type, exports_value, "{}", "{}"
@@ -2165,10 +2632,6 @@ declare module "svelte" {
             output.push_str(render_start);
             builder.add_generated(render_start);
 
-            if let Some(decl) = props_accessor_decl {
-                output.push_str(&decl);
-                builder.add_generated(&decl);
-            }
             if let Some(aliases) = store_aliases {
                 output.push_str(&aliases);
                 builder.add_generated(&aliases);
@@ -2200,14 +2663,7 @@ declare module "svelte" {
             }
             template_emitted = true;
 
-            let render_props_type = props_type
-                .as_deref()
-                .or(if rune_result.uses_props_accessor {
-                    default_props_type
-                } else {
-                    None
-                })
-                .unwrap_or("Record<string, unknown>");
+            let render_props_type = props_type.as_deref().unwrap_or("Record<string, unknown>");
             let return_stmt = format!(
                 "return {{ props: null as any as {}, exports: {}, slots: {}, events: {} }};\n",
                 render_props_type, exports_value, "{}", "{}"
@@ -2487,6 +2943,440 @@ mod tests {
         assert!(!result
             .tsx_code
             .contains("// Helper functions for template type-checking"));
+    }
+
+    #[test]
+    fn test_props_id_uses_svelte_ambient_type() {
+        let source = r#"<script lang="ts" generics="T extends string | number">
+type Props = { id?: T; value: T };
+const uid = $props.id();
+let { id, value, ...props }: Props = $props();
+</script>"#;
+        let doc = parse(source).document;
+        let result = transform(&doc, TransformOptions::default());
+
+        assert!(result.tsx_code.contains("const uid = $props.id();"));
+        assert!(!result.tsx_code.contains("const $props = null as any"));
+        assert!(!result.tsx_code.contains("let $props!: __StoreValue"));
+        assert!(!result.tsx_code.contains("__SveltePropsAccessor<Props>"));
+    }
+
+    #[test]
+    fn test_props_id_respects_instance_props_shadowing() {
+        for instance_binding in [
+            "const props = $state({});",
+            "let { value, ...props }: Props = $props();",
+        ] {
+            let source = format!(
+                r#"<script module lang="ts">
+const props = {{ id: () => 'module' }};
+</script>
+<script lang="ts">
+type Props = {{ value: string }};
+{instance_binding}
+const uid = $props.id();
+</script>"#
+            );
+            let doc = parse(&source).document;
+            let result = transform(&doc, TransformOptions::default());
+
+            assert!(result.tsx_code.contains("const uid = $props.id();"));
+            assert!(
+                !result.tsx_code.contains("let $props!: __StoreValue"),
+                "instance rune binding did not shadow module `props`:\n{}",
+                result.tsx_code
+            );
+        }
+
+        let source = r#"<script module lang="ts">
+const props = { subscribe(run: (value: { id(): string }) => void) { run({ id: () => 'store' }); } };
+</script>
+<script lang="ts">
+const uid = $props.id();
+</script>"#;
+        let doc = parse(source).document;
+        let result = transform(&doc, TransformOptions::default());
+        assert!(result
+            .tsx_code
+            .contains("let $props!: __StoreValue<typeof props>;"));
+    }
+
+    #[test]
+    fn test_module_runes_are_not_reclassified_by_instance_stores() {
+        let module_script = "const moduleValue = $state({});";
+        let instance_script = "const state = store; const props = $state(); \
+                               const uid = $props.id();";
+        let (module, instance) = analyze_rune_scopes(Some(module_script), Some(instance_script));
+
+        assert!(module.synthetic_stores.is_empty());
+        assert_eq!(
+            instance.synthetic_stores,
+            HashSet::from(["state".into(), "props".into()])
+        );
+
+        let source =
+            format!("<script module>{module_script}</script><script>{instance_script}</script>");
+        let doc = parse(&source).document;
+        let result = transform(&doc, TransformOptions::default());
+        let (module_output, instance_output) = result
+            .tsx_code
+            .split_once("// === INSTANCE SCRIPT ===")
+            .expect("generated instance section");
+
+        assert!(module_output.contains("const moduleValue = $state({});"));
+        assert!(!module_output.contains("declare let $state"));
+        assert!(instance_output.contains("let $state!: __StoreValue<typeof state>;"));
+        assert!(instance_output.contains("let $props!: __StoreValue<typeof props>;"));
+    }
+
+    #[test]
+    fn test_module_only_rune_reference_does_not_emit_instance_store_alias() {
+        let source = r#"<script module>
+const moduleValue = $state({});
+</script>
+<script>
+const state = store;
+</script>"#;
+        let doc = parse(source).document;
+        let result = transform(&doc, TransformOptions::default());
+        let (module_output, instance_output) = result
+            .tsx_code
+            .split_once("// === INSTANCE SCRIPT ===")
+            .expect("generated instance section");
+
+        assert!(module_output.contains("const moduleValue = $state({});"));
+        assert!(!instance_output.contains("let $state!: __StoreValue<typeof state>;"));
+    }
+
+    #[test]
+    fn test_props_id_respects_shadowed_rune_names() {
+        let source = r#"<script lang="ts">
+const state = writable(() => writable({ id: () => 42 }));
+const props = $state();
+const uid: number = $props.id();
+</script>"#;
+        let doc = parse(source).document;
+        let result = transform(&doc, TransformOptions::default());
+
+        assert!(result
+            .tsx_code
+            .contains("let $state!: __StoreValue<typeof state>;"));
+        assert!(result
+            .tsx_code
+            .contains("let $props!: __StoreValue<typeof props>;"));
+    }
+
+    #[test]
+    fn test_props_id_analysis_distinguishes_rune_bindings_from_stores() {
+        for (source, expected_binding) in [
+            (
+                "type X = { props: string }; const uid = $props.id();",
+                RuneBinding::Absent,
+            ),
+            (
+                "declare const props: unknown; const uid = $props.id();",
+                RuneBinding::Absent,
+            ),
+            (
+                "declare function props(): void; const uid = $props.id();",
+                RuneBinding::Absent,
+            ),
+            (
+                "declare class props {} const uid = $props.id();",
+                RuneBinding::Absent,
+            ),
+            (
+                "declare namespace props { interface X {} } const uid = $props.id();",
+                RuneBinding::Absent,
+            ),
+            (
+                "namespace props { export interface X {} } const uid = $props.id();",
+                RuneBinding::Absent,
+            ),
+            (
+                "let { value, ...props }: Props = $props(); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $state({}); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $state({}) as object; const uid = $props.id() as string;",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $derived({}) satisfies object; const uid = $props.id()!;",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = <object>$state({}); const uid = <string>$props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $state.eager(1); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $effect.root(() => {}); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $effect.pending(); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $effect.tracking(); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $inspect(1); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $inspect(1).with(console.log); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+            (
+                "const props = $host(); const uid = $props.id();",
+                RuneBinding::Rune,
+            ),
+        ] {
+            let analysis = analyze_rune_bindings(source);
+            assert_eq!(
+                analysis.local_binding("props"),
+                expected_binding,
+                "wrong `props` binding kind in {source}"
+            );
+        }
+
+        for source in [
+            "const props = writable({ id: () => 'store' }); const uid = $props.id();",
+            "function props() {} const uid = $props.id();",
+            "class props {} const uid = $props.id();",
+            "import { props } from 'store'; const uid = $props.id();",
+            "import props = require('store'); const uid = $props.id();",
+        ] {
+            let analysis = analyze_rune_bindings(source);
+            assert_eq!(
+                analysis.local_binding("props"),
+                RuneBinding::Store,
+                "runtime `props` binding was not treated as a store in {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_props_id_analysis_resolves_rune_binding_dependencies() {
+        let legacy = analyze_rune_bindings(
+            "const state = writable(() => writable({ id: () => 42 })); \
+             const props = $state(); const uid = $props.id();",
+        );
+        assert_eq!(legacy.local_binding("state"), RuneBinding::Store);
+        assert_eq!(legacy.local_binding("props"), RuneBinding::Store);
+        assert!(legacy.synthetic_stores.contains("state"));
+
+        let chained = analyze_rune_bindings(
+            "const derived = writable(() => writable(() => writable({ id: () => 42 }))); \
+             const state = $derived(); const props = $state(); const uid = $props.id();",
+        );
+        assert_eq!(chained.local_binding("derived"), RuneBinding::Store);
+        assert_eq!(chained.local_binding("state"), RuneBinding::Store);
+        assert_eq!(chained.local_binding("props"), RuneBinding::Store);
+
+        let runes = analyze_rune_bindings(
+            "const state = $derived(1); const derived = $state(2); \
+             const props = $state({}); const uid = $props.id();",
+        );
+        assert_eq!(runes.local_binding("state"), RuneBinding::Rune);
+        assert_eq!(runes.local_binding("derived"), RuneBinding::Rune);
+        assert_eq!(runes.local_binding("props"), RuneBinding::Rune);
+        assert!(runes.synthetic_stores.is_empty());
+
+        let (_, instance) = analyze_rune_scopes(
+            Some("const state = writable(() => writable({}));"),
+            Some("const props = $state(); const uid = $props.id();"),
+        );
+        assert_eq!(instance.local_binding("props"), RuneBinding::Store);
+
+        let (_, shadowing_instance) = analyze_rune_scopes(
+            Some("const state = writable(() => writable({}));"),
+            Some("const state = $state(0); const props = $state({}); const uid = $props.id();"),
+        );
+        assert_eq!(shadowing_instance.local_binding("state"), RuneBinding::Rune);
+        assert_eq!(shadowing_instance.local_binding("props"), RuneBinding::Rune);
+    }
+
+    #[test]
+    fn test_rune_store_resolution_matches_svelte_reference_order() {
+        let forward = analyze_rune_bindings(
+            "const state = $derived({}); const derived = $inspect({}); \
+             const inspect = store; const props = $state({}); const uid = $props.id();",
+        );
+        assert_eq!(forward.synthetic_stores, HashSet::from(["inspect".into()]));
+        assert_eq!(forward.local_binding("props"), RuneBinding::Rune);
+
+        let reverse = analyze_rune_bindings(
+            "const inspect = store; const derived = $inspect({}); \
+             const state = $derived({}); const props = $state({}); \
+             const uid = $props.id();",
+        );
+        assert_eq!(
+            reverse.synthetic_stores,
+            HashSet::from([
+                "inspect".into(),
+                "derived".into(),
+                "state".into(),
+                "props".into(),
+            ])
+        );
+
+        let derived_import = analyze_rune_bindings(
+            "import { derived } from 'svelte/store'; \
+             const props = $derived({}); const uid = $props.id();",
+        );
+        assert!(derived_import.synthetic_stores.is_empty());
+
+        let direct_props =
+            analyze_rune_bindings("const props = $props(); const uid = $props.id();");
+        assert_eq!(direct_props.local_binding("props"), RuneBinding::Rune);
+
+        let destructured_prop = analyze_rune_bindings(
+            "const { state } = $props(); const props = $state(); \
+             const uid = $props.id();",
+        );
+        assert_eq!(
+            destructured_prop.synthetic_stores,
+            HashSet::from(["state".into()])
+        );
+        assert_eq!(destructured_prop.local_binding("props"), RuneBinding::Rune);
+    }
+
+    #[test]
+    fn test_rune_store_resolution_collects_all_runtime_reference_shapes() {
+        for source in [
+            "const state = store; const object = { $state };",
+            "const state = store; $state = value;",
+            "const state = store; for ($state of values) {}",
+            "const state = store; for ($state in object) {}",
+            "const state = store; for ({ x: $state } of values) {}",
+            "const state = store; function nested() { return $state; }",
+        ] {
+            let analysis = analyze_rune_bindings(source);
+            assert_eq!(
+                analysis.synthetic_stores,
+                HashSet::from(["state".into()]),
+                "missed runtime `$state` reference in {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rune_store_resolution_ignores_lexically_bound_and_type_only_names() {
+        let ordered = analyze_rune_bindings(
+            "function local($state) { return $state(); } \
+             const inspect = store; const derived = $inspect({}); \
+             const state = $derived({}); const props = $state({}); \
+             const uid = $props.id();",
+        );
+        assert_eq!(
+            ordered.synthetic_stores,
+            HashSet::from([
+                "inspect".into(),
+                "derived".into(),
+                "state".into(),
+                "props".into(),
+            ])
+        );
+
+        let loop_binding = analyze_rune_bindings(
+            "const state = store; for (let $state of values) { use($state); }",
+        );
+        assert!(loop_binding.synthetic_stores.is_empty());
+
+        let type_only = analyze_rune_bindings(
+            "type StateType = typeof $state; interface PropsType { value: typeof $props }",
+        );
+        assert!(type_only.rune_references.is_empty());
+
+        let ambient = analyze_rune_bindings(
+            "declare const $state: any; const state = store; \
+             const props = $state(); const uid = $props.id();",
+        );
+        assert_eq!(
+            ambient.synthetic_stores,
+            HashSet::from(["state".into(), "props".into()])
+        );
+    }
+
+    #[test]
+    fn test_rune_store_resolution_includes_implicit_reactive_bindings() {
+        let identifier = analyze_rune_bindings("$: state = writable(0); const value = $state;");
+        assert_eq!(identifier.synthetic_stores, HashSet::from(["state".into()]));
+
+        let destructured = analyze_rune_bindings(
+            "$: ({ state, nested: { props } } = stores); \
+             const value = $state; const uid = $props.id();",
+        );
+        assert_eq!(
+            destructured.synthetic_stores,
+            HashSet::from(["state".into(), "props".into()])
+        );
+
+        let explicit_wins = analyze_rune_bindings(
+            "const state = $derived(0); $: state = next; const value = $state;",
+        );
+        assert!(explicit_wins.synthetic_stores.is_empty());
+
+        let (_, module_binding_wins) = analyze_rune_scopes(
+            Some("const state = $derived(0);"),
+            Some("$: state = next; const value = $state;"),
+        );
+        assert!(module_binding_wins.synthetic_stores.is_empty());
+    }
+
+    #[test]
+    fn test_store_scan_falls_back_after_script_parse_failure() {
+        let source = r#"<script>
+const state = store;
+const value = $state;
+@
+</script>"#;
+        let doc = parse(source).document;
+        let result = transform(&doc, TransformOptions::default());
+
+        assert!(result
+            .tsx_code
+            .contains("let $state!: __StoreValue<typeof state>;"));
+    }
+
+    #[test]
+    fn test_rune_store_resolution_uses_last_legal_var_declaration() {
+        let rune_last = analyze_rune_bindings(
+            "var props = store; var props = $state({}); const uid = $props.id();",
+        );
+        assert_eq!(rune_last.local_binding("props"), RuneBinding::Rune);
+
+        let store_last = analyze_rune_bindings(
+            "var props = $state({}); var props = store; const uid = $props.id();",
+        );
+        assert_eq!(store_last.local_binding("props"), RuneBinding::Store);
+    }
+
+    #[test]
+    fn test_shadowed_legacy_props_call_is_not_rewritten_as_component_props() {
+        let source = r#"<script lang="ts">
+const props = writable(() => ({ value: 42 }));
+const value = $props();
+</script>"#;
+        let doc = parse(source).document;
+        let result = transform(&doc, TransformOptions::default());
+
+        assert!(result.tsx_code.contains("const value = $props();"));
+        assert!(result
+            .tsx_code
+            .contains("let $props!: __StoreValue<typeof props>;"));
+        assert!(!result.tsx_code.contains("__SvelteLoosen<typeof props>"));
     }
 
     /// Regression test for issue #48: `Props & { extended }` pattern should not
