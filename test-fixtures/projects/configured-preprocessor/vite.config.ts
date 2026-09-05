@@ -1,6 +1,9 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import MagicString from 'magic-string';
 
+// Vite 8's bundled loader rewrites this into a Node-only virtual module.
+if (!import.meta.resolve('svelte')) throw new Error('Svelte resolution failed');
+
 console.log('vite config stdout');
 if (process.env.SVELTE_CHECK_RS_TEST_PROTOCOL_OUTPUT === '1') {
 	console.log('{"id":1,"config":{"found":false}}');

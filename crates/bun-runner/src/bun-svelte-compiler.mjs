@@ -229,7 +229,9 @@ async function importVite(root) {
 }
 
 async function collectViteDependencies(resolved, root, configPath, options) {
-  const dependencies = new Set([path.resolve(configPath)]);
+  // Vite's native loader can return no dependency list. Track imported local
+  // modules ourselves so watch mode still reloads the entire config graph.
+  const dependencies = new Set(await collectModuleDependencies(configPath));
   for (const dependency of resolved.configFileDependencies || []) {
     dependencies.add(path.resolve(dependency));
   }
@@ -255,7 +257,10 @@ async function loadViteConfig(root, configPath) {
   try {
     process.chdir(root);
     const resolved = await vite.resolveConfig(
-      { root, configFile: configPath, logLevel: 'error' },
+      // Bun can execute TypeScript configs directly. Bundling under Vite 8
+      // rewrites import.meta.resolve to virtual modules that require Node's
+      // module.registerHooks, which Bun does not implement.
+      { root, configFile: configPath, logLevel: 'error', configLoader: 'native' },
       'serve'
     );
     const kitOptions = resolved.plugins.find(
