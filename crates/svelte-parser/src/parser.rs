@@ -1775,86 +1775,100 @@ impl<'src> Parser<'src> {
         // - class:hover:underline (nested pseudo-classes)
         // - class:!items-start (important modifier)
         // - class:sm:grid-cols-[auto,1fr,1fr] (arbitrary values with brackets and commas)
+        // - class:shadow-[0_0_6px_rgba(139,92,246,0.3)] (parens inside arbitrary values)
+        //
+        // Name absorption and parenthesized segments must interleave: after absorbing
+        // `rgba(...)` inside `[...]`, the closing `]` and any trailing tokens still
+        // belong to the directive argument. The official Svelte parser uses
+        // `read_until(/[\s=/>"']/)` which does not stop at `(` or `)`.
         if is_namespaced {
-            // Read the argument name and all its modifiers/content
-            // Only continue if tokens are adjacent (no whitespace between)
-            // Include keywords that can be valid directive argument names (e.g., bind:key, on:if)
-            while self.pos < self.tokens.len()
-                && self.current().span.start == prev_end
-                && (self.check(TokenKind::Ident)
-                    || self.check(TokenKind::Pipe)
-                    || self.check(TokenKind::Colon)
-                    || self.check(TokenKind::NamespacedIdent)
-                    || self.check(TokenKind::Dot) // For member access: use:form.enhance
-                    || self.check(TokenKind::Text) // For !, [, ], etc.
-                    || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
-                    || self.check(TokenKind::Number) // For sizes: [100px], grid-cols-2
-                    || self.check(TokenKind::Minus) // For CSS custom properties: style:--my-var
-                    // Keywords that can be valid directive argument names
-                    || self.check(TokenKind::Key) // bind:key
-                    || self.check(TokenKind::If) // on:if (custom events)
-                    || self.check(TokenKind::Else)
-                    || self.check(TokenKind::Each)
-                    || self.check(TokenKind::Await)
-                    || self.check(TokenKind::Then)
-                    || self.check(TokenKind::Catch)
-                    || self.check(TokenKind::As)
-                    || self.check(TokenKind::Snippet)
-                    || self.check(TokenKind::Html)
-                    || self.check(TokenKind::Const)
-                    || self.check(TokenKind::Debug)
-                    || self.check(TokenKind::Render)
-                    || self.check(TokenKind::Style)
-                    || self.check(TokenKind::Script))
-            {
-                full_name.push_str(self.current_text());
-                prev_end = self.current().span.end;
-                self.advance();
-            }
+            loop {
+                let progress_at = self.pos;
 
-            // Absorb adjacent parenthesized content into the name.
-            // Svelte allows `use:action(args)` where `(args)` is part of the directive
-            // name, NOT a separate expression. The official Svelte parser's
-            // `read_until(/[\s=/>"']/)` does not stop at `(`, so it reads the entire
-            // `action(args)` as the name string.
-            while self.pos < self.tokens.len()
-                && self.current().span.start == prev_end
-                && self.check(TokenKind::LParen)
-            {
-                // Consume tokens until matching `)`, tracking paren depth.
-                // Must respect string context so `)` inside quotes is not counted.
-                let mut paren_depth = 0;
-                let mut in_string = false;
-                let mut string_quote = TokenKind::Eof; // placeholder
-                loop {
-                    if self.check(TokenKind::Eof) {
-                        break;
-                    }
-                    let kind = self.current().kind;
+                // Read the argument name and all its modifiers/content
+                // Only continue if tokens are adjacent (no whitespace between)
+                // Include keywords that can be valid directive argument names (e.g., bind:key, on:if)
+                while self.pos < self.tokens.len()
+                    && self.current().span.start == prev_end
+                    && (self.check(TokenKind::Ident)
+                        || self.check(TokenKind::Pipe)
+                        || self.check(TokenKind::Colon)
+                        || self.check(TokenKind::NamespacedIdent)
+                        || self.check(TokenKind::Dot) // For member access: use:form.enhance
+                        || self.check(TokenKind::Text) // For !, [, ], etc.
+                        || self.check(TokenKind::Comma) // For Tailwind bracket values: [auto,1fr]
+                        || self.check(TokenKind::Number) // For sizes: [100px], grid-cols-2
+                        || self.check(TokenKind::Minus) // For CSS custom properties: style:--my-var
+                        // Keywords that can be valid directive argument names
+                        || self.check(TokenKind::Key) // bind:key
+                        || self.check(TokenKind::If) // on:if (custom events)
+                        || self.check(TokenKind::Else)
+                        || self.check(TokenKind::Each)
+                        || self.check(TokenKind::Await)
+                        || self.check(TokenKind::Then)
+                        || self.check(TokenKind::Catch)
+                        || self.check(TokenKind::As)
+                        || self.check(TokenKind::Snippet)
+                        || self.check(TokenKind::Html)
+                        || self.check(TokenKind::Const)
+                        || self.check(TokenKind::Debug)
+                        || self.check(TokenKind::Render)
+                        || self.check(TokenKind::Style)
+                        || self.check(TokenKind::Script))
+                {
                     full_name.push_str(self.current_text());
                     prev_end = self.current().span.end;
                     self.advance();
+                }
 
-                    if in_string {
-                        if kind == string_quote {
-                            in_string = false;
+                // Absorb adjacent parenthesized content into the name.
+                // Svelte allows `use:action(args)` where `(args)` is part of the directive
+                // name, NOT a separate expression. Also needed for Tailwind arbitrary values
+                // like `class:bg-[rgb(1,2,3)]` where parens sit inside brackets.
+                while self.pos < self.tokens.len()
+                    && self.current().span.start == prev_end
+                    && self.check(TokenKind::LParen)
+                {
+                    // Consume tokens until matching `)`, tracking paren depth.
+                    // Must respect string context so `)` inside quotes is not counted.
+                    let mut paren_depth = 0;
+                    let mut in_string = false;
+                    let mut string_quote = TokenKind::Eof; // placeholder
+                    loop {
+                        if self.check(TokenKind::Eof) {
+                            break;
                         }
-                        continue;
-                    }
-                    match kind {
-                        TokenKind::SingleQuote | TokenKind::DoubleQuote => {
-                            in_string = true;
-                            string_quote = kind;
-                        }
-                        TokenKind::LParen => paren_depth += 1,
-                        TokenKind::RParen => {
-                            paren_depth -= 1;
-                            if paren_depth == 0 {
-                                break;
+                        let kind = self.current().kind;
+                        full_name.push_str(self.current_text());
+                        prev_end = self.current().span.end;
+                        self.advance();
+
+                        if in_string {
+                            if kind == string_quote {
+                                in_string = false;
                             }
+                            continue;
                         }
-                        _ => {}
+                        match kind {
+                            TokenKind::SingleQuote | TokenKind::DoubleQuote => {
+                                in_string = true;
+                                string_quote = kind;
+                            }
+                            TokenKind::LParen => paren_depth += 1,
+                            TokenKind::RParen => {
+                                paren_depth -= 1;
+                                if paren_depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
+                }
+
+                // No progress means name is complete (next token is space, `=`, `>`, etc.)
+                if self.pos == progress_at {
+                    break;
                 }
             }
         }
@@ -3653,6 +3667,68 @@ mod tests {
             assert_eq!(expr.expression.trim(), "obj = { a: 1, b: 2 }");
         } else {
             panic!("Expected Expression");
+        }
+    }
+
+    #[test]
+    fn test_tailwind_class_arbitrary_no_parens() {
+        let result = Parser::new(
+            r#"<span class:sm:grid-cols-[auto,1fr,1fr]={true}>A</span>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let result = Parser::new(
+            r#"<span class:shadow-[0_0_6px]={true}>B</span>"#,
+            ParseOptions::default(),
+        )
+        .parse();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_tailwind_class_arbitrary_with_parens_rgba() {
+        // Regression: name absorption stopped at `rgba(...)` and left the
+        // trailing `]` unconsumed, producing parse-error + cascading TS noise.
+        let src = r#"<span class:shadow-[0_0_6px_rgba(139,92,246,0.3)]={true}>C</span>"#;
+        let result = Parser::new(src, ParseOptions::default()).parse();
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors for rgba-inside-brackets class directive, got: {:?}",
+            result.errors
+        );
+        if let TemplateNode::Element(el) = &result.document.fragment.nodes[0] {
+            match &el.attributes[0] {
+                Attribute::Directive(d) => {
+                    assert_eq!(
+                        d.name.as_str(),
+                        "shadow-[0_0_6px_rgba(139,92,246,0.3)]",
+                        "directive arg should include full arbitrary value"
+                    );
+                }
+                other => panic!("expected Directive, got {:?}", other),
+            }
+        } else {
+            panic!("expected element");
+        }
+    }
+
+    #[test]
+    fn test_tailwind_class_arbitrary_rgb_calc_var() {
+        for src in [
+            r#"<span class:bg-[rgb(1,2,3)]={true}>x</span>"#,
+            r#"<span class:w-[calc(100%-1rem)]={true}>x</span>"#,
+            r#"<span class:text-[length:var(--x)]={true}>x</span>"#,
+            r#"<span class:p-[theme(spacing.1)]={true}>x</span>"#,
+            r#"<span class:shadow-[0_0_6px_color-mix(in_oklab,red,blue)]={true}>x</span>"#,
+        ] {
+            let result = Parser::new(src, ParseOptions::default()).parse();
+            assert!(
+                result.errors.is_empty(),
+                "src={src} errors={:?}",
+                result.errors
+            );
         }
     }
 
