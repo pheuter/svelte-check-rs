@@ -58,6 +58,11 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
 // Helper functions for template type-checking
 type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
+type __SvelteComponentInstance<
+  Props extends Record<string, any>,
+  Exports extends Record<string, any>
+> = ReturnType<__SvelteComponentType<Props, Exports>>;
+
 // Isomorphic component type that supports both constructor (new) and call signatures
 interface __SvelteComponent<
   Props extends Record<string, any> = {},
@@ -66,7 +71,7 @@ interface __SvelteComponent<
   // Constructor signature for `new Component({ target, props })`
   new (options: { target: any; props?: Props & __SvelteCssProps }): __SvelteLegacyComponent<Props, any, any> & Exports;
   // Call signature for Svelte 5 function components
-  (internal: unknown, props: Props & __SvelteCssProps): Exports;
+  (internal: unknown, props: Props & __SvelteCssProps): __SvelteComponentInstance<Props, Exports>;
 }
 
 // Normalize legacy class components to a callable form.
@@ -254,11 +259,12 @@ return { props: null as any as __SvelteOptionalProps<Props, "value" | "item">, e
 // === COMPONENT TYPE EXPORT ===
 type __SvelteProps_Combobox_<T extends {label: string; value: string}, TMode extends 'single' | 'multiple'> = Awaited<ReturnType<typeof __svelte_render<T, TMode>>>["props"];
 declare const __SvelteComponent_Combobox_: {
-<T extends {label: string; value: string}, TMode extends 'single' | 'multiple'>(this: void, internals: any, props: __SvelteProps_Combobox_<T, TMode> & __SvelteCssProps): Awaited<ReturnType<typeof __svelte_render<T, TMode>>>["exports"];
+<T extends {label: string; value: string}, TMode extends 'single' | 'multiple'>(this: void, internals: any, props: __SvelteProps_Combobox_<T, TMode> & __SvelteCssProps): __SvelteComponentInstance<__SvelteProps_Combobox_<T, TMode>, Awaited<ReturnType<typeof __svelte_render<T, TMode>>>["exports"]>;
 __svelte_generic: true;
 element?: typeof HTMLElement;
 z_$$bindings?: any;
 };
+type __SvelteComponent_Combobox_<T extends {label: string; value: string}, TMode extends 'single' | 'multiple'> = ReturnType<typeof __SvelteComponent_Combobox_<T, TMode>>;
 export default __SvelteComponent_Combobox_;
 
 

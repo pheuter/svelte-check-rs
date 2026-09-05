@@ -54,7 +54,8 @@ impl ComponentExports {
     ///
     /// Produces output like:
     /// ```text
-    /// declare const __SvelteComponent_Counter_: Component<Props>;
+    /// declare const __SvelteComponent_Counter_: __SvelteComponent<Props>;
+    /// type __SvelteComponent_Counter_ = ReturnType<typeof __SvelteComponent_Counter_>;
     /// export default __SvelteComponent_Counter_;
     /// ```
     pub fn generate_typescript_export(&self, component_name: &str) -> String {
@@ -63,8 +64,10 @@ impl ComponentExports {
         let props_type = format!("__SvelteLoosen<{}>", self.props_or_default());
         if self.exports_type.is_none() {
             return format!(
-                "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
-                props_name, props_type, internal_name, props_name, internal_name
+                "type {props_name} = {props_type};\n\
+declare const {internal_name}: __SvelteComponent<{props_name}>;\n\
+type {internal_name} = ReturnType<typeof {internal_name}>;\n\
+export default {internal_name};\n"
             );
         }
         let exports_name = format!("__SvelteExports_{}_", component_name);
@@ -72,6 +75,7 @@ impl ComponentExports {
             "type {props_name} = {props_type};\n\
 type {exports_name} = {exports_type};\n\
 declare const {internal_name}: __SvelteComponent<{props_name}, {exports_name}>;\n\
+type {internal_name} = ReturnType<typeof {internal_name}>;\n\
 export default {internal_name};\n",
             props_name = props_name,
             props_type = props_type,
@@ -87,7 +91,8 @@ export default {internal_name};\n",
     ///
     /// Produces output like:
     /// ```text
-    /// declare const __SvelteComponent_Counter_: Component<{}>;
+    /// declare const __SvelteComponent_Counter_: __SvelteComponent<{}>;
+    /// type __SvelteComponent_Counter_ = ReturnType<typeof __SvelteComponent_Counter_>;
     /// export default __SvelteComponent_Counter_;
     /// ```
     pub fn generate_javascript_export(&self, component_name: &str) -> String {
@@ -96,8 +101,10 @@ export default {internal_name};\n",
         let props_type = "__SvelteLoosen<{}>";
         if self.exports_type.is_none() {
             return format!(
-                "type {} = {};\ndeclare const {}: __SvelteComponent<{}>;\nexport default {};\n",
-                props_name, props_type, internal_name, props_name, internal_name
+                "type {props_name} = {props_type};\n\
+declare const {internal_name}: __SvelteComponent<{props_name}>;\n\
+type {internal_name} = ReturnType<typeof {internal_name}>;\n\
+export default {internal_name};\n"
             );
         }
         let exports_name = format!("__SvelteExports_{}_", component_name);
@@ -105,6 +112,7 @@ export default {internal_name};\n",
             "type {props_name} = {props_type};\n\
 type {exports_name} = {exports_type};\n\
 declare const {internal_name}: __SvelteComponent<{props_name}, {exports_name}>;\n\
+type {internal_name} = ReturnType<typeof {internal_name}>;\n\
 export default {internal_name};\n",
             props_name = props_name,
             props_type = props_type,
@@ -211,6 +219,9 @@ mod tests {
         assert!(
             export_line.contains("declare const __SvelteComponent_Counter_: __SvelteComponent<")
         );
+        assert!(export_line.contains(
+            "type __SvelteComponent_Counter_ = ReturnType<typeof __SvelteComponent_Counter_>;"
+        ));
         assert!(export_line.contains("{ count: number }"));
         assert!(export_line.contains("export default __SvelteComponent_Counter_"));
     }
@@ -223,6 +234,9 @@ mod tests {
         assert!(export_line.contains("type __SvelteProps_Button_ = __SvelteLoosen<{}>;"));
         assert!(export_line.contains(
             "declare const __SvelteComponent_Button_: __SvelteComponent<__SvelteProps_Button_>"
+        ));
+        assert!(export_line.contains(
+            "type __SvelteComponent_Button_ = ReturnType<typeof __SvelteComponent_Button_>;"
         ));
         assert!(export_line.contains("export default __SvelteComponent_Button_"));
     }

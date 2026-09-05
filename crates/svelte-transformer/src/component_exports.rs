@@ -20,11 +20,12 @@ pub struct ExportedName {
 ///
 /// This looks for export declarations including:
 /// - `export { ... }` named re-exports
-/// - `export const/let/var name = ...` variable declarations
+/// - `export const name = ...` variable declarations
 /// - `export function name() {}` function declarations
 /// - `export class Name {}` class declarations
 ///
-/// Ignores type-only exports and re-exports with `from`.
+/// Ignores legacy `export let`/`export var` props, type-only exports, and
+/// re-exports with `from`.
 pub fn extract_component_exports(script: &str) -> Vec<ExportedName> {
     let Some(module) = parse_module(script) else {
         return Vec::new();
@@ -51,24 +52,20 @@ pub fn extract_component_exports(script: &str) -> Vec<ExportedName> {
                 }
             }
             ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
-                // Handle: export const/let/var, export function, export class
+                // Handle: export const, export function, export class
                 match &export_decl.decl {
                     Decl::Var(var_decl) => {
                         // Skip `declare` statements (e.g., `export declare const foo: Type`)
-                        if var_decl.declare {
+                        // and mutable declarations, which are legacy component props.
+                        if var_decl.declare || var_decl.kind != VarDeclKind::Const {
                             continue;
                         }
-                        if var_decl.kind == VarDeclKind::Const
-                            || var_decl.kind == VarDeclKind::Let
-                            || var_decl.kind == VarDeclKind::Var
-                        {
-                            for decl in &var_decl.decls {
-                                if let Some(name) = extract_binding_name(&decl.name) {
-                                    exports.push(ExportedName {
-                                        exported: name.clone(),
-                                        local: name,
-                                    });
-                                }
+                        for decl in &var_decl.decls {
+                            if let Some(name) = extract_binding_name(&decl.name) {
+                                exports.push(ExportedName {
+                                    exported: name.clone(),
+                                    local: name,
+                                });
                             }
                         }
                     }
@@ -250,11 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn extracts_export_let() {
-        let script = "export let value = 42;";
+    fn ignores_legacy_prop_declarations() {
+        let script = "export let value = 42; export var other = true;";
         let exports = extract_component_exports(script);
-        assert_eq!(exports.len(), 1);
-        assert_eq!(exports[0].exported, "value");
+        assert!(exports.is_empty());
     }
 
     #[test]

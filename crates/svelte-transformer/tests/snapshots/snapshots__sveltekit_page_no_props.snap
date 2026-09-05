@@ -24,6 +24,11 @@ import type { PageProps } from './$types';
 // Helper functions for template type-checking
 type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
+type __SvelteComponentInstance<
+  Props extends Record<string, any>,
+  Exports extends Record<string, any>
+> = ReturnType<__SvelteComponentType<Props, Exports>>;
+
 // Isomorphic component type that supports both constructor (new) and call signatures
 interface __SvelteComponent<
   Props extends Record<string, any> = {},
@@ -32,7 +37,7 @@ interface __SvelteComponent<
   // Constructor signature for `new Component({ target, props })`
   new (options: { target: any; props?: Props & __SvelteCssProps }): __SvelteLegacyComponent<Props, any, any> & Exports;
   // Call signature for Svelte 5 function components
-  (internal: unknown, props: Props & __SvelteCssProps): Exports;
+  (internal: unknown, props: Props & __SvelteCssProps): __SvelteComponentInstance<Props, Exports>;
 }
 
 // Normalize legacy class components to a callable form.
@@ -190,6 +195,7 @@ return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, 
 type __SvelteProps_Page_ = Awaited<ReturnType<typeof __svelte_render>>["props"];
 type __SvelteExports_Page_ = Awaited<ReturnType<typeof __svelte_render>>["exports"];
 declare const __SvelteComponent_Page_: __SvelteComponent<__SvelteProps_Page_, __SvelteExports_Page_>;
+type __SvelteComponent_Page_ = ReturnType<typeof __SvelteComponent_Page_>;
 export default __SvelteComponent_Page_;
 
 
