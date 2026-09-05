@@ -1520,7 +1520,7 @@ async fn run_single_check(
                 tsgo_total_time = Some(run.elapsed);
             }
             Err(e) => {
-                eprintln!("TypeScript checking failed: {}", e);
+                return Err(e);
             }
         }
 

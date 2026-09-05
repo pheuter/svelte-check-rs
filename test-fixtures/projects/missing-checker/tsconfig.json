@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "strict": true, "moduleResolution": "bundler", "module": "ESNext" },
+  "include": ["*.ts", "*.svelte"]
+}

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "devDependencies": { "svelte": "^5.45.6" }
+}
