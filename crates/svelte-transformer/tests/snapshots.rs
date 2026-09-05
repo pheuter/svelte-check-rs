@@ -2174,8 +2174,8 @@ fn test_complex_props_type_trajectory_pattern() {
 // ============================================================================
 
 /// Regression test for #105: SvelteKit +page.svelte WITHOUT $props() should NOT
-/// force PageProps as the render return type. Components that don't declare props
-/// should use Record<string, unknown>, making mount() props optional.
+/// force PageProps as the render return type. `$props.id()` does not declare
+/// component props, so mount() must still accept an omitted props argument.
 #[test]
 fn test_sveltekit_page_without_props() {
     transform_snapshot_with_filename(
@@ -2185,9 +2185,10 @@ fn test_sveltekit_page_without_props() {
   import { page } from '$app/stores';
 
   let title = $derived($page.data.title);
+  const uid = $props.id();
 </script>
 
-<h1>{title}</h1>"#,
+<h1 id={uid}>{title}</h1>"#,
     );
 }
 

@@ -18,26 +18,28 @@ Rust drop-in replacement for `svelte-check` (**Svelte 5+ only**).
 
 ## Architecture
 
-**Pipeline** (orchestrator.rs): File discovery → Parse → Svelte diagnostics → Svelte compiler diagnostics (bun) → Transform to TS → tsgo type-check
+**Pipeline** (orchestrator.rs): File discovery → Configured preprocessors (bun) → Parse → Svelte diagnostics → Svelte compiler diagnostics (bun) → Transform to TS → tsgo type-check
 
 1. **Discovery**: Walk workspace, filter by `.svelte`/`.svelte.ts`/`.svelte.js`, respect `tsconfig.json` excludes
-2. **Parse**: `svelte_parser::parse()` → AST + parse errors (parallel via `rayon`)
-3. **Diagnostics**: A11y + component checks on AST
-4. **Compiler**: Run Svelte compiler diagnostics via bun on original sources
-5. **Transform**: `svelte_transformer::transform()` → TypeScript with source maps
-6. **Type-check**: Send all transformed files to `tsgo` subprocess, map errors back via source maps
+2. **Preprocess**: Resolve effective Vite/Svelte config options, run preprocessors through `svelte/compiler`, and retain standard source maps
+3. **Parse**: `svelte_parser::parse()` → AST + parse errors (parallel via `rayon`)
+4. **Diagnostics**: A11y + component checks on the preprocessed AST
+5. **Compiler**: Run Svelte compiler diagnostics via bun on preprocessed sources
+6. **Transform**: `svelte_transformer::transform()` → TypeScript with source maps
+7. **Type-check**: Send all transformed files to `tsgo` subprocess, compose source maps, and report against original sources
 
 **tsgo Integration** (tsgo-runner crate):
 - External TypeScript type-checker (Go-based, faster than tsc)
 - Resolved from workspace `node_modules/.bin` (walks up from `--workspace`)
-- Requires `@typescript/native-preview` to be installed in the workspace (peer dependency range: `>=7.0.0-dev.0`)
+- Requires `@typescript/native-preview` to be installed in the workspace (peer dependency range: `>=7.0.0-dev.20260707.2`)
 - Communication: JSON over stdin/stdout
 - Incremental builds via `node_modules/.cache/svelte-check-rs/tsgo.tsbuildinfo`
 
 **Svelte Compiler Integration** (bun-runner crate):
 - bun-managed persistent workers that call `svelte/compiler`
 - Auto-installed to cache dir on first run if not found
-- Diagnostics reported against original `.svelte` sources (no extra source maps)
+- Configured preprocessors and compiler diagnostics share the same worker bridge
+- Preprocessor source maps are composed so diagnostics report against original `.svelte` sources
 
 **SvelteKit Support**:
 - Detects route files (`+page.svelte`, `+layout.svelte`, etc.) for proper prop types

@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.2"
+version = "0.11.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.95"
@@ -31,8 +31,10 @@ rowan = "0.16"
 text-size = "1.1"
 swc_ecma_parser = "32.0"
 swc_ecma_ast = "19.0"
+swc_ecma_transforms_base = "35.0"
 swc_ecma_visit = "19.0"
 swc_common = { version = "18.0", features = ["sourcemap"] }
+swc_sourcemap = "9.3.4"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -63,6 +65,8 @@ indexmap = { version = "2.6", features = ["serde"] }
 rustc-hash = "2.0"
 smol_str = "0.3"
 camino = { version = "1.1", features = ["serde1"] }
+percent-encoding = "2.3"
+url = "2.5"
 rayon = "1.10"
 which = "8.0"
 shellexpand = "3.1"

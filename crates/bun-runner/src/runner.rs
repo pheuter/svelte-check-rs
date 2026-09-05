@@ -4,94 +4,36 @@ use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::task::JoinHandle;
 
 const BUN_SCRIPT_FILENAME: &str = "bun-svelte-compiler.mjs";
-const BUN_SCRIPT_SOURCE: &str = r#"import { createInterface } from 'node:readline';
-import { stdin, stdout } from 'node:process';
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+const BUN_SCRIPT_SOURCE: &str = include_str!("bun-svelte-compiler.mjs");
+// Workers may live for an entire watch run, so retain useful failure context
+// without accumulating every stderr byte for the lifetime of the process.
+const STDERR_TAIL_CAPACITY: usize = 64 * 1024;
 
-let compile = null;
-try {
-  const require = createRequire(pathToFileURL(process.cwd() + '/'));
-  const compilerPath = require.resolve('svelte/compiler');
-  const mod = await import(pathToFileURL(compilerPath).href);
-  compile = mod.compile;
-} catch (err) {
-  const message = err && err.message ? err.message : String(err);
-  console.error(`svelte-check-rs bun runner failed to load svelte/compiler: ${message}`);
-  process.exit(2);
-}
-
-stdout.write(JSON.stringify({ ready: true }) + '\n');
-
-const rl = createInterface({ input: stdin, crlfDelay: Infinity });
-
-for await (const line of rl) {
-  if (!line.trim()) continue;
-
-  let req;
-  try {
-    req = JSON.parse(line);
-  } catch (err) {
-    const message = err && err.message ? err.message : String(err);
-    stdout.write(JSON.stringify({ id: null, error: `invalid json: ${message}` }) + '\n');
-    continue;
-  }
-
-  const id = req.id;
-  const filename = req.filename;
-  const source = req.source;
-  const options = req.options || {};
-
-  const compileOptions = {
-    filename,
-    generate: options.generate || 'client',
-    dev: options.dev === undefined ? true : options.dev,
-    runes: options.runes
-  };
-
-  if (options.experimental != null && typeof options.experimental === 'object') {
-    compileOptions.experimental = options.experimental;
-  }
-
-  let diagnostics = [];
-
-  try {
-    const result = compile(source, compileOptions);
-    if (result && Array.isArray(result.warnings)) {
-      diagnostics = result.warnings.map((warning) => ({
-        code: warning.code || 'warning',
-        message: warning.message || '',
-        start: warning.start || { line: 1, column: 0 },
-        end: warning.end || warning.start || { line: 1, column: 0 },
-        severity: 'warning'
-      }));
+fn extend_stderr_tail(tail: &mut VecDeque<u8>, bytes: &[u8]) {
+    if bytes.len() >= STDERR_TAIL_CAPACITY {
+        tail.clear();
+        tail.extend(&bytes[bytes.len() - STDERR_TAIL_CAPACITY..]);
+        return;
     }
-  } catch (err) {
-    const start = err && err.start ? err.start : { line: 1, column: 0 };
-    const end = err && err.end ? err.end : start;
-    const code = err && err.code ? err.code : 'compile_error';
-    const message = err && err.message ? err.message : String(err);
-    diagnostics = [{
-      code,
-      message,
-      start,
-      end,
-      severity: 'error'
-    }];
-  }
 
-  stdout.write(JSON.stringify({ id, diagnostics }) + '\n');
+    let excess = tail
+        .len()
+        .saturating_add(bytes.len())
+        .saturating_sub(STDERR_TAIL_CAPACITY);
+    tail.drain(..excess);
+    tail.extend(bytes);
 }
-"#;
 
 /// Error types for bun runner.
 #[derive(Debug, Error)]
@@ -148,6 +90,76 @@ pub struct BunInput {
     pub options: BunCompileOptions,
 }
 
+/// A component after its configured Svelte preprocessors have run.
+#[derive(Debug, Clone)]
+pub struct BunPreprocessed {
+    pub filename: Utf8PathBuf,
+    pub source: String,
+    pub source_map: Option<String>,
+    pub dependencies: Vec<Utf8PathBuf>,
+    pub error: Option<BunPreprocessError>,
+}
+
+/// A per-component failure from a configured Svelte preprocessor.
+#[derive(Debug, Clone)]
+pub struct BunPreprocessError {
+    /// Human-readable error message supplied by the preprocessor.
+    pub message: String,
+    /// Optional start position in the original component.
+    pub start: Option<BunPreprocessPosition>,
+    /// Optional end position in the original component.
+    pub end: Option<BunPreprocessPosition>,
+    /// Preprocessor phase which raised the error.
+    pub phase: Option<BunPreprocessPhase>,
+    /// UTF-16 offset of a script/style fragment within the component.
+    pub fragment_offset: Option<u32>,
+    /// Referenced source file supplied by tools such as Sass or Less.
+    pub file: Option<Utf8PathBuf>,
+}
+
+/// Configured preprocessor phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BunPreprocessPhase {
+    /// Whole-component markup preprocessing.
+    Markup,
+    /// Script-tag preprocessing.
+    Script,
+    /// Style-tag preprocessing.
+    Style,
+}
+
+/// A position supplied by a configured preprocessor error.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct BunPreprocessPosition {
+    /// One-indexed line number, when supplied by the preprocessor.
+    pub line: Option<u32>,
+    /// Zero-indexed UTF-16 column, when supplied by the preprocessor.
+    pub column: Option<u32>,
+    /// Zero-indexed UTF-16 code-unit offset, when supplied by the preprocessor.
+    pub offset: Option<u32>,
+}
+
+/// Serializable subset of the effective Svelte configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BunLoadedConfig {
+    pub found: bool,
+    pub config_file_path: Option<Utf8PathBuf>,
+    pub config_source: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<Utf8PathBuf>,
+    #[serde(default)]
+    pub has_preprocess: bool,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub kit_alias: HashMap<String, String>,
+    pub runes: Option<bool>,
+    pub experimental_async: Option<bool>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BunDiagnosticSeverity {
     Error,
@@ -170,19 +182,45 @@ pub struct BunDiagnostic {
     pub end: BunPosition,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum BunOperation {
+    Config,
+    Compile,
+    Preprocess,
+}
+
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BunRequest {
     id: u64,
+    operation: BunOperation,
     filename: String,
     source: String,
     options: BunCompileOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct BunResponse {
     id: Option<u64>,
     diagnostics: Option<Vec<BunJsDiagnostic>>,
+    code: Option<String>,
+    map: Option<String>,
+    dependencies: Option<Vec<String>>,
+    config: Option<BunLoadedConfig>,
     error: Option<String>,
+    #[serde(rename = "errorStart")]
+    error_start: Option<BunPreprocessPosition>,
+    #[serde(rename = "errorEnd")]
+    error_end: Option<BunPreprocessPosition>,
+    #[serde(rename = "errorPhase")]
+    error_phase: Option<BunPreprocessPhase>,
+    #[serde(rename = "errorFragmentOffset")]
+    error_fragment_offset: Option<u32>,
+    #[serde(rename = "errorFile")]
+    error_file: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +252,26 @@ pub struct BunRunner {
     worker_count: usize,
 }
 
+/// A Bun worker that has already resolved the project's effective config.
+///
+/// Keeping the worker alive preserves executable preprocessor functions, which
+/// cannot be serialized back into Rust, and avoids resolving Vite once per
+/// preprocessing worker.
+pub struct BunConfigSession {
+    worker: BunWorker,
+}
+
+impl BunConfigSession {
+    /// Runs configured preprocessors using the config already loaded by this
+    /// session.
+    pub async fn preprocess_files(
+        &mut self,
+        inputs: Vec<BunInput>,
+    ) -> Result<Vec<BunPreprocessed>, BunError> {
+        self.worker.preprocess_batch(inputs, None).await
+    }
+}
+
 impl BunRunner {
     /// Creates a new bun runner.
     pub fn new(
@@ -229,6 +287,40 @@ impl BunRunner {
             script_path,
             worker_count,
         })
+    }
+
+    /// Resolves and executes the effective Vite/Svelte configuration.
+    pub async fn load_config(&self) -> Result<BunLoadedConfig, BunError> {
+        self.load_config_session().await.map(|(config, _)| config)
+    }
+
+    /// Resolves the effective configuration and retains its Bun worker for
+    /// preprocessing. The same runtime objects are then reused for the run.
+    pub async fn load_config_session(
+        &self,
+    ) -> Result<(BunLoadedConfig, BunConfigSession), BunError> {
+        let mut worker = BunWorker::spawn(
+            self.bun_path.clone(),
+            self.workspace_root.clone(),
+            self.script_path.clone(),
+        )
+        .await?;
+        let config = worker.load_config(None).await?;
+        Ok((config, BunConfigSession { worker }))
+    }
+
+    /// Executes a specific Svelte or Vite config file.
+    pub async fn load_config_from(
+        &self,
+        config_path: &Utf8Path,
+    ) -> Result<BunLoadedConfig, BunError> {
+        let mut worker = BunWorker::spawn(
+            self.bun_path.clone(),
+            self.workspace_root.clone(),
+            self.script_path.clone(),
+        )
+        .await?;
+        worker.load_config(Some(config_path)).await
     }
 
     /// Attempts to find bun in workspace, PATH, home directory, or cache.
@@ -418,6 +510,45 @@ impl BunRunner {
         Err(BunError::InstallFailed(
             "bun binary not found after install (expected at ~/.bun/bin/bun)".into(),
         ))
+    }
+
+    /// Runs the configured Svelte preprocessors on input files.
+    pub async fn preprocess_files(
+        &self,
+        inputs: Vec<BunInput>,
+        config_path: Option<&Utf8Path>,
+    ) -> Result<Vec<BunPreprocessed>, BunError> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let worker_count = self.worker_count.min(inputs.len()).max(1);
+        let mut chunks: Vec<Vec<BunInput>> = vec![Vec::new(); worker_count];
+        for (idx, input) in inputs.into_iter().enumerate() {
+            chunks[idx % worker_count].push(input);
+        }
+
+        let mut handles = Vec::new();
+        for chunk in chunks.into_iter().filter(|chunk| !chunk.is_empty()) {
+            let bun_path = self.bun_path.clone();
+            let workspace_root = self.workspace_root.clone();
+            let script_path = self.script_path.clone();
+            let config_path = config_path.map(Utf8Path::to_owned);
+            handles.push(tokio::spawn(async move {
+                let mut worker = BunWorker::spawn(bun_path, workspace_root, script_path).await?;
+                worker.preprocess_batch(chunk, config_path.as_deref()).await
+            }));
+        }
+
+        let mut processed = Vec::new();
+        for handle in handles {
+            processed.extend(
+                handle
+                    .await
+                    .map_err(|e| BunError::ProtocolError(format!("join error: {e}")))??,
+            );
+        }
+        Ok(processed)
     }
 
     /// Runs Svelte compiler diagnostics on input files.
@@ -689,6 +820,7 @@ struct BunWorker {
     child: Child,
     stdin: ChildStdin,
     stdout: tokio::io::Lines<BufReader<ChildStdout>>,
+    protocol_prefix: String,
     stderr_task: Option<JoinHandle<String>>,
 }
 
@@ -698,8 +830,20 @@ impl BunWorker {
         workspace_root: Utf8PathBuf,
         script_path: Utf8PathBuf,
     ) -> Result<Self, BunError> {
+        static WORKER_ID: AtomicU64 = AtomicU64::new(0);
+        let nonce = WORKER_ID.fetch_add(1, Ordering::Relaxed);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let protocol_token =
+            blake3::hash(format!("{}:{timestamp}:{nonce}", std::process::id()).as_bytes())
+                .to_hex()
+                .to_string();
+        let protocol_prefix = format!("\u{1e}{protocol_token}\t");
         let mut child = Command::new(&bun_path)
             .arg(&script_path)
+            .arg(&protocol_token)
             .current_dir(&workspace_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -722,25 +866,39 @@ impl BunWorker {
 
         let stderr_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
-            let mut buffer = String::new();
-            let _ = reader.read_to_string(&mut buffer).await;
-            buffer
+            let mut tail = VecDeque::with_capacity(STDERR_TAIL_CAPACITY);
+            let mut buffer = [0; 8192];
+            loop {
+                match reader.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => extend_stderr_tail(&mut tail, &buffer[..read]),
+                }
+            }
+            String::from_utf8_lossy(tail.make_contiguous()).into_owned()
         });
 
         let mut stdout_reader = BufReader::new(stdout).lines();
 
-        let ready_line = stdout_reader
-            .next_line()
-            .await
-            .map_err(|e| BunError::ProtocolError(format!("failed to read bun ready: {e}")))?;
-
-        let Some(ready_line) = ready_line else {
-            let stderr = stderr_task.await.unwrap_or_default();
-            let status = child.wait().await.map_err(BunError::SpawnFailed)?;
-            return Err(BunError::ProcessFailed {
-                code: status.code().unwrap_or(-1),
-                stderr,
-            });
+        let ready_line = loop {
+            let line = stdout_reader
+                .next_line()
+                .await
+                .map_err(|e| BunError::ProtocolError(format!("failed to read bun ready: {e}")))?;
+            let Some(line) = line else {
+                let stderr = stderr_task.await.unwrap_or_default();
+                let status = child.wait().await.map_err(BunError::SpawnFailed)?;
+                return Err(BunError::ProcessFailed {
+                    code: status.code().unwrap_or(-1),
+                    stderr,
+                });
+            };
+            if let Some(index) = line.find(&protocol_prefix) {
+                if index > 0 {
+                    eprintln!("{}", &line[..index]);
+                }
+                break line[index + protocol_prefix.len()..].to_string();
+            }
+            eprintln!("{line}");
         };
 
         let ready: BunReady = serde_json::from_str(&ready_line)
@@ -756,47 +914,16 @@ impl BunWorker {
             child,
             stdin,
             stdout: stdout_reader,
+            protocol_prefix,
             stderr_task: Some(stderr_task),
         })
     }
 
-    async fn check_batch(&mut self, inputs: Vec<BunInput>) -> Result<Vec<BunDiagnostic>, BunError> {
-        let mut pending = HashMap::new();
-
-        for (id, input) in (1u64..).zip(inputs.iter()) {
-            let request = BunRequest {
-                id,
-                filename: input.filename.to_string(),
-                source: input.source.clone(),
-                options: input.options.clone(),
-            };
-
-            let line = serde_json::to_string(&request).map_err(|e| {
-                BunError::ProtocolError(format!("failed to serialize request: {e}"))
-            })?;
-            self.stdin.write_all(line.as_bytes()).await.map_err(|e| {
-                BunError::ProtocolError(format!("failed to write to bun stdin: {e}"))
-            })?;
-            self.stdin
-                .write_all(b"\n")
-                .await
-                .map_err(|e| BunError::ProtocolError(format!("failed to write newline: {e}")))?;
-
-            pending.insert(id, input.filename.clone());
-        }
-
-        self.stdin
-            .flush()
-            .await
-            .map_err(|e| BunError::ProtocolError(format!("failed to flush bun stdin: {e}")))?;
-
-        let mut diagnostics = Vec::new();
-
-        while !pending.is_empty() {
+    async fn next_response_line(&mut self) -> Result<String, BunError> {
+        loop {
             let line = self.stdout.next_line().await.map_err(|e| {
                 BunError::ProtocolError(format!("failed to read bun response: {e}"))
             })?;
-
             let Some(line) = line else {
                 let stderr = match self.stderr_task.take() {
                     Some(handle) => handle.await.unwrap_or_default(),
@@ -808,25 +935,157 @@ impl BunWorker {
                     stderr,
                 });
             };
+            if let Some(index) = line.find(&self.protocol_prefix) {
+                if index > 0 {
+                    eprintln!("{}", &line[..index]);
+                }
+                return Ok(line[index + self.protocol_prefix.len()..].to_string());
+            }
+            eprintln!("{line}");
+        }
+    }
 
+    async fn send_request(&mut self, request: &BunRequest) -> Result<(), BunError> {
+        let line = serde_json::to_string(request)
+            .map_err(|e| BunError::ProtocolError(format!("failed to serialize request: {e}")))?;
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| BunError::ProtocolError(format!("failed to write request: {e}")))?;
+        self.stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|e| BunError::ProtocolError(format!("failed to write newline: {e}")))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| BunError::ProtocolError(format!("failed to flush request: {e}")))
+    }
+
+    async fn load_config(
+        &mut self,
+        config_path: Option<&Utf8Path>,
+    ) -> Result<BunLoadedConfig, BunError> {
+        let request = BunRequest {
+            id: 1,
+            operation: BunOperation::Config,
+            filename: String::new(),
+            source: String::new(),
+            options: BunCompileOptions::default(),
+            config_path: config_path.map(Utf8Path::to_string),
+        };
+        self.send_request(&request).await?;
+
+        let response_line = self.next_response_line().await?;
+        let response: BunResponse = serde_json::from_str(&response_line).map_err(|e| {
+            BunError::ParseError(format!("invalid config response: {e} ({response_line})"))
+        })?;
+        if let Some(error) = response.error {
+            return Err(BunError::ProtocolError(error));
+        }
+        response
+            .config
+            .ok_or_else(|| BunError::ProtocolError("missing config response".to_string()))
+    }
+
+    async fn preprocess_batch(
+        &mut self,
+        inputs: Vec<BunInput>,
+        config_path: Option<&Utf8Path>,
+    ) -> Result<Vec<BunPreprocessed>, BunError> {
+        let mut processed = Vec::with_capacity(inputs.len());
+        for (id, input) in (1u64..).zip(inputs) {
+            let request = BunRequest {
+                id,
+                operation: BunOperation::Preprocess,
+                filename: input.filename.to_string(),
+                source: input.source.clone(),
+                options: input.options.clone(),
+                config_path: config_path.map(Utf8Path::to_string),
+            };
+            // Read each full response before writing the next potentially large
+            // request. This prevents the two OS pipes from filling against one
+            // another when source maps and sources are large.
+            self.send_request(&request).await?;
+            let line = self.next_response_line().await?;
             let response: BunResponse = serde_json::from_str(&line)
                 .map_err(|e| BunError::ParseError(format!("invalid response: {e} ({line})")))?;
+            let response_id = response
+                .id
+                .ok_or_else(|| BunError::ProtocolError(format!("missing response id: {line}")))?;
+            if response_id != id {
+                return Err(BunError::ProtocolError(format!(
+                    "unexpected response id {response_id}; expected {id}"
+                )));
+            }
+            if let Some(error) = response.error {
+                processed.push(BunPreprocessed {
+                    filename: input.filename,
+                    source: input.source,
+                    source_map: None,
+                    dependencies: Vec::new(),
+                    error: Some(BunPreprocessError {
+                        message: error,
+                        start: response.error_start,
+                        end: response.error_end,
+                        phase: response.error_phase,
+                        fragment_offset: response.error_fragment_offset,
+                        file: response.error_file,
+                    }),
+                });
+                continue;
+            }
+            let source = response.code.ok_or_else(|| {
+                BunError::ProtocolError(format!("missing preprocessed code: {line}"))
+            })?;
 
+            processed.push(BunPreprocessed {
+                filename: input.filename,
+                source,
+                source_map: response.map,
+                dependencies: response
+                    .dependencies
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Utf8PathBuf::from)
+                    .collect(),
+                error: None,
+            });
+        }
+
+        Ok(processed)
+    }
+
+    async fn check_batch(&mut self, inputs: Vec<BunInput>) -> Result<Vec<BunDiagnostic>, BunError> {
+        let mut diagnostics = Vec::new();
+        for (id, input) in (1u64..).zip(inputs) {
+            let request = BunRequest {
+                id,
+                operation: BunOperation::Compile,
+                filename: input.filename.to_string(),
+                source: input.source.clone(),
+                options: input.options.clone(),
+                config_path: None,
+            };
+            self.send_request(&request).await?;
+            let line = self.next_response_line().await?;
+            let response: BunResponse = serde_json::from_str(&line)
+                .map_err(|e| BunError::ParseError(format!("invalid response: {e} ({line})")))?;
             if let Some(error) = response.error {
                 return Err(BunError::ProtocolError(error));
             }
-
-            let id = response
+            let response_id = response
                 .id
                 .ok_or_else(|| BunError::ProtocolError(format!("missing response id: {line}")))?;
-
-            let file = pending
-                .remove(&id)
-                .ok_or_else(|| BunError::ProtocolError(format!("unexpected response id {id}")))?;
+            if response_id != id {
+                return Err(BunError::ProtocolError(format!(
+                    "unexpected response id {response_id}; expected {id}"
+                )));
+            }
 
             if let Some(diags) = response.diagnostics {
                 diagnostics.extend(diags.into_iter().map(|diag| BunDiagnostic {
-                    file: file.clone(),
+                    file: input.filename.clone(),
                     code: diag.code,
                     message: diag.message,
                     severity: match diag.severity.as_str() {
@@ -858,6 +1117,20 @@ mod tests {
         let options = BunCompileOptions::default();
         assert!(options.runes.is_none());
         assert!(options.experimental.is_none());
+    }
+
+    #[test]
+    fn stderr_tail_is_bounded_and_retains_latest_bytes() {
+        let mut tail = VecDeque::new();
+        extend_stderr_tail(&mut tail, &vec![b'a'; STDERR_TAIL_CAPACITY]);
+        extend_stderr_tail(&mut tail, b"latest");
+
+        assert_eq!(tail.len(), STDERR_TAIL_CAPACITY);
+        assert!(tail.make_contiguous().ends_with(b"latest"));
+
+        extend_stderr_tail(&mut tail, &vec![b'b'; STDERR_TAIL_CAPACITY + 1]);
+        assert_eq!(tail.len(), STDERR_TAIL_CAPACITY);
+        assert!(tail.iter().all(|byte| *byte == b'b'));
     }
 
     fn make_input(filename: &str, source: &str) -> BunInput {

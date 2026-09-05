@@ -6,7 +6,7 @@ use blake3::Hasher;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use source_map::SourceMap;
+use source_map::{PreprocessorMap, SourceMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
@@ -2200,8 +2200,10 @@ pub struct TransformedFile {
     pub generated_line_index: source_map::LineIndex,
     /// The source map for position mapping.
     pub source_map: SourceMap,
-    /// Line index for the original source (for position mapping).
-    pub original_line_index: source_map::LineIndex,
+    /// Line index for the preprocessed Svelte source.
+    pub processed_line_index: source_map::LineIndex,
+    /// Optional map from preprocessed Svelte back to the user's source.
+    pub preprocessor_map: Option<PreprocessorMap>,
 }
 
 /// A collection of transformed files.
@@ -2405,7 +2407,8 @@ mod tests {
                 tsx_content: "// generated".to_string(),
                 generated_line_index: LineIndex::new("// generated"),
                 source_map: SourceMap::new(),
-                original_line_index: LineIndex::new(original_source),
+                processed_line_index: LineIndex::new(original_source),
+                preprocessor_map: None,
             },
         );
 
