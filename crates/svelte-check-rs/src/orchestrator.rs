@@ -2,7 +2,7 @@
 
 use crate::cli::{Args, TimingFormat};
 use crate::config::{KitConfig, SvelteCompilerOptions, SvelteConfig, SvelteFileKind, TsConfig};
-use crate::output::{CheckSummary, FormattedDiagnostic, Formatter, Position};
+use crate::output::{CheckSummary, ColorPolicy, FormattedDiagnostic, Formatter, Position};
 use bun_runner::{
     BunCompileOptions, BunConfigSession, BunDiagnostic, BunDiagnosticSeverity,
     BunExperimentalOptions, BunInput, BunLoadedConfig, BunPreprocessError, BunPreprocessed,
@@ -772,7 +772,8 @@ async fn run_single_check(
     let timings_enabled = args.timings
         || args.timings_format == TimingFormat::Json
         || read_env_bool("SVELTE_CHECK_RS_TIMINGS").unwrap_or(false);
-    let formatter = Formatter::new(args.output);
+    let colors = ColorPolicy::detect(args.output, args.color);
+    let formatter = Formatter::new(args.output, colors);
     let output_json = matches!(args.output, crate::cli::OutputFormat::Json);
     let error_count = AtomicUsize::new(0);
     let warning_count = AtomicUsize::new(0);
@@ -1469,7 +1470,8 @@ async fn run_single_check(
                         &compiler_sources,
                     ));
                 } else {
-                    let output = format_compiler_diagnostics(&diagnostics, workspace, args.output);
+                    let output =
+                        format_compiler_diagnostics(&diagnostics, workspace, args.output, colors);
                     print!("{}", output);
                 }
             }
@@ -1512,7 +1514,8 @@ async fn run_single_check(
                 if output_json {
                     json_output.extend(format_ts_diagnostics_json(&ts_diagnostics, workspace));
                 } else {
-                    let ts_output = format_ts_diagnostics(&ts_diagnostics, workspace, args.output);
+                    let ts_output =
+                        format_ts_diagnostics(&ts_diagnostics, workspace, args.output, colors);
                     print!("{}", ts_output);
                 }
 
@@ -1662,7 +1665,7 @@ async fn run_single_check(
 
     // Print summary
     if !matches!(args.output, crate::cli::OutputFormat::Json) {
-        println!("{}", summary.format());
+        println!("{}", summary.format_with_color(colors));
     } else {
         let json = serde_json::to_string_pretty(&json_output).unwrap_or_else(|_| "[]".to_string());
         println!("{}", json);
@@ -1921,6 +1924,7 @@ fn format_ts_diagnostics(
     diagnostics: &[TsgoDiagnostic],
     workspace: &Utf8Path,
     format: crate::cli::OutputFormat,
+    colors: ColorPolicy,
 ) -> String {
     let mut output = String::new();
 
@@ -1941,10 +1945,10 @@ fn format_ts_diagnostics(
             crate::cli::OutputFormat::Human | crate::cli::OutputFormat::HumanVerbose => {
                 output.push_str(&format!(
                     "{}:{}:{}\n{}: {} (ts({}))\n\n",
-                    relative_file,
+                    colors.path(&relative_file),
                     diag.start.line,
                     diag.start.column,
-                    severity,
+                    colors.severity(severity),
                     diag.message,
                     diag.code
                 ));
@@ -2017,6 +2021,7 @@ fn format_compiler_diagnostics(
     diagnostics: &[BunDiagnostic],
     workspace: &Utf8Path,
     format: crate::cli::OutputFormat,
+    colors: ColorPolicy,
 ) -> String {
     let mut output = String::new();
 
@@ -2036,10 +2041,10 @@ fn format_compiler_diagnostics(
             crate::cli::OutputFormat::Human | crate::cli::OutputFormat::HumanVerbose => {
                 output.push_str(&format!(
                     "{}:{}:{}\n{}: {} ({})\n\n",
-                    relative_file,
+                    colors.path(&relative_file),
                     diag.start.line,
                     diag.start.column,
-                    severity,
+                    colors.severity(severity),
                     diag.message,
                     diag.code
                 ));

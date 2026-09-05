@@ -16,6 +16,10 @@ pub struct Args {
     #[arg(long, value_enum, default_value = "human")]
     pub output: OutputFormat,
 
+    /// Color human output (NO_COLOR disables colors)
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: ColorMode,
+
     /// Path to tsconfig.json
     #[arg(long)]
     pub tsconfig: Option<Utf8PathBuf>,
@@ -120,6 +124,18 @@ pub enum OutputFormat {
     Json,
     /// Machine-readable (one line per diagnostic)
     Machine,
+}
+
+/// Color preference for human-readable output.
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+pub enum ColorMode {
+    /// Color only when stdout is a terminal
+    #[default]
+    Auto,
+    /// Color even when stdout is redirected
+    Always,
+    /// Disable colors
+    Never,
 }
 
 /// Severity threshold.
