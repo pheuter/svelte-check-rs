@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { argv, env, stdin, stdout } from 'node:process';
@@ -16,17 +17,50 @@ const protocolWrite = stdout.write.bind(stdout);
 const send = (value) => protocolWrite(`\x1e${protocolToken}\t${JSON.stringify(value)}\n`);
 const workspaceRequire = createRequire(pathToFileURL(path.join(process.cwd(), 'package.json')));
 
-let compile = null;
-let preprocess = null;
-try {
-  const compilerPath = workspaceRequire.resolve('svelte/compiler');
-  const mod = await import(pathToFileURL(compilerPath).href);
-  compile = mod.compile;
-  preprocess = mod.preprocess;
-} catch (err) {
-  const message = err && err.message ? err.message : String(err);
-  console.error(`svelte-check-rs bun runner failed to load svelte/compiler: ${message}`);
-  process.exit(2);
+// Resolve from the source file, including packages outside the CLI workspace.
+// Only a genuinely absent package may fall back to the workspace compiler.
+const compilerModules = new Map();
+function hasSveltePackage(root) {
+  for (let current = root; ; current = path.dirname(current)) {
+    try {
+      fs.lstatSync(path.join(current, 'node_modules/svelte'));
+      return true;
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+    }
+    if (path.dirname(current) === current) return false;
+  }
+}
+async function loadCompiler(filename) {
+  const base = filename ? path.dirname(path.resolve(filename)) : process.cwd();
+  let compilerPath;
+  try {
+    compilerPath = requireFrom(base).resolve('svelte/compiler');
+  } catch (error) {
+    if (!['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND'].includes(error.code) || hasSveltePackage(base)) throw error;
+    compilerPath = workspaceRequire.resolve('svelte/compiler');
+  }
+  compilerPath = fs.realpathSync(compilerPath);
+  if (!compilerModules.has(compilerPath)) {
+    compilerModules.set(compilerPath, (async () => {
+      // Import failures must propagate, never silently switch compiler versions.
+      const mod = await import(pathToFileURL(compilerPath).href);
+      if (typeof mod.compile !== 'function' || typeof mod.preprocess !== 'function') {
+        throw new Error(`Invalid Svelte compiler: ${compilerPath}`);
+      }
+      const hash = createHash('sha256').update(compilerPath).update(fs.readFileSync(compilerPath));
+      for (let dir = path.dirname(compilerPath); ; dir = path.dirname(dir)) {
+        const manifest = path.join(dir, 'package.json');
+        if (fs.existsSync(manifest)) {
+          const content = fs.readFileSync(manifest, 'utf8');
+          if (JSON.parse(content).name === 'svelte') { hash.update(content); break; }
+        }
+        if (path.dirname(dir) === dir) break;
+      }
+      return { ...mod, identity: hash.digest('hex') };
+    })());
+  }
+  return compilerModules.get(compilerPath);
 }
 
 send({ ready: true });
@@ -229,7 +263,9 @@ async function importVite(root) {
 }
 
 async function collectViteDependencies(resolved, root, configPath, options) {
-  const dependencies = new Set([path.resolve(configPath)]);
+  // Vite's native loader can return no dependency list. Track imported local
+  // modules ourselves so watch mode still reloads the entire config graph.
+  const dependencies = new Set(await collectModuleDependencies(configPath));
   for (const dependency of resolved.configFileDependencies || []) {
     dependencies.add(path.resolve(dependency));
   }
@@ -255,7 +291,10 @@ async function loadViteConfig(root, configPath) {
   try {
     process.chdir(root);
     const resolved = await vite.resolveConfig(
-      { root, configFile: configPath, logLevel: 'error' },
+      // Bun can execute TypeScript configs directly. Bundling under Vite 8
+      // rewrites import.meta.resolve to virtual modules that require Node's
+      // module.registerHooks, which Bun does not implement.
+      { root, configFile: configPath, logLevel: 'error', configLoader: 'native' },
       'serve'
     );
     const kitOptions = resolved.plugins.find(
@@ -504,11 +543,24 @@ for await (const line of rl) {
     continue;
   }
 
+  // Compiler loading is a runner operation, not a source compilation error.
+  let compiler;
+  try {
+    compiler = await loadCompiler(filename);
+  } catch (error) {
+    send({ id, error: error?.message || String(error), runnerError: true });
+    continue;
+  }
+  if (req.operation === 'resolvecompiler') {
+    send({ id, compilerIdentity: compiler.identity });
+    continue;
+  }
+
   if (req.operation === 'preprocess') {
     try {
       const config = await loadConfig(req.configPath);
       const result = config && config.preprocess
-        ? await preprocess(source, instrumentPreprocessors(config.preprocess), { filename })
+        ? await compiler.preprocess(source, instrumentPreprocessors(config.preprocess), { filename })
         : { code: source, map: null, dependencies: [] };
       send({
         id,
@@ -545,7 +597,7 @@ for await (const line of rl) {
   let diagnostics = [];
 
   try {
-    const result = compile(source, compileOptions);
+    const result = compiler.compile(source, compileOptions);
     if (result && Array.isArray(result.warnings)) {
       diagnostics = result.warnings.map((warning) => ({
         code: warning.code || 'warning',

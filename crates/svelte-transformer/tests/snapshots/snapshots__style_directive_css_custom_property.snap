@@ -24,6 +24,11 @@ import type { SvelteHTMLElements as __SvelteHTMLElements, HTMLAttributes as __Sv
 // Helper functions for template type-checking
 type __SvelteCssProps = { [K in `--${string}`]?: string | number };
 
+type __SvelteComponentInstance<
+  Props extends Record<string, any>,
+  Exports extends Record<string, any>
+> = ReturnType<__SvelteComponentType<Props, Exports>>;
+
 // Isomorphic component type that supports both constructor (new) and call signatures
 interface __SvelteComponent<
   Props extends Record<string, any> = {},
@@ -32,7 +37,7 @@ interface __SvelteComponent<
   // Constructor signature for `new Component({ target, props })`
   new (options: { target: any; props?: Props & __SvelteCssProps }): __SvelteLegacyComponent<Props, any, any> & Exports;
   // Call signature for Svelte 5 function components
-  (internal: unknown, props: Props & __SvelteCssProps): Exports;
+  (internal: unknown, props: Props & __SvelteCssProps): __SvelteComponentInstance<Props, Exports>;
 }
 
 // Normalize legacy class components to a callable form.
@@ -188,16 +193,17 @@ return { props: null as any as Record<string, unknown>, exports: {}, slots: {}, 
 type __SvelteProps_Test_ = Awaited<ReturnType<typeof __svelte_render>>["props"];
 type __SvelteExports_Test_ = Awaited<ReturnType<typeof __svelte_render>>["exports"];
 declare const __SvelteComponent_Test_: __SvelteComponent<__SvelteProps_Test_, __SvelteExports_Test_>;
+type __SvelteComponent_Test_ = ReturnType<typeof __SvelteComponent_Test_>;
 export default __SvelteComponent_Test_;
 
 
 === Source Map Mappings (9) ===
-  0: generated 6643..6665 -> original 18..40
-  1: generated 6665..6674 -> original 40..49
-  2: generated 6674..6692 -> original 49..67
-  3: generated 6692..6706 -> original 67..81
-  4: generated 6706..6708 -> original 81..83
-  5: generated 6743..6786 -> original 124..167
-  6: generated 6832..6833 -> original 180..181
-  7: generated 6847..6852 -> original 214..219
-  8: generated 6856..6861 -> original 238..241
+  0: generated 6840..6862 -> original 18..40
+  1: generated 6862..6871 -> original 40..49
+  2: generated 6871..6889 -> original 49..67
+  3: generated 6889..6903 -> original 67..81
+  4: generated 6903..6905 -> original 81..83
+  5: generated 6940..6983 -> original 124..167
+  6: generated 7029..7030 -> original 180..181
+  7: generated 7044..7049 -> original 214..219
+  8: generated 7053..7058 -> original 238..241
