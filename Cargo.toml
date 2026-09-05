@@ -31,6 +31,7 @@ rowan = "0.16"
 text-size = "1.1"
 swc_ecma_parser = "32.0"
 swc_ecma_ast = "19.0"
+swc_ecma_transforms_base = "35.0"
 swc_ecma_visit = "19.0"
 swc_common = { version = "18.0", features = ["sourcemap"] }
 swc_sourcemap = "9.3.4"
